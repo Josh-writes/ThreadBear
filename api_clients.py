@@ -694,6 +694,26 @@ def _llamacpp_sanitize_messages(api_messages: List[Dict]) -> List[Dict]:
 
     return collapsed
 
+def get_llamacpp_context_size(config_or_url=None) -> int:
+    """Query llama.cpp /slots endpoint for n_ctx. Returns 0 on failure."""
+    if isinstance(config_or_url, dict):
+        base = config_or_url.get("llamacpp_url", "http://127.0.0.1:8080")
+    elif isinstance(config_or_url, str) and config_or_url.strip():
+        base = config_or_url.strip()
+    else:
+        base = "http://127.0.0.1:8080"
+    try:
+        resp = _local_session.get(f"{base.rstrip('/')}/slots", timeout=5)
+        resp.raise_for_status()
+        data = resp.json()
+        if isinstance(data, list) and data:
+            return int(data[0].get("n_ctx", 0))
+        if isinstance(data, dict):
+            return int(data.get("n_ctx", 0))
+    except Exception:
+        pass
+    return 0
+
 def get_available_llamacpp_models(config_or_url=None) -> List[str]:
     """
     Query a llama.cpp server for available models.

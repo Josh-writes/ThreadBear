@@ -11,7 +11,7 @@ import uuid
 from datetime import datetime
 from typing import Dict, List
 import requests
-from api_clients import estimate_tokens, get_available_ollama_models
+from api_clients import estimate_tokens, get_available_ollama_models, get_llamacpp_context_size
 from context_documents import context_documents  
 
 from flask import Flask, render_template, request, jsonify, Response, send_from_directory
@@ -481,6 +481,80 @@ class FlaskChatApp:
                 # Reset the flag
                 self.last_renamed_chat = None
             return jsonify(response_data)
+
+        @app.route('/api/chat/context-check', methods=['POST'])
+        def context_check():
+            """Estimate input tokens and check against context window before sending."""
+            data = request.get_json() or {}
+            message = (data.get('message') or '').strip()
+            selected_context = data.get('selected_context')
+            selected_summaries = data.get('selected_summaries', [])
+            context_bar_open = data.get('context_bar_open', False)
+
+            provider = self.config.get("provider")
+            model = self.config.get(f"{provider}_model")
+            model_settings = self.config.get_model_settings(provider, model)
+
+            # Build api_messages the same way stream_response does
+            if self.incognito_mode:
+                api_messages = [{"role": "user", "content": message}]
+            elif context_bar_open and selected_context is not None:
+                if len(selected_context) > 0 or len(selected_summaries) > 0:
+                    api_messages = self.chat_manager.get_selected_context(
+                        selected_context, selected_summaries
+                    )
+                else:
+                    api_messages = [{"role": "user", "content": message}]
+            else:
+                api_messages = self.chat_manager.get_conversation_context()
+
+            # Add the new message (if not already in context from get_conversation_context)
+            new_msg_tokens = estimate_tokens(message)
+
+            # System prompt
+            system_prompt = model_settings.get('system_prompt',
+                self.config.get(f"{provider}_system_prompt", ""))
+            system_prompt_tokens = estimate_tokens(system_prompt) if system_prompt else 0
+
+            # Conversation tokens
+            conversation_tokens = sum(estimate_tokens(m.get("content", "")) for m in api_messages)
+
+            # Document tokens
+            docs = context_documents.build_context_injections()
+            doc_tokens = sum(estimate_tokens(m.get("content", "")) for m in docs)
+
+            total_tokens = system_prompt_tokens + conversation_tokens + doc_tokens + new_msg_tokens
+
+            # Context window
+            context_window = self.config.get_context_window(provider, model)
+            # For llamacpp, try auto-detecting if no override configured
+            if provider == "llamacpp":
+                ms = self.config.get_model_settings(provider, model)
+                if "context_window" not in ms or not ms["context_window"]:
+                    auto = get_llamacpp_context_size(self.config.config)
+                    if auto > 0:
+                        context_window = auto
+
+            max_output = int(model_settings.get('max_tokens',
+                self.config.get(f"{provider}_max_tokens", 4096)))
+            available_input = context_window - max_output
+            overflow = total_tokens > available_input
+            overflow_amount = max(0, total_tokens - available_input)
+
+            return jsonify({
+                "total_tokens": total_tokens,
+                "context_window": context_window,
+                "max_output_tokens": max_output,
+                "available_input": available_input,
+                "overflow": overflow,
+                "overflow_amount": overflow_amount,
+                "breakdown": {
+                    "system_prompt": system_prompt_tokens,
+                    "conversation": conversation_tokens,
+                    "documents": doc_tokens,
+                    "new_message": new_msg_tokens,
+                }
+            })
 
         @app.route('/api/chat/stream/<int:message_id>')
         def stream_response(message_id: int):

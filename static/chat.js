@@ -113,6 +113,15 @@
     sendBtn: $('sendBtn'),
     cancelBtn: $('cancelButton'),
 
+    // Context overflow warning
+    contextOverflowWarning: $('contextOverflowWarning'),
+    overflowMessage: $('overflowMessage'),
+    overflowSelectContext: $('overflowSelectContext'),
+    overflowSummarize: $('overflowSummarize'),
+    overflowTrim: $('overflowTrim'),
+    overflowSendAnyway: $('overflowSendAnyway'),
+    overflowDismiss: $('overflowDismiss'),
+
     // Model Settings panel (right drawer)
     settingsPanel: $('settingsPanel'),
     closeSettingsBtn: $('closeSettingsBtn'),
@@ -125,6 +134,7 @@
     cancelAddModelBtn: $('cancelAddModelBtn'),
     newModelInputContainer: $('newModelInputContainer'),
     modelSettingsForm: $('modelSettingsForm'),
+    contextWindowInput: $('contextWindowInput'),
     maxTokensInput: $('maxTokensInput'),
     modelTemperatureRange: $('modelTemperatureRange'),
     modelTemperatureValue: $('modelTemperatureValue'),
@@ -670,8 +680,13 @@
       const data = await res.json();
       if (data.success && data.settings) {
         const settings = data.settings;
-        
+
         // Update form fields with model settings
+        if (settings.context_window !== undefined) {
+          E.contextWindowInput.value = settings.context_window;
+        } else {
+          E.contextWindowInput.value = '';
+        }
         if (settings.max_tokens !== undefined) {
           E.maxTokensInput.value = settings.max_tokens;
         }
@@ -1054,6 +1069,112 @@ async function loadPrompts() {
     }
   }
 
+  // ====== Context Overflow Warning ======
+  function showOverflowWarning(check) {
+    const msg = `Input tokens (~${fmt(check.total_tokens)}) exceed available context ` +
+      `(${fmt(check.available_input)} of ${fmt(check.context_window)} after reserving ` +
+      `${fmt(check.max_output_tokens)} for output). ` +
+      `Over by ~${fmt(check.overflow_amount)} tokens. ` +
+      `Breakdown: system ${fmt(check.breakdown.system_prompt)}, ` +
+      `conversation ${fmt(check.breakdown.conversation)}, ` +
+      `docs ${fmt(check.breakdown.documents)}, ` +
+      `new message ${fmt(check.breakdown.new_message)}.`;
+    E.overflowMessage.textContent = msg;
+    show(E.contextOverflowWarning);
+  }
+
+  function hideOverflowWarning() {
+    hide(E.contextOverflowWarning);
+    state._pendingSendText = null;
+    state._pendingSendPayload = null;
+    state._overflowCheck = null;
+  }
+
+  async function autoTrimToFit() {
+    // Open context bar if not open
+    if (!state.contextBarOpen) {
+      state.contextBarOpen = true;
+      E.contextControls.style.display = 'flex';
+    }
+    // Select all messages initially
+    state.selectedMessageIdx = new Set(state.messages.map((_, i) => i));
+    state.selectedSummaryIdx = new Set(
+      state.messages.map((m, i) => m.summary ? i : -1).filter(i => i >= 0)
+    );
+
+    // Deselect from oldest until we fit
+    const check = state._overflowCheck;
+    if (!check) return;
+    let tokensToFree = check.overflow_amount;
+
+    for (let i = 0; i < state.messages.length && tokensToFree > 0; i++) {
+      const m = state.messages[i];
+      if (!m) continue;
+      // Estimate tokens for what this message contributes
+      let msgTokens;
+      if (m.summary && state.selectedSummaryIdx.has(i)) {
+        msgTokens = estimateTokensJS(m.summary);
+        state.selectedSummaryIdx.delete(i);
+      } else {
+        msgTokens = estimateTokensJS(m.content || '');
+      }
+      state.selectedMessageIdx.delete(i);
+      tokensToFree -= msgTokens;
+    }
+
+    renderMessages();
+    await updateContextTokenSummary();
+  }
+
+  async function autoSummarizeToFit() {
+    const check = state._overflowCheck;
+    if (!check) return;
+
+    // Open context bar
+    if (!state.contextBarOpen) {
+      state.contextBarOpen = true;
+      E.contextControls.style.display = 'flex';
+      state.selectedMessageIdx = new Set(state.messages.map((_, i) => i));
+      state.selectedSummaryIdx = new Set(
+        state.messages.map((m, i) => m.summary ? i : -1).filter(i => i >= 0)
+      );
+    }
+
+    let tokensFreed = 0;
+    const target = check.overflow_amount;
+
+    for (let i = 0; i < state.messages.length && tokensFreed < target; i++) {
+      const m = state.messages[i];
+      if (!m || m.role === 'system') continue;
+      if (m.summary) {
+        // Already summarized - just select the summary
+        state.selectedSummaryIdx.add(i);
+        const saved = estimateTokensJS(m.content || '') - estimateTokensJS(m.summary);
+        if (saved > 0) tokensFreed += saved;
+        continue;
+      }
+      // Summarize this message
+      try {
+        const res = await postJSON('/api/chat/summarize', { content: m.content });
+        if (res.success && res.summary) {
+          await postJSON('/api/chat/add_summary', {
+            message_index: i,
+            summary: res.summary
+          });
+          m.summary = res.summary;
+          state.selectedSummaryIdx.add(i);
+          const saved = estimateTokensJS(m.content || '') - estimateTokensJS(res.summary);
+          if (saved > 0) tokensFreed += saved;
+        }
+      } catch (e) {
+        console.warn('Failed to summarize message', i, e);
+      }
+    }
+
+    renderMessages();
+    await updateContextTokenSummary();
+  }
+
   async function sendMessage() {
     // Ensure a chat exists before sending
     if (!state.currentChatFile) {
@@ -1101,6 +1222,36 @@ async function loadPrompts() {
       payload.selected_context = Array.from(state.selectedMessageIdx);
       payload.selected_summaries = Array.from(state.selectedSummaryIdx);
     }
+
+    // --- Context overflow check (pre-send) ---
+    if (!state._skipOverflowCheck) {
+      try {
+        const checkPayload = {
+          message: text,
+          context_bar_open: state.contextBarOpen,
+        };
+        if (state.contextBarOpen) {
+          checkPayload.selected_context = Array.from(state.selectedMessageIdx);
+          checkPayload.selected_summaries = Array.from(state.selectedSummaryIdx);
+        }
+        const check = await postJSON('/api/chat/context-check', checkPayload);
+        if (check.overflow) {
+          // Show warning and wait for user choice
+          state._pendingSendText = text;
+          state._pendingSendPayload = payload;
+          state._overflowCheck = check;
+          showOverflowWarning(check);
+          // Remove the optimistic user message we added
+          state.messages.pop();
+          renderMessages();
+          E.userInput.value = text; // put text back
+          return;
+        }
+      } catch (e) {
+        console.warn('Context check failed, sending anyway:', e);
+      }
+    }
+    state._skipOverflowCheck = false;
 
     const js = await postJSON('/api/chat/send', payload).catch(err => ({ success:false, error: String(err) }));
     if (js.success === false) {
@@ -1584,6 +1735,12 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
           temperature: parseFloat(E.modelTemperatureRange.value) || 0.7,
           system_prompt: E.modelSystemPromptTextarea.value || ''
         };
+
+        // Context window (0 or empty = use provider default)
+        const cw = parseInt(E.contextWindowInput.value);
+        if (cw > 0) {
+          settings.context_window = cw;
+        }
         
         // Add optional parameters if they have non-default values
         const topP = parseFloat(E.topPRange.value);
@@ -2004,6 +2161,57 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
       if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
     });
     E.cancelBtn.addEventListener('click', cancelGeneration);
+
+    // Overflow warning buttons
+    if (E.overflowDismiss) E.overflowDismiss.addEventListener('click', hideOverflowWarning);
+
+    if (E.overflowSelectContext) E.overflowSelectContext.addEventListener('click', () => {
+      hideOverflowWarning();
+      // Open context bar for manual selection
+      if (!state.contextBarOpen) {
+        E.contextSelectionBtn.click();
+      }
+    });
+
+    if (E.overflowSummarize) E.overflowSummarize.addEventListener('click', async () => {
+      hide(E.contextOverflowWarning);
+      await autoSummarizeToFit();
+      // Re-check after summarizing
+      const savedText = state._pendingSendText;
+      if (savedText) {
+        E.userInput.value = savedText;
+        state._skipOverflowCheck = false;
+        state._pendingSendText = null;
+        state._pendingSendPayload = null;
+        state._overflowCheck = null;
+        await sendMessage();
+      }
+    });
+
+    if (E.overflowTrim) E.overflowTrim.addEventListener('click', async () => {
+      hide(E.contextOverflowWarning);
+      await autoTrimToFit();
+      // Re-check after trimming
+      const savedText = state._pendingSendText;
+      if (savedText) {
+        E.userInput.value = savedText;
+        state._skipOverflowCheck = false;
+        state._pendingSendText = null;
+        state._pendingSendPayload = null;
+        state._overflowCheck = null;
+        await sendMessage();
+      }
+    });
+
+    if (E.overflowSendAnyway) E.overflowSendAnyway.addEventListener('click', async () => {
+      hideOverflowWarning();
+      const savedText = state._pendingSendText;
+      if (savedText) {
+        E.userInput.value = savedText;
+        state._skipOverflowCheck = true;
+        await sendMessage();
+      }
+    });
   }
 
   // ====== Missing functions ======

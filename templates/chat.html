@@ -1476,6 +1476,49 @@
             }
         }
 
+        /* Context overflow warning */
+        .context-overflow-warning {
+            display: flex;
+            align-items: flex-start;
+            gap: 10px;
+            padding: 10px 16px;
+            background: #fef3cd;
+            border-top: 2px solid #ffc107;
+            color: #856404;
+            font-size: 13px;
+        }
+        [data-theme="dark"] .context-overflow-warning {
+            background: #3d3200;
+            border-top-color: #ffc107;
+            color: #ffe082;
+        }
+        .overflow-icon { font-size: 18px; flex-shrink: 0; margin-top: 1px; }
+        .overflow-body { flex: 1; min-width: 0; }
+        .overflow-message { margin-bottom: 6px; line-height: 1.4; }
+        .overflow-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+        .overflow-btn {
+            padding: 4px 10px;
+            border: 1px solid #c9a800;
+            border-radius: 4px;
+            background: rgba(255,193,7,0.15);
+            color: inherit;
+            font-size: 12px;
+            cursor: pointer;
+            white-space: nowrap;
+        }
+        .overflow-btn:hover { background: rgba(255,193,7,0.3); }
+        .overflow-btn-send {
+            border-color: #856404;
+            background: rgba(133,100,4,0.1);
+        }
+        .overflow-btn-send:hover { background: rgba(133,100,4,0.2); }
+        .overflow-dismiss {
+            background: none; border: none; color: inherit;
+            font-size: 18px; cursor: pointer; padding: 0 4px;
+            opacity: 0.6; flex-shrink: 0;
+        }
+        .overflow-dismiss:hover { opacity: 1; }
+
         /* Input area */
         .input-area {
             padding: 24px;
@@ -2066,6 +2109,20 @@
                 </div>
             </div>
 
+            <div id="contextOverflowWarning" class="context-overflow-warning" style="display: none;">
+                <div class="overflow-icon">&#9888;</div>
+                <div class="overflow-body">
+                    <div class="overflow-message" id="overflowMessage"></div>
+                    <div class="overflow-actions">
+                        <button class="overflow-btn" id="overflowSelectContext" title="Open context bar to manually select messages">Select Context</button>
+                        <button class="overflow-btn" id="overflowSummarize" title="Auto-summarize oldest messages to fit">Summarize</button>
+                        <button class="overflow-btn" id="overflowTrim" title="Auto-deselect oldest messages to fit">Trim</button>
+                        <button class="overflow-btn overflow-btn-send" id="overflowSendAnyway" title="Send message despite overflow">Send Anyway</button>
+                    </div>
+                </div>
+                <button class="overflow-dismiss" id="overflowDismiss" title="Dismiss">&times;</button>
+            </div>
+
             <div class="input-area">
                 <div class="input-container">
                     <textarea 
@@ -2130,7 +2187,13 @@
                     <!-- Model Settings Form -->
                     <div class="model-settings-form" id="modelSettingsForm" style="display: none; margin-top: 15px;">
                         <div class="setting-group">
-                            <label class="setting-label">Max Tokens</label>
+                            <label class="setting-label">Context Window (total)</label>
+                            <input type="number" class="setting-input" id="contextWindowInput" min="0" max="10000000" value="" placeholder="Provider default">
+                            <span class="setting-hint" style="font-size: 11px; color: var(--text-secondary); margin-top: 2px; display: block;">Total tokens the model can handle (input + output). Leave blank for provider default.</span>
+                        </div>
+
+                        <div class="setting-group">
+                            <label class="setting-label">Max Tokens (output)</label>
                             <input type="number" class="setting-input" id="maxTokensInput" min="1" max="1000000" value="4096">
                         </div>
                         

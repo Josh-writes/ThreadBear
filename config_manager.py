@@ -9,6 +9,15 @@ from typing import Dict, Any, List
 
 # ---------------- Defaults ----------------
 
+DEFAULT_CONTEXT_WINDOWS: Dict[str, int] = {
+    "ollama": 8192,
+    "groq": 131072,
+    "google": 1048576,
+    "mistral": 32768,
+    "openrouter": 8192,
+    "llamacpp": 8192,
+}
+
 DEFAULT_CONFIG: Dict[str, Any] = {
     # API keys (fallbacks – env is preferred)
     "groq_api_key": "your_groq_api_key_here",
@@ -228,11 +237,18 @@ class ConfigManager:
         prov = self.config["model_settings"].setdefault(provider, {})
         cur = prov.setdefault(model, {})
         # keep only allowed keys
-        allow = {"max_tokens", "temperature", "top_p", "top_k", "system_prompt"}
+        allow = {"max_tokens", "temperature", "top_p", "top_k", "system_prompt", "context_window"}
         for k,v in updates.items():
             if k in allow:
                 cur[k] = v
         self.save_config()
+
+    def get_context_window(self, provider: str, model: str) -> int:
+        self._ensure_model_settings()
+        ms = self.config["model_settings"].get(provider, {}).get(model, {})
+        if "context_window" in ms and ms["context_window"]:
+            return int(ms["context_window"])
+        return DEFAULT_CONTEXT_WINDOWS.get(provider, 8192)
 
     def reload_api_keys_from_env(self) -> None:
         """
