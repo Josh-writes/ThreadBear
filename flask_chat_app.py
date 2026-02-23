@@ -227,6 +227,10 @@ class FlaskChatApp:
                     out["top_k"] = int(data["top_k"])
                 if "system_prompt" in data:
                     out["system_prompt"] = str(data["system_prompt"])
+                if "context_window" in data:
+                    cw = int(data["context_window"])
+                    if cw > 0:
+                        out["context_window"] = cw
                 if not out:
                     return jsonify({"success": False, "error": "no valid fields"}), 400
                 self.config.set_model_settings(provider, model, out)
@@ -532,6 +536,9 @@ class FlaskChatApp:
 
             max_output = int(model_settings.get('max_tokens',
                 self.config.get(f"{provider}_max_tokens", 4096)))
+            # Clamp max_output so it never consumes the entire context window
+            if max_output >= context_window:
+                max_output = max(1, context_window // 2)
             available_input = context_window - max_output
             overflow = total_tokens > available_input
             overflow_amount = max(0, total_tokens - available_input)
@@ -811,41 +818,77 @@ class FlaskChatApp:
         # ---- llama.cpp controls ----
         @app.route('/api/llamacpp/status')
         def llamacpp_status():
-            """Get llama.cpp server status and loaded model info via /slots endpoint."""
+            """Get llama.cpp server status and loaded model info."""
             try:
                 base = self.config.get("llamacpp_url", "http://127.0.0.1:8080").rstrip("/")
-                r = requests.get(f"{base}/slots", timeout=5)
-                if r.status_code != 200:
-                    # Try /health as fallback
-                    rh = requests.get(f"{base}/health", timeout=5)
-                    if rh.status_code == 200:
-                        return jsonify({"success": True, "server_running": True, "loaded_models": [], "slots": []})
-                    return jsonify({"success": False, "server_running": False, "loaded_models": [], "slots": []})
-
-                slots = r.json()
-                if not isinstance(slots, list):
-                    slots = [slots] if slots else []
-
                 loaded = []
-                for slot in slots:
-                    model_path = slot.get("model", "") or slot.get("model_path", "")
-                    if model_path:
-                        # Extract just the filename from path
-                        model_name = model_path.split("/")[-1].split("\\")[-1]
-                        n_ctx = slot.get("n_ctx", 0)
-                        loaded.append({
-                            "name": model_name,
-                            "path": model_path,
-                            "n_ctx": n_ctx,
-                            "slot_id": slot.get("id", 0),
-                            "state": slot.get("state", "unknown")
-                        })
+                slots_raw = []
+
+                # Try /slots first
+                try:
+                    r = requests.get(f"{base}/slots", timeout=5)
+                    if r.status_code == 200:
+                        slots_raw = r.json()
+                        if not isinstance(slots_raw, list):
+                            slots_raw = [slots_raw] if slots_raw else []
+                        for slot in slots_raw:
+                            # Try multiple field names for model path
+                            model_path = (slot.get("model", "")
+                                          or slot.get("model_path", "")
+                                          or slot.get("model_file", ""))
+                            if model_path:
+                                model_name = model_path.split("/")[-1].split("\\")[-1]
+                                n_ctx = slot.get("n_ctx", 0)
+                                loaded.append({
+                                    "name": model_name,
+                                    "path": model_path,
+                                    "n_ctx": n_ctx,
+                                    "slot_id": slot.get("id", 0),
+                                    "state": slot.get("state", "unknown")
+                                })
+                except Exception:
+                    pass
+
+                # Fallback: check /v1/models if /slots didn't find loaded models
+                if not loaded:
+                    try:
+                        rm = requests.get(f"{base}/v1/models", timeout=5)
+                        if rm.status_code == 200:
+                            models_data = rm.json().get("data", [])
+                            for m in models_data:
+                                mid = m.get("id", "")
+                                if mid:
+                                    model_name = mid.split("/")[-1].split("\\")[-1]
+                                    # Get n_ctx from slots if available
+                                    n_ctx = 0
+                                    if slots_raw:
+                                        n_ctx = slots_raw[0].get("n_ctx", 0)
+                                    loaded.append({
+                                        "name": model_name,
+                                        "path": mid,
+                                        "n_ctx": n_ctx,
+                                        "slot_id": 0,
+                                        "state": "loaded"
+                                    })
+                    except Exception:
+                        pass
+
+                # If we got this far, server is reachable
+                # Final fallback: check /health
+                if not loaded and not slots_raw:
+                    try:
+                        rh = requests.get(f"{base}/health", timeout=5)
+                        if rh.status_code == 200:
+                            return jsonify({"success": True, "server_running": True, "loaded_models": [], "slots": []})
+                        return jsonify({"success": False, "server_running": False, "loaded_models": [], "slots": []})
+                    except Exception:
+                        return jsonify({"success": False, "server_running": False, "loaded_models": [], "slots": []})
 
                 return jsonify({
                     "success": True,
                     "server_running": True,
                     "loaded_models": loaded,
-                    "slots": slots
+                    "slots": slots_raw
                 })
             except requests.exceptions.ConnectionError:
                 return jsonify({"success": False, "server_running": False, "loaded_models": [], "message": "Cannot connect to llama.cpp server"})
@@ -854,7 +897,7 @@ class FlaskChatApp:
 
         @app.route('/api/llamacpp/models')
         def llamacpp_models():
-            """List available models from llama.cpp server (requires --model-store on server)."""
+            """List available models from llama.cpp server (requires --models-dir on server)."""
             try:
                 base = self.config.get("llamacpp_url", "http://127.0.0.1:8080").rstrip("/")
                 r = requests.get(f"{base}/v1/models", timeout=5)
@@ -885,6 +928,7 @@ class FlaskChatApp:
                 data = request.get_json() or {}
                 model = data.get("model") or data.get("filename") or ""
                 slot_id = data.get("slot_id", 0)
+                n_ctx = int(data.get("n_ctx", 0))
 
                 if not model:
                     return jsonify({"success": False, "error": "No model specified"}), 400
@@ -899,65 +943,119 @@ class FlaskChatApp:
                     f"{model_dir.rstrip('/')}/{model}",  # Normalized
                 ]
 
+                loaded = False
+                load_result = {}
+
+                # Auto-unload any currently loaded model first to free VRAM
+                try:
+                    current_model = self.config.get("llamacpp_model", "")
+                    if current_model:
+                        # Try newer /models/unload first
+                        try:
+                            requests.post(f"{base}/models/unload", json={"model": current_model}, timeout=30)
+                        except Exception:
+                            pass
+                        # Also try slots erase
+                        try:
+                            requests.post(f"{base}/slots/{slot_id}?action=erase", timeout=30)
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+
                 # Method 1: Try slots API with different path formats
                 for path in model_paths:
                     try:
                         payload = {"filename": path}
+                        if n_ctx > 0:
+                            payload["n_ctx"] = n_ctx
                         r = requests.post(f"{base}/slots/{slot_id}?action=load", json=payload, timeout=180)
                         if r.status_code == 200:
-                            # Update config with the loaded model
                             self.config.set("llamacpp_model", model)
                             self.config.save_config()
-                            return jsonify({"success": True, "loaded": True, "model": model, "path": path})
+                            load_result = {"success": True, "loaded": True, "model": model, "path": path}
+                            loaded = True
+                            break
                     except:
                         continue
 
-                # Method 2: Try v1/chat/completions (auto-loads if using --model-store)
-                try:
-                    r2 = requests.post(
-                        f"{base}/v1/chat/completions",
-                        json={
-                            "model": model,
-                            "messages": [{"role": "user", "content": "hi"}],
-                            "max_tokens": 1
-                        },
-                        timeout=180
-                    )
-                    if r2.status_code == 200:
-                        self.config.set("llamacpp_model", model)
-                        self.config.save_config()
-                        return jsonify({"success": True, "loaded": True, "model": model})
-                except:
-                    pass
+                # Method 2: Try v1/chat/completions (auto-loads if using --models-dir)
+                if not loaded:
+                    try:
+                        r2 = requests.post(
+                            f"{base}/v1/chat/completions",
+                            json={
+                                "model": model,
+                                "messages": [{"role": "user", "content": "hi"}],
+                                "max_tokens": 1
+                            },
+                            timeout=180
+                        )
+                        if r2.status_code == 200:
+                            self.config.set("llamacpp_model", model)
+                            self.config.save_config()
+                            load_result = {"success": True, "loaded": True, "model": model}
+                            loaded = True
+                    except:
+                        pass
 
-                return jsonify({
-                    "success": False,
-                    "error": "Failed to load model. Make sure server was started with --model-store /path/to/models/"
-                })
+                if not loaded:
+                    return jsonify({
+                        "success": False,
+                        "error": "Failed to load model. Make sure server was started with --models-dir /path/to/models/"
+                    })
+
+                # Auto-detect actual n_ctx from server and save to config
+                detected_ctx = 0
+                try:
+                    detected_ctx = get_llamacpp_context_size(self.config.config)
+                except Exception:
+                    pass
+                if detected_ctx > 0:
+                    self.config.set_model_settings("llamacpp", model, {"context_window": detected_ctx})
+                    load_result["n_ctx"] = detected_ctx
+
+                return jsonify(load_result)
             except Exception as e:
                 return jsonify({"success": False, "error": str(e)}), 500
 
         @app.route('/api/llamacpp/unload', methods=['POST'])
         def llamacpp_unload():
-            """Unload model from llama.cpp server slot."""
+            """Unload model from llama.cpp server."""
             try:
                 data = request.get_json() or {}
                 slot_id = data.get("slot_id", 0)
 
                 base = self.config.get("llamacpp_url", "http://127.0.0.1:8080").rstrip("/")
 
-                # Use slots API to unload
-                r = requests.post(f"{base}/slots/{slot_id}?action=erase", timeout=30)
+                # Method 1: newer /models/unload endpoint
+                try:
+                    # Get currently loaded model name to pass to unload
+                    model_name = self.config.get("llamacpp_model", "")
+                    if model_name:
+                        ru = requests.post(f"{base}/models/unload", json={"model": model_name}, timeout=30)
+                        if ru.status_code == 200:
+                            return jsonify({"success": True, "unloaded": True})
+                except Exception:
+                    pass
 
-                if r.status_code == 200:
-                    return jsonify({"success": True, "unloaded": True})
+                # Method 2: slots API erase
+                try:
+                    r = requests.post(f"{base}/slots/{slot_id}?action=erase", timeout=30)
+                    if r.status_code == 200:
+                        return jsonify({"success": True, "unloaded": True})
+                except Exception:
+                    pass
 
-                # Some versions use different endpoint
-                r2 = requests.post(f"{base}/slots/{slot_id}", json={"action": "erase"}, timeout=30)
-                if r2.status_code == 200:
-                    return jsonify({"success": True, "unloaded": True})
+                # Method 3: slots API with JSON body
+                try:
+                    r2 = requests.post(f"{base}/slots/{slot_id}", json={"action": "erase"}, timeout=30)
+                    if r2.status_code == 200:
+                        return jsonify({"success": True, "unloaded": True})
+                except Exception:
+                    pass
 
-                return jsonify({"success": False, "error": f"Server returned {r.status_code}"})
+                return jsonify({"success": False, "error": "All unload methods failed"})
             except Exception as e:
                 return jsonify({"success": False, "error": str(e)}), 500
 

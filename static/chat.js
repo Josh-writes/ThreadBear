@@ -72,6 +72,7 @@
     modelHeader: $('headerModelSelect'),
     systemPromptSelect: $('systemPromptSelect'),
     loadUnloadModelBtn: $('loadUnloadModelBtn'),
+    ctxSizeSelect: $('ctxSizeSelect'),
 
     contextSelectionBtn: $('contextSelectionBtn'),
     systemSettingsBtn: $('systemSettingsBtn'),
@@ -2527,6 +2528,7 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
 
     if (!supportsLoadUnload || !E.modelHeader.value) {
       E.loadUnloadModelBtn.style.display = 'none';
+      E.ctxSizeSelect.style.display = 'none';
       return;
     }
 
@@ -2560,11 +2562,14 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
           const loadedModel = status.loaded_models[0];
           const ctxInfo = loadedModel.n_ctx ? ` (${loadedModel.n_ctx} ctx)` : '';
           E.loadUnloadModelBtn.textContent = `Unload${ctxInfo}`;
+          E.ctxSizeSelect.style.display = 'none';
         } else if (status.server_running) {
           E.loadUnloadModelBtn.textContent = 'Load';
+          E.ctxSizeSelect.style.display = '';
         } else {
           E.loadUnloadModelBtn.textContent = 'Server Offline';
           E.loadUnloadModelBtn.disabled = true;
+          E.ctxSizeSelect.style.display = 'none';
         }
       }
     } catch (error) {
@@ -2577,6 +2582,7 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
       }
       // Default to Load state when we can't determine status
       E.loadUnloadModelBtn.textContent = 'Load';
+      E.ctxSizeSelect.style.display = '';
     }
   }
 
@@ -2651,9 +2657,13 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
 
     // Header "Load/Unload" visible for llamacpp
     const supportsLoadUnload = (p) => (p === 'llamacpp');
-    E.loadUnloadModelBtn.style.display = supportsLoadUnload(E.providerHeader.value) ? '' : 'none';
+    const isLlama = supportsLoadUnload(E.providerHeader.value);
+    E.loadUnloadModelBtn.style.display = isLlama ? '' : 'none';
+    E.ctxSizeSelect.style.display = isLlama ? '' : 'none';
     E.providerHeader.addEventListener('change', async () => {
-      E.loadUnloadModelBtn.style.display = supportsLoadUnload(E.providerHeader.value) ? '' : 'none';
+      const show = supportsLoadUnload(E.providerHeader.value);
+      E.loadUnloadModelBtn.style.display = show ? '' : 'none';
+      E.ctxSizeSelect.style.display = show ? '' : 'none';
       await updateLoadUnloadButtonText();
     });
     E.loadUnloadModelBtn.addEventListener('click', async () => {
@@ -2696,10 +2706,11 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
             });
           } else {
             console.log('Making llamacpp load API call...');
+            const nCtx = parseInt(E.ctxSizeSelect.value) || 0;
             response = await fetch('/api/llamacpp/load', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ model: modelName }),
+              body: JSON.stringify({ model: modelName, n_ctx: nCtx }),
               signal: controller.signal
             });
           }
@@ -2714,6 +2725,20 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
 
         json = await response.json();
         console.log('API response:', json);
+
+        // After successful load, save detected context_window to per-model settings
+        if (!isUnload && json.success && json.n_ctx > 0) {
+          try {
+            await fetch(`/api/models/llamacpp/settings/${encodeURIComponent(modelName)}`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ context_window: json.n_ctx })
+            });
+            console.log(`Saved context_window=${json.n_ctx} for ${modelName}`);
+          } catch (e) {
+            console.warn('Failed to save context_window setting:', e);
+          }
+        }
 
         // Wait a moment for the server to update its status, then check
         setTimeout(async () => {

@@ -1979,6 +1979,14 @@
                         <select class="header-select" id="systemPromptSelect" title="System Prompt">
                             <!-- Options will be populated by JavaScript -->
                         </select>
+                        <select class="header-select" id="ctxSizeSelect" style="display: none;" title="Context Size">
+                            <option value="0">ctx: auto</option>
+                            <option value="2048">ctx: 2k</option>
+                            <option value="4096">ctx: 4k</option>
+                            <option value="8192" selected>ctx: 8k</option>
+                            <option value="16384">ctx: 16k</option>
+                            <option value="32768">ctx: 32k</option>
+                        </select>
                         <button class="header-load-btn" id="loadUnloadModelBtn" style="display: none;">Load</button>
                     </div>
                 </div>
