@@ -1,20 +1,19 @@
+# Python
 __pycache__/
 *.pyc
 *.pyo
+
+# Secrets / runtime config
 .env
 config.json
+
+# Runtime data
 chats/
-threadbear_docs.db
-Threadbear_db/
-ThreadBear_Vault/
-.claude/
-*.png
-*.jpg
-*.jpeg
-Notes.txt
-qwen.md
-prompt.md
-PROMPTS_QUICK_REF.md
-README_WHATS_NEW.md
-SYSTEM_PROMPTS_IMPLEMENTATION.md
 documents/
+threadbear_docs.db
+
+# Tool configs
+.claude/
+
+# Non-code workspace (notes, vision docs, old DBs, screenshots)
+_workspace/
