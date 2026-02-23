@@ -138,6 +138,8 @@
     contextWindowInput: $('contextWindowInput'),
     nglInput: $('nglInput'),
     nglGroup: $('nglGroup'),
+    vramRequiredGroup: $('vramRequiredGroup'),
+    vramRequiredInput: $('vramRequiredInput'),
     maxTokensInput: $('maxTokensInput'),
     modelTemperatureRange: $('modelTemperatureRange'),
     modelTemperatureValue: $('modelTemperatureValue'),
@@ -165,6 +167,7 @@
     closeSystemSettingsBtn: $('closeSystemSettingsBtn'),
     lightThemeBtn: $('lightThemeBtn'),
     darkThemeBtn: $('darkThemeBtn'),
+    totalVramInput: $('totalVramInput'),
 
     // System Prompts panel
     promptsSettingsPanel: $('promptsSettingsPanel'),
@@ -218,6 +221,20 @@
     } else {
       E.chatTitle.textContent = state.currentChatFile ? state.currentChatFile.replace(/\.json$/,'') : 'New Chat';
     }
+  }
+
+  function modelMatchesLoaded(selectedModel, loadedModel) {
+    if (!selectedModel || !loadedModel) return false;
+    const byName = loadedModel.name || '';
+    const byPath = loadedModel.path || '';
+    const byBasename = byPath.split('/').pop().split('\\').pop();
+    return selectedModel === byName || selectedModel === byPath || selectedModel === byBasename;
+  }
+
+  function formatVramLabel(vram) {
+    if (typeof vram !== 'number' || !isFinite(vram) || vram <= 0) return '';
+    const pretty = Number.isInteger(vram) ? String(vram) : vram.toFixed(1).replace(/\.0$/, '');
+    return ` (${pretty}GB)`;
   }
 
   function messageNode(msg, index) {
@@ -664,6 +681,9 @@
     if (E.nglGroup) {
       E.nglGroup.style.display = (provider === 'llamacpp') ? '' : 'none';
     }
+    if (E.vramRequiredGroup) {
+      E.vramRequiredGroup.style.display = (provider === 'llamacpp') ? '' : 'none';
+    }
     try {
       const res = await fetch(`/api/models/${provider}/settings/${encodeURIComponent(model)}`);
       const data = await res.json();
@@ -680,6 +700,13 @@
           E.nglInput.value = settings.n_gpu_layers;
         } else {
           E.nglInput.value = '';
+        }
+        if (E.vramRequiredInput) {
+          if (settings.vram_required_gb !== undefined) {
+            E.vramRequiredInput.value = settings.vram_required_gb;
+          } else {
+            E.vramRequiredInput.value = '';
+          }
         }
         if (settings.max_tokens !== undefined) {
           E.maxTokensInput.value = settings.max_tokens;
@@ -1733,6 +1760,16 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
             settings.n_gpu_layers = ngl;
           }
         }
+
+        if (E.vramRequiredInput) {
+          const vramVal = E.vramRequiredInput.value.trim();
+          if (vramVal !== '') {
+            const vram = parseFloat(vramVal);
+            if (!Number.isNaN(vram) && vram >= 0) {
+              settings.vram_required_gb = vram;
+            }
+          }
+        }
         
         // Add optional parameters if they have non-default values
         const topP = parseFloat(E.topPRange.value);
@@ -1846,11 +1883,31 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
     });
     E.modelHeader.addEventListener('change', async () => {
       const m = E.modelHeader.value;
+      const provider = E.providerHeader.value;
       state.currentModel = m;
-      await postJSON('/api/config/update', { provider: E.providerHeader.value, model: m });
+      await postJSON('/api/config/update', { provider, model: m });
+
+      if (provider === 'llamacpp') {
+        try {
+          const statusResp = await fetch('/api/llamacpp/status');
+          const status = await statusResp.json();
+          const loadedModel = (status.loaded_models || [])[0];
+          if (status.success && loadedModel && !modelMatchesLoaded(m, loadedModel)) {
+            E.loadUnloadModelBtn.disabled = true;
+            E.loadUnloadModelBtn.innerHTML = 'Unloading<span class="loading-dots"></span>';
+            await fetch('/api/llamacpp/unload', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ slot_id: 0 })
+            });
+          }
+        } catch (err) {
+          console.warn('Could not auto-unload previous model on selection change:', err);
+        }
+      }
       
       // Update max tokens label for the selected model
-      await updateModelMaxTokensLabel(E.providerHeader.value, m);
+      await updateModelMaxTokensLabel(provider, m);
       
       // Update the load/unload button text when model changes
       await updateLoadUnloadButtonText();
@@ -1963,6 +2020,7 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
             $('sshUserInput').value = data.llamacpp_ssh_user || '';
             $('sshBinaryInput').value = data.llamacpp_server_binary || '';
             $('sshArgsInput').value = data.llamacpp_server_args || '';
+            if (E.totalVramInput) E.totalVramInput.value = data.llamacpp_total_vram_gb || '';
           }
         } catch (e) {
           console.warn('Failed to load SSH config:', e);
@@ -1979,6 +2037,7 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
               llamacpp_ssh_user: $('sshUserInput').value.trim(),
               llamacpp_server_binary: $('sshBinaryInput').value.trim(),
               llamacpp_server_args: $('sshArgsInput').value.trim(),
+              llamacpp_total_vram_gb: parseFloat(E.totalVramInput?.value || '0') || 0,
             };
             const resp = await fetch('/api/llamacpp/ssh-config', {
               method: 'POST',
@@ -2625,11 +2684,6 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
 
     E.loadUnloadModelBtn.style.display = '';
 
-    // Don't update if currently in a loading/unloading state
-    if (E.loadUnloadModelBtn.disabled) {
-      return;
-    }
-
     try {
       if (provider === 'llamacpp') {
         // Check llama.cpp server status via our backend API
@@ -2663,21 +2717,25 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
           return;
         }
 
-        // Re-enable button if it was disabled from a loading state
-        if (E.loadUnloadModelBtn.disabled) {
-          E.loadUnloadModelBtn.disabled = false;
-        }
-
         if (status.success && status.loaded_models && status.loaded_models.length > 0) {
           const loadedModel = status.loaded_models[0];
-          const ctxInfo = loadedModel.n_ctx ? ` (${loadedModel.n_ctx} ctx)` : '';
-          E.loadUnloadModelBtn.textContent = `Unload${ctxInfo}`;
+          if (!modelMatchesLoaded(E.modelHeader.value, loadedModel)) {
+            E.loadUnloadModelBtn.textContent = 'Load';
+            E.loadUnloadModelBtn.disabled = false;
+            E.ctxSizeSelect.style.display = '';
+            return;
+          }
+          const vramInfo = formatVramLabel(Number(loadedModel.vram_required_gb));
+          E.loadUnloadModelBtn.textContent = `Unload${vramInfo}`;
+          E.loadUnloadModelBtn.disabled = false;
           E.ctxSizeSelect.style.display = 'none';
         } else if (status.success && status.server_running) {
           E.loadUnloadModelBtn.textContent = 'Load';
+          E.loadUnloadModelBtn.disabled = false;
           E.ctxSizeSelect.style.display = '';
         } else if (status.ssh_enabled) {
           E.loadUnloadModelBtn.textContent = 'Start Server';
+          E.loadUnloadModelBtn.disabled = false;
           E.ctxSizeSelect.style.display = 'none';
         } else {
           E.loadUnloadModelBtn.textContent = 'Server Offline';
@@ -2832,6 +2890,7 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
         console.error(`Operation timed out after ${timeoutMs/1000} seconds`);
       }, timeoutMs);
 
+      let keepDisabledUntilStatusRefresh = false;
       try {
         let response, json;
 
@@ -2872,7 +2931,12 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
         console.log('API response status:', response.status);
 
         if (!response.ok) {
-          throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+          let apiErr = `HTTP ${response.status}: ${response.statusText}`;
+          try {
+            const errJson = await response.json();
+            if (errJson && errJson.error) apiErr = errJson.error;
+          } catch (_) {}
+          throw new Error(apiErr);
         }
 
         json = await response.json();
@@ -2883,19 +2947,27 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
             // Async load started — let the status poller handle button state
             E.loadUnloadModelBtn.innerHTML = `Loading<span class="loading-dots"></span>`;
             E.loadUnloadModelBtn.disabled = true;
+            keepDisabledUntilStatusRefresh = true;
             // Start polling status to detect when loading completes
             setTimeout(async () => {
               try { await updateLoadUnloadButtonText(); } catch (_) {}
             }, 3000);
-            return; // skip the finally re-enable
+            return;
           } else if (isUnload) {
             // Unload succeeded — set button to Load immediately
             E.loadUnloadModelBtn.textContent = 'Load';
             E.ctxSizeSelect.style.display = '';
           } else {
             // Load succeeded (synchronous, e.g. router mode) — set button to Unload
-            const ctxInfo = json.n_ctx ? ` (${json.n_ctx} ctx)` : '';
-            E.loadUnloadModelBtn.textContent = `Unload${ctxInfo}`;
+            let vramInfo = '';
+            try {
+              const msRes = await fetch(`/api/models/llamacpp/settings/${encodeURIComponent(modelName)}`);
+              const msData = await msRes.json();
+              if (msData.success && msData.settings && msData.settings.vram_required_gb !== undefined) {
+                vramInfo = formatVramLabel(Number(msData.settings.vram_required_gb));
+              }
+            } catch (_) {}
+            E.loadUnloadModelBtn.textContent = `Unload${vramInfo}`;
             E.ctxSizeSelect.style.display = 'none';
 
             // Save detected context_window to per-model settings
@@ -2915,6 +2987,7 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
         } else {
           // API returned success: false
           console.error('Operation failed:', json.error || 'Unknown error');
+          if (json.error) alert(json.error);
           E.loadUnloadModelBtn.textContent = 'Load';
           E.ctxSizeSelect.style.display = '';
         }
@@ -2927,6 +3000,7 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
       } catch (error) {
         clearTimeout(timeoutId);
         console.error(`Error with ${provider} control:`, error);
+        alert(error.message || `Failed to ${isUnload ? 'unload' : 'load'} model`);
 
         if (error.name === 'AbortError') {
           console.error('Operation was aborted due to timeout');
@@ -2938,9 +3012,10 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
           await updateLoadUnloadButtonText();
         }, 2000);
       } finally {
-        // Always re-enable the button
-        E.loadUnloadModelBtn.disabled = false;
-        console.log('Button re-enabled');
+        if (!keepDisabledUntilStatusRefresh) {
+          E.loadUnloadModelBtn.disabled = false;
+          console.log('Button re-enabled');
+        }
       }
     });
     console.timeEnd('TB:init');

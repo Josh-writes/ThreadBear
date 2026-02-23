@@ -88,6 +88,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "llamacpp_ssh_user": "josh",
     "llamacpp_server_binary": "~/src/llama.cpp/build/bin/llama-server",
     "llamacpp_server_args": "-ngl 99 -t 16",
+    "llamacpp_total_vram_gb": 0,
 
     # Misc
     "temp_mode_warning": True,
@@ -229,7 +230,7 @@ class ConfigManager:
         prov = self.config["model_settings"].setdefault(provider, {})
         cur = prov.setdefault(model, {})
         # keep only allowed keys
-        allow = {"max_tokens", "temperature", "top_p", "top_k", "system_prompt", "context_window", "n_gpu_layers"}
+        allow = {"max_tokens", "temperature", "top_p", "top_k", "system_prompt", "context_window", "n_gpu_layers", "vram_required_gb"}
         for k,v in updates.items():
             if k in allow:
                 cur[k] = v
