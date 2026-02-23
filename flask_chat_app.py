@@ -832,15 +832,6 @@ class FlaskChatApp:
                 ssh_on = bool(self.config.get("llamacpp_ssh_enabled", False))
                 loaded = []
 
-                # If a single-model server is being started in the background, report that
-                if self._single_model_loading:
-                    model_name = self.config.get("llamacpp_model", "unknown")
-                    return jsonify({
-                        "success": True, "server_running": True, "loading": True,
-                        "loading_model": model_name,
-                        "loaded_models": [], "slots": [], "ssh_enabled": ssh_on
-                    })
-
                 # Check /v1/models first (works for both router mode and legacy)
                 try:
                     rm = requests.get(f"{base}/v1/models", timeout=5)
@@ -867,6 +858,12 @@ class FlaskChatApp:
                                 })
                 except Exception:
                     pass
+
+                # If a model is reported as loaded, clear transient loading state.
+                # This avoids stale UI "Loading..." state when the background load thread
+                # has not finished yet but llama.cpp is already serving inference.
+                if loaded and self._single_model_loading:
+                    self._single_model_loading = False
 
                 # Try to get n_ctx from /slots for loaded models
                 if loaded:
@@ -910,13 +907,20 @@ class FlaskChatApp:
                     except Exception:
                         return jsonify({"success": False, "server_running": False, "loaded_models": [], "slots": [], "ssh_enabled": ssh_on})
 
-                return jsonify({
+                response = {
                     "success": True,
                     "server_running": True,
                     "loaded_models": loaded,
                     "slots": [],
                     "ssh_enabled": ssh_on
-                })
+                }
+
+                # Surface background loading only when there is not yet a loaded model.
+                if self._single_model_loading and not loaded:
+                    response["loading"] = True
+                    response["loading_model"] = self.config.get("llamacpp_model", "unknown")
+
+                return jsonify(response)
             except requests.exceptions.ConnectionError:
                 return jsonify({"success": False, "server_running": False, "loaded_models": [],
                                 "ssh_enabled": bool(self.config.get("llamacpp_ssh_enabled", False)),
