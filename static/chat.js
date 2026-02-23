@@ -2625,11 +2625,6 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
 
     E.loadUnloadModelBtn.style.display = '';
 
-    // Don't update if currently in a loading/unloading state
-    if (E.loadUnloadModelBtn.disabled) {
-      return;
-    }
-
     try {
       if (provider === 'llamacpp') {
         // Check llama.cpp server status via our backend API
@@ -2663,21 +2658,19 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
           return;
         }
 
-        // Re-enable button if it was disabled from a loading state
-        if (E.loadUnloadModelBtn.disabled) {
-          E.loadUnloadModelBtn.disabled = false;
-        }
-
         if (status.success && status.loaded_models && status.loaded_models.length > 0) {
           const loadedModel = status.loaded_models[0];
           const ctxInfo = loadedModel.n_ctx ? ` (${loadedModel.n_ctx} ctx)` : '';
           E.loadUnloadModelBtn.textContent = `Unload${ctxInfo}`;
+          E.loadUnloadModelBtn.disabled = false;
           E.ctxSizeSelect.style.display = 'none';
         } else if (status.success && status.server_running) {
           E.loadUnloadModelBtn.textContent = 'Load';
+          E.loadUnloadModelBtn.disabled = false;
           E.ctxSizeSelect.style.display = '';
         } else if (status.ssh_enabled) {
           E.loadUnloadModelBtn.textContent = 'Start Server';
+          E.loadUnloadModelBtn.disabled = false;
           E.ctxSizeSelect.style.display = 'none';
         } else {
           E.loadUnloadModelBtn.textContent = 'Server Offline';
@@ -2832,6 +2825,7 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
         console.error(`Operation timed out after ${timeoutMs/1000} seconds`);
       }, timeoutMs);
 
+      let keepDisabledUntilStatusRefresh = false;
       try {
         let response, json;
 
@@ -2883,11 +2877,12 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
             // Async load started — let the status poller handle button state
             E.loadUnloadModelBtn.innerHTML = `Loading<span class="loading-dots"></span>`;
             E.loadUnloadModelBtn.disabled = true;
+            keepDisabledUntilStatusRefresh = true;
             // Start polling status to detect when loading completes
             setTimeout(async () => {
               try { await updateLoadUnloadButtonText(); } catch (_) {}
             }, 3000);
-            return; // skip the finally re-enable
+            return;
           } else if (isUnload) {
             // Unload succeeded — set button to Load immediately
             E.loadUnloadModelBtn.textContent = 'Load';
@@ -2938,9 +2933,10 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
           await updateLoadUnloadButtonText();
         }, 2000);
       } finally {
-        // Always re-enable the button
-        E.loadUnloadModelBtn.disabled = false;
-        console.log('Button re-enabled');
+        if (!keepDisabledUntilStatusRefresh) {
+          E.loadUnloadModelBtn.disabled = false;
+          console.log('Button re-enabled');
+        }
       }
     });
     console.timeEnd('TB:init');
