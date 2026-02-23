@@ -2202,11 +2202,42 @@
                 </div>
             </div>
 
-            <!-- Future sections will go here -->
-            <!-- Performance Section (placeholder) -->
-            <div class="settings-section" style="display: none;">
-                <h4 class="section-title">Performance</h4>
-                <!-- Future settings like max chat history, memory management, etc. -->
+            <!-- SSH Remote Server Management -->
+            <div class="settings-section">
+                <h4 class="section-title">Remote Server (SSH)</h4>
+                <p style="font-size: 12px; color: var(--text-muted); margin-bottom: 12px;">
+                    Manage llama-server on a remote machine via SSH. Requires key-based auth.
+                </p>
+                <div class="setting-group">
+                    <label class="setting-label" style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+                        <input type="checkbox" id="sshEnabledCheck">
+                        Enable remote SSH management
+                    </label>
+                </div>
+                <div id="sshFieldsGroup" style="display: none;">
+                    <div class="setting-group">
+                        <label class="setting-label">SSH Host</label>
+                        <input type="text" class="setting-input" id="sshHostInput" placeholder="192.168.2.115">
+                    </div>
+                    <div class="setting-group">
+                        <label class="setting-label">SSH Port</label>
+                        <input type="number" class="setting-input" id="sshPortInput" placeholder="22" min="1" max="65535">
+                    </div>
+                    <div class="setting-group">
+                        <label class="setting-label">SSH User</label>
+                        <input type="text" class="setting-input" id="sshUserInput" placeholder="josh">
+                    </div>
+                    <div class="setting-group">
+                        <label class="setting-label">Server Binary Path</label>
+                        <input type="text" class="setting-input" id="sshBinaryInput" placeholder="~/src/llama.cpp/build/bin/llama-server">
+                    </div>
+                    <div class="setting-group">
+                        <label class="setting-label">Extra Server Args</label>
+                        <input type="text" class="setting-input" id="sshArgsInput" placeholder="-ngl 99 -t 16">
+                    </div>
+                    <button class="control-btn" id="sshSaveBtn" style="margin-top: 8px; padding: 6px 16px;">Save SSH Settings</button>
+                    <span id="sshSaveStatus" style="margin-left: 8px; font-size: 12px; color: var(--text-muted);"></span>
+                </div>
             </div>
 
             <!-- Privacy Section (placeholder) -->

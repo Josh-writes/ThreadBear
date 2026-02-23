@@ -1909,6 +1909,67 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
       const t = localStorage.getItem('tb.theme');
       if (t) setTheme(t);
     } catch {}
+
+    // --- SSH settings ---
+    const sshEnabled = $('sshEnabledCheck');
+    const sshFields = $('sshFieldsGroup');
+    const sshSaveBtn = $('sshSaveBtn');
+    const sshSaveStatus = $('sshSaveStatus');
+
+    if (sshEnabled && sshFields) {
+      sshEnabled.addEventListener('change', () => {
+        sshFields.style.display = sshEnabled.checked ? '' : 'none';
+      });
+
+      // Load SSH config when Appearance/System settings panel opens
+      E.openAppearanceSettingsBtn.addEventListener('click', async () => {
+        try {
+          const resp = await fetch('/api/llamacpp/ssh-config');
+          const data = await resp.json();
+          if (data.success) {
+            sshEnabled.checked = !!data.llamacpp_ssh_enabled;
+            sshFields.style.display = sshEnabled.checked ? '' : 'none';
+            $('sshHostInput').value = data.llamacpp_ssh_host || '';
+            $('sshPortInput').value = data.llamacpp_ssh_port || 22;
+            $('sshUserInput').value = data.llamacpp_ssh_user || '';
+            $('sshBinaryInput').value = data.llamacpp_server_binary || '';
+            $('sshArgsInput').value = data.llamacpp_server_args || '';
+          }
+        } catch (e) {
+          console.warn('Failed to load SSH config:', e);
+        }
+      });
+
+      if (sshSaveBtn) {
+        sshSaveBtn.addEventListener('click', async () => {
+          try {
+            const payload = {
+              llamacpp_ssh_enabled: sshEnabled.checked,
+              llamacpp_ssh_host: $('sshHostInput').value.trim(),
+              llamacpp_ssh_port: parseInt($('sshPortInput').value) || 22,
+              llamacpp_ssh_user: $('sshUserInput').value.trim(),
+              llamacpp_server_binary: $('sshBinaryInput').value.trim(),
+              llamacpp_server_args: $('sshArgsInput').value.trim(),
+            };
+            const resp = await fetch('/api/llamacpp/ssh-config', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(payload),
+            });
+            const json = await resp.json();
+            if (sshSaveStatus) {
+              sshSaveStatus.textContent = json.success ? 'Saved' : 'Error';
+              setTimeout(() => { sshSaveStatus.textContent = ''; }, 2000);
+            }
+            // Refresh button state since ssh_enabled may have changed
+            await updateLoadUnloadButtonText();
+          } catch (e) {
+            console.error('Failed to save SSH config:', e);
+            if (sshSaveStatus) sshSaveStatus.textContent = 'Error';
+          }
+        });
+      }
+    }
   }
 
   // ====== Context bar bindings ======
@@ -2526,7 +2587,7 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
     const provider = E.providerHeader.value;
     const supportsLoadUnload = (provider === 'llamacpp');
 
-    if (!supportsLoadUnload || !E.modelHeader.value) {
+    if (!supportsLoadUnload) {
       E.loadUnloadModelBtn.style.display = 'none';
       E.ctxSizeSelect.style.display = 'none';
       return;
@@ -2566,6 +2627,9 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
         } else if (status.server_running) {
           E.loadUnloadModelBtn.textContent = 'Load';
           E.ctxSizeSelect.style.display = '';
+        } else if (status.ssh_enabled) {
+          E.loadUnloadModelBtn.textContent = 'Start Server';
+          E.ctxSizeSelect.style.display = 'none';
         } else {
           E.loadUnloadModelBtn.textContent = 'Server Offline';
           E.loadUnloadModelBtn.disabled = true;
@@ -2668,11 +2732,42 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
     });
     E.loadUnloadModelBtn.addEventListener('click', async () => {
       const provider = E.providerHeader.value;
-      if (!supportsLoadUnload(provider) || !E.modelHeader.value) return;
+      if (!supportsLoadUnload(provider)) return;
 
-      // Check current button state to determine action
-      const isUnload = E.loadUnloadModelBtn.textContent.startsWith('Unload');
+      const btnText = E.loadUnloadModelBtn.textContent.trim();
+      const isStartServer = (btnText === 'Start Server');
+      const isUnload = btnText.startsWith('Unload');
       const modelName = E.modelHeader.value;
+
+      // "Start Server" doesn't need a model selected
+      if (!isStartServer && !modelName) return;
+
+      // Handle "Start Server" action
+      if (isStartServer) {
+        E.loadUnloadModelBtn.disabled = true;
+        E.loadUnloadModelBtn.innerHTML = 'Starting<span class="loading-dots"></span>';
+        try {
+          const resp = await fetch('/api/llamacpp/server/start', { method: 'POST' });
+          const json = await resp.json();
+          if (json.success) {
+            // Server started — refresh models and update button
+            try {
+              await fetch('/api/llamacpp/refresh', { method: 'POST' });
+              await refreshModelsHeader('llamacpp', E.modelHeader.value);
+            } catch (_) {}
+            setTimeout(async () => { await updateLoadUnloadButtonText(); }, 500);
+          } else {
+            console.error('Failed to start server:', json.error);
+            E.loadUnloadModelBtn.textContent = 'Start Server';
+          }
+        } catch (err) {
+          console.error('Error starting server:', err);
+          E.loadUnloadModelBtn.textContent = 'Start Server';
+        } finally {
+          E.loadUnloadModelBtn.disabled = false;
+        }
+        return;
+      }
 
       console.log(`Starting ${isUnload ? 'unload' : 'load'} operation for ${provider} model: ${modelName}`);
 

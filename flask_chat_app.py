@@ -4,10 +4,12 @@ Flask-based AI Chat Application (stable routes, binary-safe uploads, llama.cpp l
 from __future__ import annotations
 import os
 import json
+import subprocess
 import threading
 import time
 import re
 import uuid
+from urllib.parse import urlparse
 from datetime import datetime
 from typing import Dict, List
 import requests
@@ -875,25 +877,31 @@ class FlaskChatApp:
 
                 # If we got this far, server is reachable
                 # Final fallback: check /health
+                ssh_on = bool(self.config.get("llamacpp_ssh_enabled", False))
                 if not loaded and not slots_raw:
                     try:
                         rh = requests.get(f"{base}/health", timeout=5)
                         if rh.status_code == 200:
-                            return jsonify({"success": True, "server_running": True, "loaded_models": [], "slots": []})
-                        return jsonify({"success": False, "server_running": False, "loaded_models": [], "slots": []})
+                            return jsonify({"success": True, "server_running": True, "loaded_models": [], "slots": [], "ssh_enabled": ssh_on})
+                        return jsonify({"success": False, "server_running": False, "loaded_models": [], "slots": [], "ssh_enabled": ssh_on})
                     except Exception:
-                        return jsonify({"success": False, "server_running": False, "loaded_models": [], "slots": []})
+                        return jsonify({"success": False, "server_running": False, "loaded_models": [], "slots": [], "ssh_enabled": ssh_on})
 
                 return jsonify({
                     "success": True,
                     "server_running": True,
                     "loaded_models": loaded,
-                    "slots": slots_raw
+                    "slots": slots_raw,
+                    "ssh_enabled": bool(self.config.get("llamacpp_ssh_enabled", False))
                 })
             except requests.exceptions.ConnectionError:
-                return jsonify({"success": False, "server_running": False, "loaded_models": [], "message": "Cannot connect to llama.cpp server"})
+                return jsonify({"success": False, "server_running": False, "loaded_models": [],
+                                "ssh_enabled": bool(self.config.get("llamacpp_ssh_enabled", False)),
+                                "message": "Cannot connect to llama.cpp server"})
             except Exception as e:
-                return jsonify({"success": False, "server_running": False, "loaded_models": [], "message": str(e)})
+                return jsonify({"success": False, "server_running": False, "loaded_models": [],
+                                "ssh_enabled": bool(self.config.get("llamacpp_ssh_enabled", False)),
+                                "message": str(e)})
 
         @app.route('/api/llamacpp/models')
         def llamacpp_models():
@@ -933,8 +941,18 @@ class FlaskChatApp:
                 if not model:
                     return jsonify({"success": False, "error": "No model specified"}), 400
 
-                base = self.config.get("llamacpp_url", "http://127.0.0.1:8080").rstrip("/")
+                base = self.config.get("llamacpp_url", "http://192.168.2.115:8080").rstrip("/")
                 model_dir = self.config.get("llamacpp_model_dir", "/home/josh/models")
+
+                # Auto-start server via SSH if offline and SSH is enabled
+                if self.config.get("llamacpp_ssh_enabled"):
+                    try:
+                        requests.get(f"{base}/health", timeout=3)
+                    except Exception:
+                        # Server is not reachable — try starting it
+                        ok, msg = _ssh_start_server(self)
+                        if not ok:
+                            return jsonify({"success": False, "error": f"Server offline and auto-start failed: {msg}"}), 503
 
                 # Build possible paths to try
                 model_paths = [
@@ -1109,6 +1127,130 @@ class FlaskChatApp:
                 return jsonify({"success": True, "models": stored, "note": "Using cached models"})
             except Exception as e:
                 return jsonify({"success": False, "error": str(e), "models": []}), 500
+
+        # ---- llama.cpp SSH remote management ----
+
+        def _ssh_start_server(self_ref):
+            """Start llama-server on remote machine via SSH. Returns (success, message)."""
+            cfg = self_ref.config
+            if not cfg.get("llamacpp_ssh_enabled"):
+                return False, "SSH management is disabled"
+
+            ssh_host = cfg.get("llamacpp_ssh_host", "192.168.2.115")
+            ssh_port = int(cfg.get("llamacpp_ssh_port", 2222))
+            ssh_user = cfg.get("llamacpp_ssh_user", "josh")
+            binary = cfg.get("llamacpp_server_binary", "~/src/llama.cpp/build/bin/llama-server")
+            extra_args = cfg.get("llamacpp_server_args", "-ngl 99 -t 16")
+            model_dir = cfg.get("llamacpp_model_dir", "/home/josh/models")
+
+            # Derive --host and --port from llamacpp_url
+            parsed = urlparse(cfg.get("llamacpp_url", "http://192.168.2.115:8080"))
+            server_host = parsed.hostname or "0.0.0.0"
+            server_port = parsed.port or 8080
+
+            remote_cmd = (
+                f"nohup {binary} "
+                f"--host {server_host} --port {server_port} "
+                f"--models-dir {model_dir} "
+                f"{extra_args} "
+                f"> /dev/null 2>&1 &"
+            )
+
+            ssh_cmd = [
+                "ssh",
+                "-p", str(ssh_port),
+                "-o", "ConnectTimeout=5",
+                "-o", "StrictHostKeyChecking=accept-new",
+                f"{ssh_user}@{ssh_host}",
+                remote_cmd,
+            ]
+
+            try:
+                subprocess.run(ssh_cmd, timeout=10, capture_output=True, text=True, check=False)
+            except subprocess.TimeoutExpired:
+                return False, "SSH command timed out"
+            except FileNotFoundError:
+                return False, "ssh binary not found"
+            except Exception as e:
+                return False, f"SSH error: {e}"
+
+            # Poll /health until server is ready (up to 15s)
+            base = cfg.get("llamacpp_url", "http://192.168.2.115:8080").rstrip("/")
+            for _ in range(30):
+                time.sleep(0.5)
+                try:
+                    r = requests.get(f"{base}/health", timeout=2)
+                    if r.status_code == 200:
+                        return True, "Server started"
+                except Exception:
+                    pass
+            return False, "Server did not become ready within 15 seconds"
+
+        @app.route('/api/llamacpp/server/start', methods=['POST'])
+        def llamacpp_server_start():
+            """Start llama-server on remote machine via SSH."""
+            ok, msg = _ssh_start_server(self)
+            if ok:
+                return jsonify({"success": True, "started": True, "message": msg})
+            return jsonify({"success": False, "error": msg}), 500
+
+        @app.route('/api/llamacpp/server/stop', methods=['POST'])
+        def llamacpp_server_stop():
+            """Stop llama-server on remote machine via SSH."""
+            cfg = self.config
+            if not cfg.get("llamacpp_ssh_enabled"):
+                return jsonify({"success": False, "error": "SSH management is disabled"}), 400
+
+            ssh_host = cfg.get("llamacpp_ssh_host", "192.168.2.115")
+            ssh_port = int(cfg.get("llamacpp_ssh_port", 2222))
+            ssh_user = cfg.get("llamacpp_ssh_user", "josh")
+
+            ssh_cmd = [
+                "ssh",
+                "-p", str(ssh_port),
+                "-o", "ConnectTimeout=5",
+                f"{ssh_user}@{ssh_host}",
+                "pkill -f llama-server",
+            ]
+
+            try:
+                result = subprocess.run(ssh_cmd, timeout=10, capture_output=True, text=True, check=False)
+                # pkill returns 0 if processes were killed, 1 if none found
+                return jsonify({"success": True, "stopped": True, "returncode": result.returncode})
+            except Exception as e:
+                return jsonify({"success": False, "error": str(e)}), 500
+
+        @app.route('/api/llamacpp/ssh-config', methods=['GET'])
+        def llamacpp_ssh_config_get():
+            """Get SSH management config."""
+            return jsonify({
+                "success": True,
+                "llamacpp_ssh_enabled": bool(self.config.get("llamacpp_ssh_enabled", False)),
+                "llamacpp_ssh_host": self.config.get("llamacpp_ssh_host", ""),
+                "llamacpp_ssh_port": int(self.config.get("llamacpp_ssh_port", 22)),
+                "llamacpp_ssh_user": self.config.get("llamacpp_ssh_user", ""),
+                "llamacpp_server_binary": self.config.get("llamacpp_server_binary", ""),
+                "llamacpp_server_args": self.config.get("llamacpp_server_args", ""),
+            })
+
+        @app.route('/api/llamacpp/ssh-config', methods=['POST'])
+        def llamacpp_ssh_config_set():
+            """Save SSH management config."""
+            data = request.get_json() or {}
+            allowed = {
+                "llamacpp_ssh_enabled", "llamacpp_ssh_host", "llamacpp_ssh_port",
+                "llamacpp_ssh_user", "llamacpp_server_binary", "llamacpp_server_args",
+            }
+            for key in allowed:
+                if key in data:
+                    val = data[key]
+                    if key == "llamacpp_ssh_port":
+                        val = int(val)
+                    elif key == "llamacpp_ssh_enabled":
+                        val = bool(val)
+                    self.config.set(key, val)
+            self.config.save_config()
+            return jsonify({"success": True})
 
         # --- Context: token summary (used by the context bar) ---
         @app.route('/api/context/token-summary')

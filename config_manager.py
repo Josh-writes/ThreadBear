@@ -73,13 +73,21 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "stored_openrouter_models": [],
 
     # llama.cpp remote server
-    "llamacpp_url": "http://127.0.0.1:8080",
+    "llamacpp_url": "http://192.168.2.115:8080",
     "llamacpp_model_dir": "/home/josh/models",
     "llamacpp_model": "model",
     "llamacpp_temperature": 0.7,
     "llamacpp_system_prompt": "",
     "llamacpp_max_tokens": 8192,
     "stored_llamacpp_models": [],
+
+    # llama.cpp SSH remote management
+    "llamacpp_ssh_enabled": True,
+    "llamacpp_ssh_host": "192.168.2.115",
+    "llamacpp_ssh_port": 2222,
+    "llamacpp_ssh_user": "josh",
+    "llamacpp_server_binary": "~/src/llama.cpp/build/bin/llama-server",
+    "llamacpp_server_args": "-ngl 99 -t 16",
 
     # Misc
     "temp_mode_warning": True,
