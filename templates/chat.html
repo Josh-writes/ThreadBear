@@ -1972,6 +1972,7 @@
                             <option value="google">Google</option>
                             <option value="mistral">Mistral</option>
                             <option value="openrouter">OpenRouter</option>
+                            <option value="llamacpp">Llamacpp</option>
                         </select>
                         <select class="header-select" id="headerModelSelect">
                             <option value="">Loading...</option>
@@ -2103,6 +2104,7 @@
                     <option value="google">Google</option>
                     <option value="mistral">Mistral</option>
                     <option value="openrouter">OpenRouter</option>
+                    <option value="llamacpp">Llamacpp</option>
                 </select>
             </div>
 
@@ -2131,6 +2133,12 @@
                             <label class="setting-label">Context Window (total)</label>
                             <input type="number" class="setting-input" id="contextWindowInput" min="0" max="10000000" value="" placeholder="Provider default">
                             <span class="setting-hint" style="font-size: 11px; color: var(--text-secondary); margin-top: 2px; display: block;">Total tokens the model can handle (input + output). Leave blank for provider default.</span>
+                        </div>
+
+                        <div class="setting-group" id="nglGroup" style="display: none;">
+                            <label class="setting-label">GPU Layers (ngl)</label>
+                            <input type="number" class="setting-input" id="nglInput" min="-1" max="999" value="" placeholder="All (default)">
+                            <span class="setting-hint" style="font-size: 11px; color: var(--text-secondary); margin-top: 2px; display: block;">Layers offloaded to GPU. -1 or blank = all. Lower values use more RAM but less VRAM.</span>
                         </div>
 
                         <div class="setting-group">

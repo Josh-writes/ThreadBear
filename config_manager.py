@@ -229,7 +229,7 @@ class ConfigManager:
         prov = self.config["model_settings"].setdefault(provider, {})
         cur = prov.setdefault(model, {})
         # keep only allowed keys
-        allow = {"max_tokens", "temperature", "top_p", "top_k", "system_prompt", "context_window"}
+        allow = {"max_tokens", "temperature", "top_p", "top_k", "system_prompt", "context_window", "n_gpu_layers"}
         for k,v in updates.items():
             if k in allow:
                 cur[k] = v

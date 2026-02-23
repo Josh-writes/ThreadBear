@@ -136,6 +136,8 @@
     newModelInputContainer: $('newModelInputContainer'),
     modelSettingsForm: $('modelSettingsForm'),
     contextWindowInput: $('contextWindowInput'),
+    nglInput: $('nglInput'),
+    nglGroup: $('nglGroup'),
     maxTokensInput: $('maxTokensInput'),
     modelTemperatureRange: $('modelTemperatureRange'),
     modelTemperatureValue: $('modelTemperatureValue'),
@@ -556,7 +558,17 @@
       if (p === state.currentProvider) o.selected = true;
       E.providerHeader.appendChild(o);
     });
-    if (E.providerSelect) E.providerSelect.value = state.currentProvider;
+    // Also rebuild settings panel provider dropdown dynamically
+    if (E.providerSelect) {
+      E.providerSelect.innerHTML = '';
+      state.providers.forEach(p => {
+        const o = el('option');
+        o.value = p;
+        o.textContent = p[0].toUpperCase() + p.slice(1);
+        if (p === state.currentProvider) o.selected = true;
+        E.providerSelect.appendChild(o);
+      });
+    }
 
     // ----- Models -----
     const models = cfg.models || [];
@@ -573,7 +585,6 @@
 
     state.currentModel = chosenModel;
     applyModelsToSelect(E.modelHeader, models, state.currentModel);
-    if (E.providerSelect) E.providerSelect.value = state.currentProvider;
 
     // Use cfg.models directly for BOTH header and settings (no extra fetch)
     function applyModelsToSelect(selectEl, models, currentModel) {
@@ -649,6 +660,10 @@
 }
 
   async function loadModelSettings(provider, model) {
+    // Show/hide nglGroup based on provider
+    if (E.nglGroup) {
+      E.nglGroup.style.display = (provider === 'llamacpp') ? '' : 'none';
+    }
     try {
       const res = await fetch(`/api/models/${provider}/settings/${encodeURIComponent(model)}`);
       const data = await res.json();
@@ -660,6 +675,11 @@
           E.contextWindowInput.value = settings.context_window;
         } else {
           E.contextWindowInput.value = '';
+        }
+        if (settings.n_gpu_layers !== undefined) {
+          E.nglInput.value = settings.n_gpu_layers;
+        } else {
+          E.nglInput.value = '';
         }
         if (settings.max_tokens !== undefined) {
           E.maxTokensInput.value = settings.max_tokens;
@@ -1703,6 +1723,15 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
         const cw = parseInt(E.contextWindowInput.value);
         if (cw > 0) {
           settings.context_window = cw;
+        }
+
+        // GPU layers (llamacpp only, -1 = all, blank = default/all)
+        const nglVal = E.nglInput.value.trim();
+        if (nglVal !== '') {
+          const ngl = parseInt(nglVal);
+          if (ngl >= -1) {
+            settings.n_gpu_layers = ngl;
+          }
         }
         
         // Add optional parameters if they have non-default values
@@ -2802,10 +2831,22 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
           } else {
             console.log('Making llamacpp load API call...');
             const nCtx = parseInt(E.ctxSizeSelect.value) || 0;
+            // Fetch per-model settings to get custom n_gpu_layers
+            const loadPayload = { model: modelName, n_ctx: nCtx };
+            try {
+              const msRes = await fetch(`/api/models/llamacpp/settings/${encodeURIComponent(modelName)}`);
+              const msData = await msRes.json();
+              if (msData.success && msData.settings && msData.settings.n_gpu_layers !== undefined) {
+                loadPayload.n_gpu_layers = msData.settings.n_gpu_layers;
+                console.log(`Using custom ngl=${loadPayload.n_gpu_layers} for ${modelName}`);
+              }
+            } catch (e) {
+              console.warn('Could not fetch model settings for ngl:', e);
+            }
             response = await fetch('/api/llamacpp/load', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ model: modelName, n_ctx: nCtx }),
+              body: JSON.stringify(loadPayload),
               signal: controller.signal
             });
           }
