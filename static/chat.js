@@ -2615,6 +2615,7 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
   async function updateLoadUnloadButtonText() {
     const provider = E.providerHeader.value;
     const supportsLoadUnload = (provider === 'llamacpp');
+    console.log(`[btn-update] provider=${provider}, supported=${supportsLoadUnload}, disabled=${E.loadUnloadModelBtn.disabled}, current=${E.loadUnloadModelBtn.textContent.trim()}`);
 
     if (!supportsLoadUnload) {
       E.loadUnloadModelBtn.style.display = 'none';
@@ -2647,13 +2648,32 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
         }
 
         const status = await response.json();
+        console.log('[status]', JSON.stringify(status));
+
+        // Server is loading a model in the background — show loading state and keep polling
+        if (status.loading) {
+          const modelInfo = status.loading_model ? ` ${status.loading_model}` : '';
+          E.loadUnloadModelBtn.innerHTML = `Loading${modelInfo}<span class="loading-dots"></span>`;
+          E.loadUnloadModelBtn.disabled = true;
+          E.ctxSizeSelect.style.display = 'none';
+          // Keep polling until loading is done
+          setTimeout(async () => {
+            try { await updateLoadUnloadButtonText(); } catch (_) {}
+          }, 3000);
+          return;
+        }
+
+        // Re-enable button if it was disabled from a loading state
+        if (E.loadUnloadModelBtn.disabled) {
+          E.loadUnloadModelBtn.disabled = false;
+        }
 
         if (status.success && status.loaded_models && status.loaded_models.length > 0) {
           const loadedModel = status.loaded_models[0];
           const ctxInfo = loadedModel.n_ctx ? ` (${loadedModel.n_ctx} ctx)` : '';
           E.loadUnloadModelBtn.textContent = `Unload${ctxInfo}`;
           E.ctxSizeSelect.style.display = 'none';
-        } else if (status.server_running) {
+        } else if (status.success && status.server_running) {
           E.loadUnloadModelBtn.textContent = 'Load';
           E.ctxSizeSelect.style.display = '';
         } else if (status.ssh_enabled) {
@@ -2666,16 +2686,12 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
         }
       }
     } catch (error) {
-      if (error.name === 'AbortError') {
-        console.warn(`${provider} status check timed out`);
-      } else if (String(error.message).includes('NetworkError') || String(error.message).includes('fetch')) {
-        console.warn(`Network error connecting to ${provider}:`, error.message);
-      } else {
-        console.error(`Error checking ${provider} model status:`, error);
-      }
-      // Default to Load state when we can't determine status
-      E.loadUnloadModelBtn.textContent = 'Load';
-      E.ctxSizeSelect.style.display = '';
+      console.warn(`[status] Error checking ${provider}:`, error.name, error.message);
+      // On error, don't change button text — keep whatever state it was in
+      // Schedule a retry instead
+      setTimeout(async () => {
+        try { await updateLoadUnloadButtonText(); } catch (_) {}
+      }, 5000);
     }
   }
 
@@ -2779,20 +2795,20 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
           const resp = await fetch('/api/llamacpp/server/start', { method: 'POST' });
           const json = await resp.json();
           if (json.success) {
-            // Server started — refresh models and update button
-            try {
-              await fetch('/api/llamacpp/refresh', { method: 'POST' });
-              await refreshModelsHeader('llamacpp', E.modelHeader.value);
-            } catch (_) {}
-            setTimeout(async () => { await updateLoadUnloadButtonText(); }, 500);
+            // Server starting in background — keep button disabled, poll status
+            E.loadUnloadModelBtn.innerHTML = 'Starting<span class="loading-dots"></span>';
+            // Poll status until server is ready
+            setTimeout(async () => {
+              try { await updateLoadUnloadButtonText(); } catch (_) {}
+            }, 3000);
           } else {
             console.error('Failed to start server:', json.error);
             E.loadUnloadModelBtn.textContent = 'Start Server';
+            E.loadUnloadModelBtn.disabled = false;
           }
         } catch (err) {
           console.error('Error starting server:', err);
           E.loadUnloadModelBtn.textContent = 'Start Server';
-        } finally {
           E.loadUnloadModelBtn.disabled = false;
         }
         return;
@@ -2862,24 +2878,51 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
         json = await response.json();
         console.log('API response:', json);
 
-        // After successful load, save detected context_window to per-model settings
-        if (!isUnload && json.success && json.n_ctx > 0) {
-          try {
-            await fetch(`/api/models/llamacpp/settings/${encodeURIComponent(modelName)}`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ context_window: json.n_ctx })
-            });
-            console.log(`Saved context_window=${json.n_ctx} for ${modelName}`);
-          } catch (e) {
-            console.warn('Failed to save context_window setting:', e);
+        if (json.success) {
+          if (json.loading) {
+            // Async load started — let the status poller handle button state
+            E.loadUnloadModelBtn.innerHTML = `Loading<span class="loading-dots"></span>`;
+            E.loadUnloadModelBtn.disabled = true;
+            // Start polling status to detect when loading completes
+            setTimeout(async () => {
+              try { await updateLoadUnloadButtonText(); } catch (_) {}
+            }, 3000);
+            return; // skip the finally re-enable
+          } else if (isUnload) {
+            // Unload succeeded — set button to Load immediately
+            E.loadUnloadModelBtn.textContent = 'Load';
+            E.ctxSizeSelect.style.display = '';
+          } else {
+            // Load succeeded (synchronous, e.g. router mode) — set button to Unload
+            const ctxInfo = json.n_ctx ? ` (${json.n_ctx} ctx)` : '';
+            E.loadUnloadModelBtn.textContent = `Unload${ctxInfo}`;
+            E.ctxSizeSelect.style.display = 'none';
+
+            // Save detected context_window to per-model settings
+            if (json.n_ctx > 0) {
+              try {
+                await fetch(`/api/models/llamacpp/settings/${encodeURIComponent(modelName)}`, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ context_window: json.n_ctx })
+                });
+                console.log(`Saved context_window=${json.n_ctx} for ${modelName}`);
+              } catch (e) {
+                console.warn('Failed to save context_window setting:', e);
+              }
+            }
           }
+        } else {
+          // API returned success: false
+          console.error('Operation failed:', json.error || 'Unknown error');
+          E.loadUnloadModelBtn.textContent = 'Load';
+          E.ctxSizeSelect.style.display = '';
         }
 
-        // Wait a moment for the server to update its status, then check
+        // Also do a delayed status check to catch any state we missed
         setTimeout(async () => {
           await updateLoadUnloadButtonText();
-        }, 1000);
+        }, 3000);
 
       } catch (error) {
         clearTimeout(timeoutId);
@@ -2889,8 +2932,11 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
           console.error('Operation was aborted due to timeout');
         }
 
-        // Restore button state on error
-        E.loadUnloadModelBtn.textContent = isUnload ? 'Unload' : 'Load';
+        // Restore button to a safe state — use delayed status check to get the real state
+        E.loadUnloadModelBtn.textContent = 'Load';
+        setTimeout(async () => {
+          await updateLoadUnloadButtonText();
+        }, 2000);
       } finally {
         // Always re-enable the button
         E.loadUnloadModelBtn.disabled = false;

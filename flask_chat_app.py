@@ -68,6 +68,7 @@ class FlaskChatApp:
 
         self.pending_messages: Dict[int, Dict[str, str]] = {}
         self._single_model_mode = False  # True when running a dedicated single-model server
+        self._single_model_loading = False  # True while the background thread is starting the server
 
         self.setup_routes()
         self.server = None
@@ -831,6 +832,15 @@ class FlaskChatApp:
                 ssh_on = bool(self.config.get("llamacpp_ssh_enabled", False))
                 loaded = []
 
+                # If a single-model server is being started in the background, report that
+                if self._single_model_loading:
+                    model_name = self.config.get("llamacpp_model", "unknown")
+                    return jsonify({
+                        "success": True, "server_running": True, "loading": True,
+                        "loading_model": model_name,
+                        "loaded_models": [], "slots": [], "ssh_enabled": ssh_on
+                    })
+
                 # Check /v1/models first (works for both router mode and legacy)
                 try:
                     rm = requests.get(f"{base}/v1/models", timeout=5)
@@ -966,41 +976,42 @@ class FlaskChatApp:
 
                 # --- Single-model mode: custom ngl requires a dedicated server ---
                 if n_gpu_layers is not None and self.config.get("llamacpp_ssh_enabled"):
-                    print(f"[load] Custom ngl={n_gpu_layers} for {model} — starting single-model server")
-                    ok, msg = _ssh_start_single_model(self, model, n_gpu_layers, n_ctx)
-                    if not ok:
-                        return jsonify({"success": False, "error": f"Single-model start failed: {msg}"}), 503
+                    print(f"[load] Custom ngl={n_gpu_layers} for {model} — starting single-model server (async)")
 
-                    # Final connectivity check — make sure the server is still alive
-                    # (catches crashes that happen right after health passed)
-                    time.sleep(1)
-                    try:
-                        verify = requests.get(f"{base}/v1/models", timeout=5)
-                        if verify.status_code != 200:
-                            # Try to get the remote log for diagnostics
-                            log_tail = _ssh_get_log_tail(self)
-                            return jsonify({"success": False, "error": f"Server started but not responding. Log: {log_tail}"}), 503
-                    except requests.exceptions.ConnectionError:
-                        log_tail = _ssh_get_log_tail(self)
-                        return jsonify({"success": False, "error": f"Server crashed after starting. Log: {log_tail}"}), 503
-
+                    # Set state immediately so status endpoint knows what's happening
                     self._single_model_mode = True
+                    self._single_model_loading = True
                     self.config.set("llamacpp_model", model)
                     self.config.save_config()
 
-                    load_result = {"success": True, "loaded": True, "model": model, "single_model_mode": True}
+                    # Launch the server in a background thread — don't block the request
+                    def _bg_start():
+                        try:
+                            ok, msg = _ssh_start_single_model(self, model, n_gpu_layers, n_ctx)
+                            if ok:
+                                print(f"[load] Single-model server ready for {model}")
+                                # Auto-detect context size
+                                try:
+                                    detected_ctx = get_llamacpp_context_size(self.config.config)
+                                    if detected_ctx > 0:
+                                        self.config.set_model_settings("llamacpp", model, {"context_window": detected_ctx})
+                                        print(f"[load] Detected n_ctx={detected_ctx}")
+                                except Exception:
+                                    pass
+                            else:
+                                print(f"[load] Single-model server FAILED: {msg}")
+                                self._single_model_mode = False
+                        finally:
+                            self._single_model_loading = False
 
-                    # Auto-detect context size
-                    detected_ctx = 0
-                    try:
-                        detected_ctx = get_llamacpp_context_size(self.config.config)
-                    except Exception:
-                        pass
-                    if detected_ctx > 0:
-                        self.config.set_model_settings("llamacpp", model, {"context_window": detected_ctx})
-                        load_result["n_ctx"] = detected_ctx
+                    threading.Thread(target=_bg_start, daemon=True).start()
 
-                    return jsonify(load_result)
+                    # Return immediately — frontend will poll /api/llamacpp/status
+                    return jsonify({
+                        "success": True, "loading": True, "model": model,
+                        "single_model_mode": True,
+                        "message": "Starting single-model server in background..."
+                    })
 
                 # --- Router mode (default path: no custom ngl) ---
 
@@ -1011,124 +1022,125 @@ class FlaskChatApp:
                         return True, "already running"
                     except Exception:
                         if self.config.get("llamacpp_ssh_enabled"):
-                            # If we were in single-model mode, restart the router
-                            if self._single_model_mode:
+                            ok, msg = _ssh_start_server(self)
+                            if ok:
                                 self._single_model_mode = False
-                            return _ssh_start_server(self)
+                            return ok, msg
                         return False, "Server offline and SSH management is disabled"
 
-                ok, msg = _ensure_server_up()
-                if not ok:
-                    return jsonify({"success": False, "error": f"Server offline: {msg}"}), 503
-
-                # If switching from single-model mode back to router, restart the router
+                # If switching from single-model mode back to router, force restart
                 if self._single_model_mode:
                     print("[load] Switching from single-model mode back to router mode")
-                    self._single_model_mode = False
                     ok, msg = _ssh_start_server(self)
                     if not ok:
                         return jsonify({"success": False, "error": f"Failed to restart router: {msg}"}), 503
-
-                # --- Unload any currently loaded model first to free VRAM ---
-                current_model = self.config.get("llamacpp_model", "")
-                if current_model and current_model != model:
-                    try:
-                        requests.post(f"{base}/models/unload", json={"model": current_model}, timeout=30)
-                        time.sleep(1)  # Wait for VRAM to be released
-                    except Exception:
-                        pass
-
-                # --- Load via router mode API (POST /models/load) ---
-                loaded = False
-                load_result = {}
-                load_error = ""
-
-                try:
-                    r = requests.post(f"{base}/models/load", json={"model": model}, timeout=30)
-                    if r.status_code == 200:
-                        rj = r.json()
-                        if rj.get("success"):
-                            # Router mode accepted the load — now poll until the child process finishes loading
-                            poll_timeout = 120  # seconds
-                            poll_start = time.time()
-                            while time.time() - poll_start < poll_timeout:
-                                time.sleep(2)
-                                try:
-                                    mr = requests.get(f"{base}/v1/models", timeout=5)
-                                    if mr.status_code == 200:
-                                        for m in mr.json().get("data", []):
-                                            if m.get("id") == model:
-                                                st = m.get("status", {}).get("value", "")
-                                                if st == "ready":
-                                                    loaded = True
-                                                    break
-                                                elif st == "loading":
-                                                    continue
-                                                elif st == "unloaded":
-                                                    load_error = "Model failed to load (likely OOM — check /tmp/llama-server.log)"
-                                                    break
-                                                else:
-                                                    continue
-                                    if loaded or load_error:
-                                        break
-                                except Exception:
-                                    pass
-                            if not loaded and not load_error:
-                                load_error = f"Model load timed out after {poll_timeout}s"
-                        else:
-                            load_error = rj.get("error", "Unknown error from /models/load")
-                    else:
-                        load_error = f"Server returned {r.status_code}: {r.text[:200]}"
-                except requests.exceptions.ConnectionError:
-                    load_error = "Server crashed during load"
-                except Exception as e:
-                    load_error = str(e)
-
-                # If router mode failed, try legacy slots API as fallback
-                if not loaded and "crashed" not in load_error:
-                    model_paths = [model, f"{model_dir}/{model}", f"{model_dir.rstrip('/')}/{model}"]
-                    for path in model_paths:
-                        try:
-                            payload = {"filename": path}
-                            if n_ctx > 0:
-                                payload["n_ctx"] = n_ctx
-                            r = requests.post(f"{base}/slots/{slot_id}?action=load", json=payload, timeout=180)
-                            if r.status_code == 200:
-                                loaded = True
-                                load_error = ""
-                                break
-                        except requests.exceptions.ConnectionError:
-                            load_error = "Server crashed during load"
-                            break
-                        except Exception:
-                            continue
-
-                # If server crashed, try restarting via SSH
-                if not loaded and "crashed" in load_error and self.config.get("llamacpp_ssh_enabled"):
-                    print("llama-server appears to have crashed during model load — restarting via SSH...")
-                    time.sleep(1)
-                    ok, msg = _ssh_start_server(self)
+                    self._single_model_mode = False
+                else:
+                    ok, msg = _ensure_server_up()
                     if not ok:
-                        return jsonify({"success": False, "error": f"Server crashed and restart failed: {msg}"}), 503
+                        return jsonify({"success": False, "error": f"Server offline: {msg}"}), 503
 
-                if not loaded:
-                    return jsonify({"success": False, "error": load_error or "Failed to load model"})
-
-                load_result = {"success": True, "loaded": True, "model": model}
+                # --- Router mode load (async) ---
+                self._single_model_loading = True
                 self.config.set("llamacpp_model", model)
                 self.config.save_config()
 
-                # Auto-detect actual n_ctx from server and save to config
-                detected_ctx = 0
-                try:
-                    detected_ctx = get_llamacpp_context_size(self.config.config)
-                except Exception:
-                    pass
-                if detected_ctx > 0:
-                    self.config.set_model_settings("llamacpp", model, {"context_window": detected_ctx})
-                    load_result["n_ctx"] = detected_ctx
+                def _bg_router_load():
+                    try:
+                        # Unload any currently loaded model first to free VRAM
+                        current_model = self.config.get("llamacpp_model", "")
+                        if current_model and current_model != model:
+                            try:
+                                requests.post(f"{base}/models/unload", json={"model": current_model}, timeout=30)
+                                time.sleep(1)
+                            except Exception:
+                                pass
 
-                return jsonify(load_result)
+                        # Load via router mode API (POST /models/load)
+                        loaded = False
+                        load_error = ""
+
+                        try:
+                            r = requests.post(f"{base}/models/load", json={"model": model}, timeout=30)
+                            if r.status_code == 200:
+                                rj = r.json()
+                                if rj.get("success"):
+                                    poll_timeout = 180
+                                    poll_start = time.time()
+                                    while time.time() - poll_start < poll_timeout:
+                                        time.sleep(2)
+                                        try:
+                                            mr = requests.get(f"{base}/v1/models", timeout=5)
+                                            if mr.status_code == 200:
+                                                for m in mr.json().get("data", []):
+                                                    if m.get("id") == model:
+                                                        st = m.get("status", {}).get("value", "")
+                                                        if st == "ready":
+                                                            loaded = True
+                                                            break
+                                                        elif st == "unloaded":
+                                                            load_error = "Model failed to load (likely OOM)"
+                                                            break
+                                            if loaded or load_error:
+                                                break
+                                        except Exception:
+                                            pass
+                                    if not loaded and not load_error:
+                                        load_error = f"Model load timed out after {poll_timeout}s"
+                                else:
+                                    load_error = rj.get("error", "Unknown error")
+                            else:
+                                load_error = f"Server returned {r.status_code}"
+                        except requests.exceptions.ConnectionError:
+                            load_error = "Server crashed during load"
+                        except Exception as e:
+                            load_error = str(e)
+
+                        # Fallback: legacy slots API
+                        if not loaded and "crashed" not in load_error:
+                            model_paths = [model, f"{model_dir}/{model}", f"{model_dir.rstrip('/')}/{model}"]
+                            for path in model_paths:
+                                try:
+                                    payload = {"filename": path}
+                                    if n_ctx > 0:
+                                        payload["n_ctx"] = n_ctx
+                                    r = requests.post(f"{base}/slots/{slot_id}?action=load", json=payload, timeout=180)
+                                    if r.status_code == 200:
+                                        loaded = True
+                                        load_error = ""
+                                        break
+                                except requests.exceptions.ConnectionError:
+                                    load_error = "Server crashed during load"
+                                    break
+                                except Exception:
+                                    continue
+
+                        # If server crashed, restart via SSH
+                        if not loaded and "crashed" in load_error and self.config.get("llamacpp_ssh_enabled"):
+                            print("llama-server crashed during load — restarting via SSH...")
+                            time.sleep(1)
+                            _ssh_start_server(self)
+
+                        if loaded:
+                            print(f"[load] Router mode: {model} loaded successfully")
+                            try:
+                                detected_ctx = get_llamacpp_context_size(self.config.config)
+                                if detected_ctx > 0:
+                                    self.config.set_model_settings("llamacpp", model, {"context_window": detected_ctx})
+                                    print(f"[load] Detected n_ctx={detected_ctx}")
+                            except Exception:
+                                pass
+                        else:
+                            print(f"[load] Router mode FAILED: {load_error}")
+                    finally:
+                        self._single_model_loading = False
+
+                threading.Thread(target=_bg_router_load, daemon=True).start()
+
+                return jsonify({
+                    "success": True, "loading": True, "model": model,
+                    "message": "Loading model in background..."
+                })
             except Exception as e:
                 return jsonify({"success": False, "error": str(e)}), 500
 
@@ -1145,10 +1157,11 @@ class FlaskChatApp:
                 # Single-model mode: kill the dedicated server and restart the router
                 if self._single_model_mode:
                     print("[unload] Single-model mode — killing server and restarting router")
-                    self._single_model_mode = False
                     ok, msg = _ssh_start_server(self)
                     if ok:
+                        self._single_model_mode = False
                         return jsonify({"success": True, "unloaded": True, "router_restarted": True})
+                    # Router restart failed — flag stays True so next attempt knows the state
                     return jsonify({"success": False, "error": f"Router restart failed: {msg}"}), 500
 
                 # Method 1: Router mode /models/unload (newer llama.cpp with --models-dir)
@@ -1255,7 +1268,7 @@ class FlaskChatApp:
             try:
                 subprocess.run(
                     ssh_base + ["pkill -9 -f llama-server"],
-                    timeout=10, capture_output=True, text=True, check=False,
+                    timeout=20, capture_output=True, text=True, check=False,
                 )
                 time.sleep(1)  # Wait for VRAM to be released
             except Exception:
@@ -1273,10 +1286,10 @@ class FlaskChatApp:
             try:
                 subprocess.run(
                     ssh_base + [start_cmd],
-                    timeout=10, capture_output=True, text=True, check=False,
+                    timeout=20, capture_output=True, text=True, check=False,
                 )
             except subprocess.TimeoutExpired:
-                return False, "SSH command timed out"
+                return False, "SSH command timed out (start)"
             except FileNotFoundError:
                 return False, "ssh binary not found"
             except Exception as e:
@@ -1304,7 +1317,7 @@ class FlaskChatApp:
                 result = subprocess.run(
                     ["ssh", "-p", str(ssh_port), "-o", "ConnectTimeout=5",
                      f"{ssh_user}@{ssh_host}", f"tail -{lines} /tmp/llama-server.log"],
-                    timeout=10, capture_output=True, text=True, check=False,
+                    timeout=20, capture_output=True, text=True, check=False,
                 )
                 return result.stdout.strip() or result.stderr.strip() or "(empty log)"
             except Exception as e:
@@ -1353,7 +1366,7 @@ class FlaskChatApp:
                 )
                 result = subprocess.run(
                     ssh_base + [resolve_cmd],
-                    timeout=10, capture_output=True, text=True, check=False,
+                    timeout=20, capture_output=True, text=True, check=False,
                 )
                 resolved = result.stdout.strip()
                 if resolved:
@@ -1368,7 +1381,7 @@ class FlaskChatApp:
             try:
                 subprocess.run(
                     ssh_base + ["pkill -9 -f llama-server"],
-                    timeout=10, capture_output=True, text=True, check=False,
+                    timeout=20, capture_output=True, text=True, check=False,
                 )
                 time.sleep(1)
             except Exception:
@@ -1390,7 +1403,7 @@ class FlaskChatApp:
             try:
                 subprocess.run(
                     ssh_base + [start_cmd],
-                    timeout=10, capture_output=True, text=True, check=False,
+                    timeout=20, capture_output=True, text=True, check=False,
                 )
             except subprocess.TimeoutExpired:
                 return False, "SSH command timed out"
@@ -1456,11 +1469,21 @@ class FlaskChatApp:
 
         @app.route('/api/llamacpp/server/start', methods=['POST'])
         def llamacpp_server_start():
-            """Start llama-server on remote machine via SSH."""
-            ok, msg = _ssh_start_server(self)
-            if ok:
-                return jsonify({"success": True, "started": True, "message": msg})
-            return jsonify({"success": False, "error": msg}), 500
+            """Start llama-server on remote machine via SSH (async)."""
+            self._single_model_loading = True  # Reuse loading flag to show progress
+
+            def _bg_start_server():
+                try:
+                    ok, msg = _ssh_start_server(self)
+                    if ok:
+                        print(f"[server] Router started: {msg}")
+                    else:
+                        print(f"[server] Router start FAILED: {msg}")
+                finally:
+                    self._single_model_loading = False
+
+            threading.Thread(target=_bg_start_server, daemon=True).start()
+            return jsonify({"success": True, "starting": True, "message": "Starting server in background..."})
 
         @app.route('/api/llamacpp/server/stop', methods=['POST'])
         def llamacpp_server_stop():
