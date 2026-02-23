@@ -239,6 +239,10 @@ class FlaskChatApp:
                     ngl = int(data["n_gpu_layers"])
                     if ngl >= -1:  # -1 = all layers (same as 99)
                         out["n_gpu_layers"] = ngl
+                if "vram_required_gb" in data:
+                    vram = float(data["vram_required_gb"])
+                    if vram >= 0:
+                        out["vram_required_gb"] = vram
                 if not out:
                     return jsonify({"success": False, "error": "no valid fields"}), 400
                 self.config.set_model_settings(provider, model, out)
@@ -876,6 +880,13 @@ class FlaskChatApp:
                     except Exception:
                         pass
 
+                # Attach per-model VRAM metadata (for UI labels/guards)
+                for lm in loaded:
+                    ms = self.config.get_model_settings("llamacpp", lm.get("name", ""))
+                    vram = ms.get("vram_required_gb")
+                    if isinstance(vram, (int, float)) and vram > 0:
+                        lm["vram_required_gb"] = float(vram)
+
                 # If nothing from /v1/models, check /health
                 if not loaded:
                     try:
@@ -970,6 +981,22 @@ class FlaskChatApp:
 
                 base = self.config.get("llamacpp_url", "http://192.168.2.115:8080").rstrip("/")
                 model_dir = self.config.get("llamacpp_model_dir", "/home/josh/models")
+
+                # Guard against known VRAM over-commit before attempting load
+                model_settings = self.config.get_model_settings("llamacpp", model)
+                model_vram = model_settings.get("vram_required_gb")
+                total_vram = float(self.config.get("llamacpp_total_vram_gb", 0) or 0)
+                if isinstance(model_vram, (int, float)) and model_vram > 0 and total_vram > 0 and model_vram > total_vram:
+                    return jsonify({
+                        "success": False,
+                        "error": (
+                            f"Model requires ~{float(model_vram):.1f}GB VRAM, but configured total VRAM is "
+                            f"{total_vram:.1f}GB. Lower GPU offload (ngl) to use more system RAM before loading."
+                        ),
+                        "vram_blocked": True,
+                        "required_vram_gb": float(model_vram),
+                        "total_vram_gb": total_vram,
+                    }), 400
 
                 # Check for per-model n_gpu_layers (from request body or saved settings)
                 n_gpu_layers = data.get("n_gpu_layers")
@@ -1526,6 +1553,7 @@ class FlaskChatApp:
                 "llamacpp_ssh_user": self.config.get("llamacpp_ssh_user", ""),
                 "llamacpp_server_binary": self.config.get("llamacpp_server_binary", ""),
                 "llamacpp_server_args": self.config.get("llamacpp_server_args", ""),
+                "llamacpp_total_vram_gb": float(self.config.get("llamacpp_total_vram_gb", 0) or 0),
             })
 
         @app.route('/api/llamacpp/ssh-config', methods=['POST'])
@@ -1534,7 +1562,7 @@ class FlaskChatApp:
             data = request.get_json() or {}
             allowed = {
                 "llamacpp_ssh_enabled", "llamacpp_ssh_host", "llamacpp_ssh_port",
-                "llamacpp_ssh_user", "llamacpp_server_binary", "llamacpp_server_args",
+                "llamacpp_ssh_user", "llamacpp_server_binary", "llamacpp_server_args", "llamacpp_total_vram_gb",
             }
             for key in allowed:
                 if key in data:
@@ -1543,6 +1571,8 @@ class FlaskChatApp:
                         val = int(val)
                     elif key == "llamacpp_ssh_enabled":
                         val = bool(val)
+                    elif key == "llamacpp_total_vram_gb":
+                        val = max(0.0, float(val or 0))
                     self.config.set(key, val)
             self.config.save_config()
             return jsonify({"success": True})
