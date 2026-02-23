@@ -10,7 +10,6 @@ from typing import Dict, Any, List
 # ---------------- Defaults ----------------
 
 DEFAULT_CONTEXT_WINDOWS: Dict[str, int] = {
-    "ollama": 8192,
     "groq": 131072,
     "google": 1048576,
     "mistral": 32768,
@@ -24,13 +23,6 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "google_api_key": "your_google_api_key_here",
     "mistral_api_key": "your_mistral_api_key_here",
     "openrouter_api_key": "your_openrouter_api_key_here",
-
-    # Ollama defaults
-    "ollama_url": "http://127.0.0.1:11434",
-    "ollama_model": "gemma2:2b",
-    "ollama_temperature": 0.7,
-    "ollama_system_prompt": "",
-    "ollama_max_tokens": 8192,
 
     # Groq
     "groq_model": "llama-3.3-70b-versatile",
@@ -75,10 +67,6 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "recent_google_models": [],
     "recent_mistral_models": [],
     "recent_openrouter_models": [],
-    "stored_ollama_models": [
-        "gemma2:2b", "gemma2:9b", "llama3.1:8b", "llama3.2:3b",
-        "mistral:latest", "phi3:3.8b", "qwen2.5:7b"
-    ],
     "stored_groq_models": [],
     "stored_google_models": [],
     "stored_mistral_models": [],
@@ -144,14 +132,10 @@ class ConfigManager:
         self.config.update(updates)
 
     def get_all_providers(self) -> List[str]:
-        return ["ollama", "groq", "google", "mistral", "openrouter", "llamacpp"]
+        return ["groq", "google", "mistral", "openrouter", "llamacpp"]
 
     def get_models_for_provider(self, provider: str) -> List[str]:
         defaults = {
-            "ollama": [
-                "gemma2:2b", "gemma2:9b", "llama3.1:8b", "llama3.2:3b",
-                "mistral:latest", "phi3:3.8b", "qwen2.5:7b"
-            ],
             "groq": [
                 "llama-3.3-70b-versatile", "llama-3.1-8b-instant",
                 "mixtral-8x7b-32768", "gemma2-9b-it"

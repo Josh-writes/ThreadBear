@@ -1,5 +1,5 @@
 """
-Flask-based AI Chat Application (stable routes, binary-safe uploads, Ollama load/unload with polling)
+Flask-based AI Chat Application (stable routes, binary-safe uploads, llama.cpp load/unload)
 """
 from __future__ import annotations
 import os
@@ -11,7 +11,7 @@ import uuid
 from datetime import datetime
 from typing import Dict, List
 import requests
-from api_clients import estimate_tokens, get_available_ollama_models, get_llamacpp_context_size
+from api_clients import estimate_tokens, get_llamacpp_context_size
 from context_documents import context_documents  
 
 from flask import Flask, render_template, request, jsonify, Response, send_from_directory
@@ -28,17 +28,12 @@ except Exception as e:
     WEBVIEW_AVAILABLE = False
     print(f"pywebview unavailable: {e}")
 
-# Global session for Ollama calls
-session = requests.Session()
-session.trust_env = False  # ignore HTTP(S)_PROXY for localhost
-
 # App modules
 from config_manager import ConfigManager
 from chat_manager import ChatManager
 from api_clients import (
-    call_ollama_stream, call_groq_stream, call_google_stream,
+    call_groq_stream, call_google_stream,
     call_mistral_stream, call_openrouter_stream, call_llamacpp_stream,
-    start_ollama_server,
 )
 from context_documents import (
     list_documents, save_document, delete_document, get_document,
@@ -66,7 +61,7 @@ class FlaskChatApp:
         self.cancel_generation = False
         self.temporary_mode = False
         self.incognito_mode = False
-        self.available_providers = ["ollama", "groq", "google", "mistral", "openrouter", "llamacpp"]
+        self.available_providers = ["groq", "google", "mistral", "openrouter", "llamacpp"]
         self.last_renamed_chat = None
 
         self.pending_messages: Dict[int, Dict[str, str]] = {}
@@ -621,7 +616,6 @@ class FlaskChatApp:
                         system_prompt = snap['system_prompt']
 
                     stream_func = {
-                        "ollama": call_ollama_stream,
                         "groq": call_groq_stream,
                         "google": call_google_stream,
                         "mistral": call_mistral_stream,
@@ -787,7 +781,6 @@ class FlaskChatApp:
             )
 
             stream_func = {
-                "ollama": call_ollama_stream,
                 "groq": call_groq_stream,
                 "google": call_google_stream,
                 "mistral": call_mistral_stream,
@@ -814,100 +807,6 @@ class FlaskChatApp:
                 summary += chunk
 
             return jsonify({"success": True, "summary": summary.strip()})
-
-        # ---- Ollama controls ----
-        @app.route('/api/ollama/status')
-        def ollama_status():
-            try:
-                base = self.config.get("ollama_url", "http://127.0.0.1:11434")
-                r = session.get(f"{base}/api/ps", timeout=5)
-                if r.status_code != 200:
-                    return jsonify({"success": False, "server_running": False, "loaded_models": []})
-                data = r.json()
-                loaded = []
-                for m in data.get('models', []):
-                    size_gb = (m.get('size', 0) or 0) / (1024**3)
-                    loaded.append({
-                        'name': m.get('name', 'unknown'),
-                        'size_bytes': m.get('size', 0) or 0,
-                        'size_gb': round(size_gb, 2),
-                        'digest': m.get('digest', ''),
-                        'expires_at': m.get('expires_at', ''),
-                    })
-                return jsonify({"success": True, "server_running": True, "loaded_models": loaded, "total_memory_gb": round(sum(m['size_gb'] for m in loaded), 2)})
-            except Exception as e:
-                return jsonify({"success": False, "server_running": False, "loaded_models": [], "message": str(e)})
-
-        @app.route('/api/ollama/load/<model_name>', methods=['POST'])
-        def ollama_load(model_name):
-            try:
-                base = self.config.get("ollama_url", "http://localhost:11434")
-                # Ask Ollama to keep this model loaded
-                session.post(
-                    f"{base}/api/generate",
-                    json={"model": model_name, "prompt": " ", "keep_alive": -1},
-                    timeout=30
-                )
-                # Query Ollama for loaded models
-                r = session.get(f"{base}/api/ps", timeout=10)
-                if r.status_code == 200:
-                    data = r.json()
-                    size = None
-                    for m in data.get("models", []):
-                        if m.get("model") == model_name:
-                            size = m.get("size")
-                    return {"success": True, "loaded": True, "size": size}
-                return {"success": True, "loaded": True, "size": None}
-            except Exception as e:
-                return {"success": False, "error": str(e)}, 500
-
-        @app.route('/api/ollama/unload/<model_name>', methods=['POST'])
-        def ollama_unload(model_name):
-            try:
-                base = self.config.get("ollama_url", "http://localhost:11434")
-                # Tell Ollama to unload this model
-                session.post(
-                    f"{base}/api/generate",
-                    json={"model": model_name, "prompt": " ", "keep_alive": 0},
-                    timeout=30
-                )
-                # Query Ollama again to verify unload
-                r = session.get(f"{base}/api/ps", timeout=10)
-                if r.status_code == 200:
-                    data = r.json()
-                    still_loaded = any(m.get("model") == model_name for m in data.get("models", []))
-                    return {"success": True, "loaded": still_loaded}
-                return {"success": True, "loaded": False}
-            except Exception as e:
-                return {"success": False, "error": str(e)}, 500
-
-        @app.route('/api/ollama/refresh', methods=['POST'])
-        def ollama_refresh():
-            """
-            Query local Ollama server for installed models and save them into config.json
-            under 'stored_ollama_models'.
-            """
-            try:
-                models = get_available_ollama_models(self.config.config)
-                if not isinstance(models, list):
-                    models = []
-
-                # Persist to config.json
-                self.config.update_stored_models("ollama", models)
-
-                # Reset current model if invalid
-                if self.config.get("provider") == "ollama":
-                    current = self.config.get("ollama_model", "")
-                    if current not in models and models:
-                        self.config.set("ollama_model", models[0])
-
-                return jsonify({"success": True, "models": models})
-            except Exception as e:
-                return jsonify({
-                    "success": False,
-                    "error": f"Failed to refresh Ollama models: {e}",
-                    "models": self.config.get("stored_ollama_models", [])
-                }), 500
 
         # ---- llama.cpp controls ----
         @app.route('/api/llamacpp/status')
@@ -1328,12 +1227,6 @@ class FlaskChatApp:
             self.cancel_generation = True
             return jsonify({"success": True})
 
-        # --- Ollama: start server (best-effort) ---
-        @app.route('/api/ollama/start', methods=['POST'])
-        def ollama_start():
-            ok = start_ollama_server()
-            return jsonify({"success": ok})
-
         # --- System Prompts Management ---
         @app.route('/api/prompts', methods=['GET'])
         def get_prompts():
@@ -1482,13 +1375,7 @@ class FlaskChatApp:
         if custom:
             return custom
 
-        # For Ollama: use stored list only (no network call on startup)
-        if provider == 'ollama':
-            stored = self.config.get("stored_ollama_models", [])
-            # Fallback to defaults known by ConfigManager if stored is empty
-            return stored or self.config.get_models_for_provider(provider)
-
-        # Everyone else: use ConfigManager's provider lists (already cached/stored)
+        # Use ConfigManager's provider lists (already cached/stored)
         return self.config.get_models_for_provider(provider)
 
     # --------------- run ---------------

@@ -6,11 +6,9 @@ import os
 import json
 import time
 import requests
-import subprocess
-import platform
-from typing import List, Dict, Iterator, Union 
+from typing import List, Dict, Iterator, Union
 
-# Local (no proxy) -> use for Ollama localhost calls only
+# Local (no proxy) -> use for llama.cpp localhost calls
 _local_session = requests.Session()
 _local_session.trust_env = False  # bypass proxies only for localhost
 
@@ -19,285 +17,9 @@ _web_session = requests.Session()  # trust_env True by default
 
 
 
-# -------- proxy hygiene --------
-def _no_proxy_session() -> requests.Session:
-    # Use the existing session which already has trust_env = False
-    return _local_session
-
 # -------- utilities --------
 def estimate_tokens(text: str) -> int:
     return len(text) // 4
-
-# --- Ollama ---
-# ===== Ollama client helpers =====
-import subprocess
-import platform
-import time
-import requests
-import json
-from typing import List, Dict, Iterator, Union
-
-def _ollama_base_from(config_or_url: Union[Dict, str, None]) -> str:
-    """
-    Accepts either a config dict with 'ollama_url' or a plain URL string.
-    Falls back to http://localhost:11434 if nothing is provided.
-    """
-    if isinstance(config_or_url, str) and config_or_url.strip():
-        base = config_or_url.strip()
-    elif isinstance(config_or_url, dict):
-        base = (config_or_url.get("ollama_url") or "http://localhost:11434")
-    else:
-        base = "http://localhost:11434"
-    return base.rstrip("/")
-
-def _ollama_is_up(base: str) -> bool:
-    """Check if Ollama server responds on /api/tags."""
-    try:
-        r = _local_session.get(f"{base}/api/tags", timeout=2)
-        return r.status_code == 200
-    except Exception:
-        return False
-
-def start_ollama_server(config_or_url: Union[Dict, str, None] = None) -> bool:
-    """
-    Try to ensure Ollama server is running locally.
-    Returns True if reachable after attempting to start.
-    """
-    base = _ollama_base_from(config_or_url)
-    if _ollama_is_up(base):
-        return True
-
-    try:
-        if platform.system().lower().startswith("win"):
-            # Windows detached
-            creationflags = 0x00000008 | 0x00000200  # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
-            subprocess.Popen(
-                ["ollama", "serve"],
-                creationflags=creationflags,
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-        else:
-            # Linux/macOS detached
-            subprocess.Popen(
-                ["ollama", "serve"],
-                start_new_session=True,
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-    except Exception:
-        # If spawn fails, just continue to poll
-        pass
-
-    # Poll up to 10s for readiness
-    for _ in range(40):
-        if _ollama_is_up(base):
-            return True
-        time.sleep(0.25)
-    return False
-
-def get_available_ollama_models(config_or_url=None):
-    """
-    Query a local Ollama server for installed models.
-    Returns a list of model names (strings). Returns [] on failure.
-    Accepts either a config dict with key 'ollama_url' or a string URL.
-    """
-    # Resolve base URL
-    base = "http://localhost:11434"
-    if isinstance(config_or_url, dict):
-        base = config_or_url.get("ollama_url", base)
-    elif isinstance(config_or_url, str) and config_or_url.strip():
-        base = config_or_url.strip()
-
-    # Build client session (avoid proxy interference with localhost)
-    session = requests.Session()
-    session.trust_env = False  # ignore HTTP(S)_PROXY for localhost calls
-
-    url = f"{base.rstrip('/')}/api/tags"
-    try:
-        resp = session.get(url, timeout=6)
-        resp.raise_for_status()
-        data = resp.json() or {}
-        raw_models = data.get("models", []) or []
-
-        names = []
-        seen = set()
-        for m in raw_models:
-            name = (m.get("name") or m.get("model") or "").strip()
-            if name and name not in seen:
-                seen.add(name)
-                names.append(name)
-        return names
-    except Exception:
-        # Return empty on failure; caller can decide how to handle
-        return []
-
-def call_ollama(messages: List[Dict], config: Dict) -> str:
-    """
-    Call Ollama API synchronously.
-    messages: [{"role": "user"|"assistant"|"system", "content": "..."}]
-    """
-    from config_manager import ConfigManager
-    cfg_manager = ConfigManager()
-    
-    base = _ollama_base_from(config)
-    model_name = config.get("ollama_model", "gemma2:2b")
-    
-    # Get system prompt from config
-    sys_prompt = config.get("ollama_system_prompt", "")
-    
-    # Build messages array with system prompt
-    # Some Ollama models (like Gemma) work better with system as a message
-    api_messages = []
-    if sys_prompt:
-        api_messages.append({"role": "system", "content": sys_prompt})
-    
-    api_messages.extend(messages)
-    
-    data = {
-        "model": model_name,
-        "messages": api_messages,  # Use the enhanced messages array
-        "stream": False,
-        "options": {
-            "temperature": config.get("ollama_temperature", 0.7)
-        }
-    }
-    # Optional sampling params (per-model/per-provider)
-    if "top_p" in config:
-        data["options"]["top_p"] = config["top_p"]
-    if "top_k" in config:
-        # Some providers ignore top_k; harmless to pass if supported.
-        data["options"]["top_k"] = config["top_k"]
-
-    # Respect requested max_tokens if supplied
-    req = (config.get("max_tokens")
-           or config.get("openrouter_max_tokens")
-           or config.get("groq_max_tokens")
-           or config.get("mistral_max_tokens")
-           or config.get("google_max_tokens")
-           or config.get("ollama_max_tokens"))
-    if isinstance(req, int) and req > 0:
-        data["options"]["num_predict"] = min(req, 4096 if "ollama" == "groq" else req)
-
-    # Also include the system field for models that support it
-    if sys_prompt:
-        data["system"] = sys_prompt
-
-    try:
-        r = _local_session.post(f"{base}/api/chat", json=data, timeout=120)
-        if r.status_code == 404:
-            # fallback for older Ollama versions
-            prompt = "\n".join([f"{m['role']}: {m['content']}" for m in messages])
-            gen_data = {"model": data["model"], "prompt": prompt, "stream": False}
-            r = _local_session.post(f"{base}/api/generate", json=gen_data, timeout=120)
-        if r.status_code == 200:
-            result = r.json()
-            if "message" in result:
-                return result["message"].get("content", "")
-            return result.get("response", "")
-        else:
-            return f"Error: {r.status_code} - {r.text}"
-    except Exception as e:
-        return f"Ollama API error: {str(e)}"
-
-def call_ollama_stream(messages: List[Dict], config: Dict) -> Iterator[str]:
-    """
-    Call Ollama API with streaming response.
-    Yields message chunks progressively.
-    """
-    from config_manager import ConfigManager
-    cfg_manager = ConfigManager()
-    
-    base = _ollama_base_from(config)
-    model_name = config.get("ollama_model", "gemma2:2b")
-    
-    # Get system prompt from config
-    sys_prompt = config.get("ollama_system_prompt", "")
-    
-    # DEBUGGING: Log what we're about to send
-    print("\n" + "="*80)
-    print("OLLAMA API CALL DEBUG")
-    print("="*80)
-    print(f"Model: {model_name}")
-    print(f"System Prompt Length: {len(sys_prompt)} characters")
-    if sys_prompt:
-        preview = sys_prompt[:200] + "..." if len(sys_prompt) > 200 else sys_prompt
-        print(f"System Prompt Preview: {preview}")
-    print(f"Number of messages: {len(messages)}")
-    
-    # Build messages array with system prompt
-    # Some Ollama models (like Gemma) work better with system as a message
-    api_messages = []
-    if sys_prompt:
-        api_messages.append({"role": "system", "content": sys_prompt})
-        print("✓ System prompt added as first message")
-    
-    api_messages.extend(messages)
-    
-    data = {
-        "model": model_name,
-        "messages": api_messages,  # Use the enhanced messages array
-        "stream": True,
-        "options": {
-            "temperature": config.get("ollama_temperature", 0.7)
-        }
-    }
-    # Optional sampling params (per-model/per-provider)
-    if "top_p" in config:
-        data["options"]["top_p"] = config["top_p"]
-    if "top_k" in config:
-        # Some providers ignore top_k; harmless to pass if supported.
-        data["options"]["top_k"] = config["top_k"]
-
-    # Respect requested max_tokens if supplied
-    req = (config.get("max_tokens")
-           or config.get("openrouter_max_tokens")
-           or config.get("groq_max_tokens")
-           or config.get("mistral_max_tokens")
-           or config.get("google_max_tokens")
-           or config.get("ollama_max_tokens"))
-    if isinstance(req, int) and req > 0:
-        data["options"]["num_predict"] = min(req, 4096 if "ollama" == "groq" else req)
-
-    # Also include the system field for models that support it
-    if sys_prompt:
-        data["system"] = sys_prompt
-        print("✓ System prompt also included in 'system' field")
-    
-    print(f"\nSending request to: {base}/api/chat")
-    print("="*80 + "\n")
-
-    try:
-        r = _local_session.post(f"{base}/api/chat", json=data, stream=True, timeout=120)
-        if r.status_code == 404:
-            # fallback to generate streaming
-            prompt = "\n".join([f"{m['role']}: {m['content']}" for m in messages])
-            gen_data = {"model": data["model"], "prompt": prompt, "stream": True}
-            r = _local_session.post(f"{base}/api/generate", json=gen_data, stream=True, timeout=120)
-        if r.status_code == 200:
-            for line in r.iter_lines():
-                if not line:
-                    continue
-                try:
-                    chunk = json.loads(line)
-                    if "message" in chunk and "content" in chunk["message"]:
-                        content = chunk["message"]["content"]
-                        if content:
-                            yield content
-                    elif "response" in chunk:
-                        yield chunk["response"]
-                    if chunk.get("done", False):
-                        break
-                except json.JSONDecodeError:
-                    continue
-        else:
-            yield f"data: {json.dumps({'type':'error','content':'Error: ' + str(r.status_code) + ' - ' + str(r.text)})}\n\n"
-            yield f"data: {json.dumps({'type':'complete'})}\n\n"
-    except Exception as e:
-        yield f"data: {json.dumps({'type':'error','content':'Ollama streaming error: ' + str(e)})}\n\n"
-        yield f"data: {json.dumps({'type':'complete'})}\n\n"
 
 
 # --- Groq ---
@@ -340,8 +62,7 @@ def call_groq(messages: List[Dict], config: Dict) -> str:
                or config.get("openrouter_max_tokens")
                or config.get("groq_max_tokens")
                or config.get("mistral_max_tokens")
-               or config.get("google_max_tokens")
-               or config.get("ollama_max_tokens"))
+               or config.get("google_max_tokens"))
         if isinstance(req, int) and req > 0:
             data["max_tokens"] = min(req, 4096 if "groq" == "groq" else req)
         response = _web_session.post(url, headers=headers, json=data, timeout=60)
@@ -399,8 +120,7 @@ def call_groq_stream(messages: List[Dict], config: Dict) -> Iterator[str]:
                or config.get("openrouter_max_tokens")
                or config.get("groq_max_tokens")
                or config.get("mistral_max_tokens")
-               or config.get("google_max_tokens")
-               or config.get("ollama_max_tokens"))
+               or config.get("google_max_tokens"))
         if isinstance(req, int) and req > 0:
             data["max_tokens"] = min(req, 4096 if "groq" == "groq" else req)
         response = _web_session.post(url, headers=headers, json=data, stream=True, timeout=60)
@@ -491,8 +211,7 @@ def call_google(messages: List[Dict], config: Dict) -> str:
                or config.get("openrouter_max_tokens")
                or config.get("groq_max_tokens")
                or config.get("mistral_max_tokens")
-               or config.get("google_max_tokens")
-               or config.get("ollama_max_tokens"))
+               or config.get("google_max_tokens"))
         if isinstance(req, int) and req > 0:
             gen_cfg["maxOutputTokens"] = min(req, 4096 if "google" == "groq" else req)
 
@@ -549,8 +268,7 @@ def call_mistral(messages: List[Dict], config: Dict) -> str:
                or config.get("openrouter_max_tokens")
                or config.get("groq_max_tokens")
                or config.get("mistral_max_tokens")
-               or config.get("google_max_tokens")
-               or config.get("ollama_max_tokens"))
+               or config.get("google_max_tokens"))
         if isinstance(req, int) and req > 0:
             data["max_tokens"] = min(req, 4096 if "mistral" == "groq" else req)
 
@@ -601,8 +319,7 @@ def call_mistral_stream(messages: List[Dict], config: Dict) -> Iterator[str]:
                or config.get("openrouter_max_tokens")
                or config.get("groq_max_tokens")
                or config.get("mistral_max_tokens")
-               or config.get("google_max_tokens")
-               or config.get("ollama_max_tokens"))
+               or config.get("google_max_tokens"))
         if isinstance(req, int) and req > 0:
             data["max_tokens"] = min(req, 4096 if "mistral" == "groq" else req)
 
@@ -899,8 +616,7 @@ def call_openrouter(messages: List[Dict], config: Dict) -> str:
                or config.get("openrouter_max_tokens")
                or config.get("groq_max_tokens")
                or config.get("mistral_max_tokens")
-               or config.get("google_max_tokens")
-               or config.get("ollama_max_tokens"))
+               or config.get("google_max_tokens"))
         if isinstance(req, int) and req > 0:
             data["max_tokens"] = min(req, 4096 if "openrouter" == "groq" else req)
 
@@ -956,8 +672,7 @@ def call_openrouter_stream(messages: List[Dict], config: Dict) -> Iterator[str]:
                or config.get("openrouter_max_tokens")
                or config.get("groq_max_tokens")
                or config.get("mistral_max_tokens")
-               or config.get("google_max_tokens")
-               or config.get("ollama_max_tokens"))
+               or config.get("google_max_tokens"))
         if isinstance(req, int) and req > 0:
             data["max_tokens"] = min(req, 4096 if "openrouter" == "groq" else req)
 

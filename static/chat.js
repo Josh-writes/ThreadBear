@@ -156,8 +156,6 @@
     mainUtilizationFill: $('mainUtilizationFill'),
     mainUtilizationBreakdown: $('mainUtilizationBreakdown'),
     refreshModelsBtn: $('refreshModelsBtn'),
-    startOllamaBtn: $('startOllamaBtn'),
-    ollamaControls: $('ollamaControls'),
 
     // System Settings panel (appearance)
     systemSettingsPanel: $('systemSettingsPanel'),
@@ -545,7 +543,7 @@
   async function loadConfigAndModels() {
     const cfg = await getJSON('/api/config');
     state.config = cfg;
-    state.providers = cfg.providers || ['groq','ollama','google','mistral','openrouter'];
+    state.providers = cfg.providers || ['groq','google','mistral','openrouter'];
     state.currentProvider = cfg.current_provider || 'groq';
 
     // ----- Provider dropdowns -----
@@ -588,31 +586,6 @@
 
     // Temperature
     // Removed: legacy global temperature slider
-
-    // Ollama controls visibility
-    E.ollamaControls.style.display = state.currentProvider === 'ollama' ? '' : 'none';
-
-    // Auto-refresh Ollama models on page load if Ollama is selected
-    if (state.currentProvider === 'ollama') {
-      console.log('Ollama detected on page load - refreshing models...');
-      fetch('/api/ollama/refresh', { method: 'POST' })
-        .then(r => r.json())
-        .then(data => {
-          console.log('Ollama models refreshed:', data.models);
-          // Reload models into the dropdown
-          if (data.success && data.models) {
-            E.modelHeader.innerHTML = '';
-            data.models.forEach(m => {
-              const o = el('option');
-              o.value = m;
-              o.textContent = m;
-              if (m === state.currentModel) o.selected = true;
-              E.modelHeader.appendChild(o);
-            });
-          }
-        })
-        .catch(e => console.warn('Failed to refresh Ollama models on load:', e));
-    }
 
     renderChatTitle();
   }
@@ -1640,17 +1613,6 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
       const p = E.providerSelect.value;
 
       // DO NOT mirror to header - settings panel is independent!
-      // Just update Ollama controls visibility
-      E.ollamaControls.style.display = p === 'ollama' ? '' : 'none';
-
-      // If Ollama, refresh from local server first
-      if (p === 'ollama') {
-        try {
-          await fetch('/api/ollama/refresh', { method: 'POST' });
-        } catch (e) {
-          console.warn('Ollama refresh failed on settings provider switch:', e);
-        }
-      }
 
       // Rebuild settings model list for this provider
       await refreshModelsSettings(p);
@@ -1841,21 +1803,11 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
 
       // Mirror to settings immediately
       E.providerSelect.value = p;
-      E.ollamaControls.style.display = p === 'ollama' ? '' : 'none';
 
       // Persist provider
       await postJSON('/api/config/update', { provider: p });
 
-      // If Ollama, refresh from local server first
-      if (p === 'ollama') {
-        try {
-          await fetch('/api/ollama/refresh', { method: 'POST' });
-        } catch (e) {
-          console.warn('Ollama refresh failed on provider switch:', e);
-        }
-      }
-
-      // Then rebuild header + settings lists from backend
+      // Rebuild header + settings lists from backend
       await refreshModelsHeader(p, null);
       await refreshModelsSettings(p);
 
@@ -1881,56 +1833,15 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
       await postJSON('/api/config/update', { system_prompt: selectedPrompt ? selectedPrompt.body : '' });
     });
 
-    // Ollama helpers (best-effort)
+    // Refresh models button
     E.refreshModelsBtn?.addEventListener('click', async () => {
       const provider = E.providerHeader.value;
       try {
-        if (provider === 'ollama') {
-          // Hit backend to refresh stored_ollama_models from Ollama once, on demand
-          const response = await fetch('/api/ollama/refresh', { method: 'POST' });
-          const data = await response.json();
-          
-          if (data.success && data.models) {
-            // Update the header dropdown directly with the fresh models
-            E.modelHeader.innerHTML = '';
-            data.models.forEach(m => {
-              const o = el('option');
-              o.value = m;
-              o.textContent = m;
-              E.modelHeader.appendChild(o);
-            });
-            
-            // Set current model to first one if none selected
-            if (data.models.length > 0 && !E.modelHeader.value) {
-              E.modelHeader.value = data.models[0];
-            }
-            
-            state.currentModel = E.modelHeader.value;
-            
-            alert(`Refreshed! Found ${data.models.length} Ollama models.`);
-          } else {
-            alert('Refresh returned no models.');
-          }
-        } else {
-          // For non-Ollama providers, use the existing refresh logic
-          await refreshModelsHeader(provider, E.modelHeader.value);
-          alert('Models refreshed.');
-        }
-        
-        // Always refresh the settings panel too
+        await refreshModelsHeader(provider, E.modelHeader.value);
         await refreshModelsSettings(provider);
+        alert('Models refreshed.');
       } catch (e) {
         alert('Failed to refresh models: ' + String(e));
-      }
-    });
-    E.startOllamaBtn?.addEventListener('click', async () => {
-      try {
-        // If you added an endpoint to start, call it; otherwise inform user
-        const r = await fetch('/api/ollama/start', { method: 'POST' });
-        if (!r.ok) throw new Error();
-        alert('Tried to start Ollama.');
-      } catch {
-        alert('Start Ollama manually (no endpoint available).');
       }
     });
 
@@ -2612,7 +2523,7 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
   // ADD this full function (place it near other helpers)
   async function updateLoadUnloadButtonText() {
     const provider = E.providerHeader.value;
-    const supportsLoadUnload = (provider === 'ollama' || provider === 'llamacpp');
+    const supportsLoadUnload = (provider === 'llamacpp');
 
     if (!supportsLoadUnload || !E.modelHeader.value) {
       E.loadUnloadModelBtn.style.display = 'none';
@@ -2627,45 +2538,7 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
     }
 
     try {
-      if (provider === 'ollama') {
-        // Check if the model is currently loaded by querying Ollama directly
-        const base = state.config?.ollama_url || "http://localhost:11434";
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 8000); // 8s timeout
-
-        const response = await fetch(`${base}/api/ps`, {
-          signal: controller.signal,
-          headers: { 'Content-Type': 'application/json' }
-        });
-
-        clearTimeout(timeoutId);
-
-        if (!response.ok) {
-          throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-        }
-
-        const status = await response.json();
-
-        if (status && status.models) {
-          const model = E.modelHeader.value;
-          const loadedModel = status.models.find(m => m.model === model || m.name === model);
-
-          if (loadedModel && loadedModel.size) {
-            // Format size
-            const sizeBytes = loadedModel.size;
-            let sizeText;
-            if (sizeBytes >= 1e9) sizeText = `${(sizeBytes / 1e9).toFixed(1)} GB`;
-            else if (sizeBytes >= 1e6) sizeText = `${(sizeBytes / 1e6).toFixed(0)} MB`;
-            else sizeText = `${(sizeBytes / 1e3).toFixed(0)} KB`;
-
-            E.loadUnloadModelBtn.textContent = `Unload (${sizeText})`;
-          } else {
-            E.loadUnloadModelBtn.textContent = 'Load';
-          }
-        } else {
-          E.loadUnloadModelBtn.textContent = 'Load';
-        }
-      } else if (provider === 'llamacpp') {
+      if (provider === 'llamacpp') {
         // Check llama.cpp server status via our backend API
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), 8000);
@@ -2759,19 +2632,8 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
       await updateContextTokenSummary();
     }
 
-    // Handle Ollama/llamacpp refresh asynchronously in background
-    if (state.currentProvider === 'ollama') {
-      (async () => {
-        try {
-          await fetch('/api/ollama/refresh', { method: 'POST' });
-          await refreshModelsHeader('ollama', E.modelHeader.value);
-          await refreshModelsSettings('ollama');
-          await updateLoadUnloadButtonText();
-        } catch (e) {
-          console.warn('Skipping initial Ollama refresh:', e);
-        }
-      })();
-    } else if (state.currentProvider === 'llamacpp') {
+    // Handle llamacpp refresh asynchronously in background
+    if (state.currentProvider === 'llamacpp') {
       (async () => {
         try {
           await fetch('/api/llamacpp/refresh', { method: 'POST' });
@@ -2787,8 +2649,8 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
     // Sidebar buttons
     E.newChatBtn.addEventListener('click', newChat);
 
-    // Header "Load/Unload" visible for Ollama and llamacpp
-    const supportsLoadUnload = (p) => (p === 'ollama' || p === 'llamacpp');
+    // Header "Load/Unload" visible for llamacpp
+    const supportsLoadUnload = (p) => (p === 'llamacpp');
     E.loadUnloadModelBtn.style.display = supportsLoadUnload(E.providerHeader.value) ? '' : 'none';
     E.providerHeader.addEventListener('change', async () => {
       E.loadUnloadModelBtn.style.display = supportsLoadUnload(E.providerHeader.value) ? '' : 'none';
@@ -2823,21 +2685,7 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
       try {
         let response, json;
 
-        if (provider === 'ollama') {
-          if (isUnload) {
-            console.log('Making Ollama unload API call...');
-            response = await fetch(`/api/ollama/unload/${encodeURIComponent(modelName)}`, {
-              method: 'POST',
-              signal: controller.signal
-            });
-          } else {
-            console.log('Making Ollama load API call...');
-            response = await fetch(`/api/ollama/load/${encodeURIComponent(modelName)}`, {
-              method: 'POST',
-              signal: controller.signal
-            });
-          }
-        } else if (provider === 'llamacpp') {
+        if (provider === 'llamacpp') {
           if (isUnload) {
             console.log('Making llamacpp unload API call...');
             response = await fetch('/api/llamacpp/unload', {
