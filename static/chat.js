@@ -2719,6 +2719,7 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
 
         if (status.success && status.loaded_models && status.loaded_models.length > 0) {
           const loadedModel = status.loaded_models[0];
+<<<<<<< codex/investigate-load/unload-button-functionality-l0sq45
           if (!modelMatchesLoaded(E.modelHeader.value, loadedModel)) {
             E.loadUnloadModelBtn.textContent = 'Load';
             E.loadUnloadModelBtn.disabled = false;
@@ -2727,6 +2728,10 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
           }
           const vramInfo = formatVramLabel(Number(loadedModel.vram_required_gb));
           E.loadUnloadModelBtn.textContent = `Unload${vramInfo}`;
+=======
+          const ctxInfo = loadedModel.n_ctx ? ` (${loadedModel.n_ctx} ctx)` : '';
+          E.loadUnloadModelBtn.textContent = `Unload${ctxInfo}`;
+>>>>>>> master
           E.loadUnloadModelBtn.disabled = false;
           E.ctxSizeSelect.style.display = 'none';
         } else if (status.success && status.server_running) {
