@@ -320,6 +320,43 @@ class FlaskChatApp:
             except Exception as e:
                 return jsonify({"success": False, "error": str(e)}), 500
 
+        @app.route('/api/openrouter/models/toggle', methods=['POST'])
+        def toggle_openrouter_model():
+            """Add or remove a model from stored_openrouter_models (used by browse panel)."""
+            data = request.get_json() or {}
+            model = (data.get("model") or "").strip()
+            checked = data.get("checked", True)
+            if not model:
+                return jsonify({"success": False, "error": "missing model"}), 400
+            key = "stored_openrouter_models"
+            lst = list(self.config.get(key, []))
+            # Also pull in custom list so we don't lose those
+            custom = list(self.config.get("custom_openrouter_models", []))
+            # Merge: stored is the master list for browse panel
+            # Seed stored from current models if empty, then clear custom so stored takes priority
+            if not lst:
+                lst = list(self.get_provider_models("openrouter"))
+            if custom:
+                # Migrate custom into stored and clear custom so stored is canonical
+                for c in custom:
+                    if c not in lst:
+                        lst.append(c)
+                self.config.set("custom_openrouter_models", [])
+                custom = []
+            if checked:
+                if model not in lst:
+                    lst.append(model)
+            else:
+                if model in lst:
+                    lst.remove(model)
+                # Also remove from custom if present
+                if model in custom:
+                    custom.remove(model)
+                    self.config.set("custom_openrouter_models", custom)
+            self.config.set(key, lst)
+            self.config.save_config()
+            return jsonify({"success": True, "models": lst})
+
         @app.route('/api/openrouter/catalog')
         def get_openrouter_catalog():
             return jsonify(self.config.get("openrouter_catalog", []))

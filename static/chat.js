@@ -1372,7 +1372,17 @@ async function loadPrompts() {
   async function cancelGeneration() {
     if (!state.streaming) return;
     await fetch('/api/chat/cancel', { method: 'POST' });
-    // stream closes on next tick
+    // Force-close the EventSource and reset UI in case the server
+    // never sends a complete/error event back
+    if (state.streamSource) {
+      try { state.streamSource.close(); } catch {}
+      state.streamSource = null;
+    }
+    state.streaming = false;
+    state.currentStreamingBubble = null;
+    hide(E.cancelBtn);
+    show(E.sendBtn);
+    renderMessages();
   }
 
   async function summarizeMessage(index) {
@@ -1739,12 +1749,11 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
         cb.type = 'checkbox';
         cb.checked = selected.has(m.id);
         cb.addEventListener('change', async () => {
-          if (cb.checked) {
-            await postJSON(`/api/models/openrouter/add`, { model: m.id });
-          } else {
-            await fetch(`/api/models/openrouter/delete/${encodeURIComponent(m.id)}`, { method: 'DELETE' });
+          await postJSON('/api/openrouter/models/toggle', { model: m.id, checked: cb.checked });
+          // Always refresh the header dropdown if currently on openrouter
+          if (state.currentProvider === 'openrouter') {
+            await refreshModelsHeader('openrouter', state.currentModel);
           }
-          await refreshModelsHeader(state.currentProvider, state.currentModel);
           updateBrowseSelectedCount();
         });
 

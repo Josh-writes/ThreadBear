@@ -710,9 +710,9 @@ def call_openrouter_stream(messages: List[Dict], config: Dict) -> Iterator[str]:
             data["max_tokens"] = min(req, 4096 if "openrouter" == "groq" else req)
 
         response = _web_session.post("https://openrouter.ai/api/v1/chat/completions",
-                                 headers=headers, json=data, stream=True, timeout=60)
+                                 headers=headers, json=data, stream=True, timeout=(15, 120))
         if response.status_code == 200:
-            for line in response.iter_lines():
+            for line in response.iter_lines(decode_unicode=False):
                 if line:
                     line = line.decode('utf-8')
                     if line.startswith('data: '):
