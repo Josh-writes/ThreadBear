@@ -1445,7 +1445,7 @@ class FlaskChatApp:
                 "-o", "StrictHostKeyChecking=accept-new",
                 f"{ssh_user}@{ssh_host}",
             ]
-<<<<<<< codex/fix-model-search-to-display-all-models-rxkxgj
+
             # List ALL top-level directories and top-level .gguf files in model_dir.
             # This supports both folder-based model formats and single .gguf files.
             q_model_dir = shlex.quote(model_dir)
@@ -1463,8 +1463,7 @@ class FlaskChatApp:
                 f"    size=$(wc -c < \"$entry\" 2>/dev/null); "
                 f"    [ -n \"$size\" ] || size=0; "
                 f"    printf '%s\\t%s\\tfile\\n' \"$name\" \"$size\"; "
-                f"  fi; "
-=======
+                f"  fi; " )
 
             # List ALL top-level directories and top-level .gguf files in model_dir.
             # Some model formats are stored as folders (e.g. safetensors) with no top-level .gguf.
@@ -1478,7 +1477,7 @@ class FlaskChatApp:
                 f"done; "
                 f"for f in *.gguf; do "
                 f"  [ -f \"$f\" ] && stat --printf='%n\\t%s\\tfile\\n' \"$f\" 2>/dev/null; "
->>>>>>> local_model_catalog
+
                 f"done"
             )
 
