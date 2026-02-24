@@ -8,6 +8,7 @@ import subprocess
 import threading
 import time
 import re
+import shlex
 import uuid
 from urllib.parse import urlparse
 from datetime import datetime
@@ -322,36 +323,42 @@ class FlaskChatApp:
 
         @app.route('/api/browse/<provider>/toggle', methods=['POST'])
         def toggle_browse_model(provider):
-            """Add or remove a model from stored_{provider}_models (used by browse panel)."""
+            """Add/remove model selection and keep provider dropdown synced to browse checkboxes."""
             BROWSEABLE = ("openrouter", "groq", "google", "mistral", "llamacpp")
             if provider not in BROWSEABLE:
                 return jsonify({"success": False, "error": f"Provider '{provider}' not browseable"}), 400
+
             data = request.get_json() or {}
             model = (data.get("model") or "").strip()
-            checked = data.get("checked", True)
+            checked = bool(data.get("checked", True))
             if not model:
                 return jsonify({"success": False, "error": "missing model"}), 400
-            key = f"stored_{provider}_models"
-            lst = list(self.config.get(key, []))
-            custom = list(self.config.get(f"custom_{provider}_models", []))
+
+            stored_key = f"stored_{provider}_models"
+            custom_key = f"custom_{provider}_models"
+
+            # Start from current selected set, preferring stored -> custom -> current provider list.
+            lst = list(self.config.get(stored_key, []) or [])
+            if not lst:
+                lst = list(self.config.get(custom_key, []) or [])
             if not lst:
                 lst = list(self.get_provider_models(provider))
-            if custom:
-                for c in custom:
-                    if c not in lst:
-                        lst.append(c)
-                self.config.set(f"custom_{provider}_models", [])
-                custom = []
+
             if checked:
                 if model not in lst:
                     lst.append(model)
             else:
-                if model in lst:
-                    lst.remove(model)
-                if model in custom:
-                    custom.remove(model)
-                    self.config.set(f"custom_{provider}_models", custom)
-            self.config.set(key, lst)
+                lst = [m for m in lst if m != model]
+
+            # Keep both stored and custom lists aligned so /api/models reflects browse checks immediately.
+            self.config.set(stored_key, lst)
+            self.config.set(custom_key, list(lst))
+
+            # If active model was unchecked, select the first remaining model (or blank).
+            current = self.config.get(f"{provider}_model", "")
+            if current not in lst:
+                self.config.set(f"{provider}_model", lst[0] if lst else "")
+
             self.config.save_config()
             return jsonify({"success": True, "models": lst})
 
@@ -1438,6 +1445,26 @@ class FlaskChatApp:
                 "-o", "StrictHostKeyChecking=accept-new",
                 f"{ssh_user}@{ssh_host}",
             ]
+<<<<<<< codex/fix-model-search-to-display-all-models-rxkxgj
+            # List ALL top-level directories and top-level .gguf files in model_dir.
+            # This supports both folder-based model formats and single .gguf files.
+            q_model_dir = shlex.quote(model_dir)
+            scan_cmd = (
+                f"cd {q_model_dir} 2>/dev/null || exit 1; "
+                f"find . -mindepth 1 -maxdepth 1 \\( "
+                f" -type d -o -type f -name '*.gguf' \\) | while IFS= read -r entry; do "
+                f"  name=${{entry#./}}; "
+                f"  if [ -d \"$entry\" ]; then "
+                f"    size=$(du -sb \"$entry\" 2>/dev/null | cut -f1); "
+                f"    [ -n \"$size\" ] || size=$(du -sk \"$entry\" 2>/dev/null | awk '{{print $1 * 1024}}'); "
+                f"    [ -n \"$size\" ] || size=0; "
+                f"    printf '%s\\t%s\\tdir\\n' \"$name\" \"$size\"; "
+                f"  elif [ -f \"$entry\" ]; then "
+                f"    size=$(wc -c < \"$entry\" 2>/dev/null); "
+                f"    [ -n \"$size\" ] || size=0; "
+                f"    printf '%s\\t%s\\tfile\\n' \"$name\" \"$size\"; "
+                f"  fi; "
+=======
 
             # List ALL top-level directories and top-level .gguf files in model_dir.
             # Some model formats are stored as folders (e.g. safetensors) with no top-level .gguf.
@@ -1451,13 +1478,14 @@ class FlaskChatApp:
                 f"done; "
                 f"for f in *.gguf; do "
                 f"  [ -f \"$f\" ] && stat --printf='%n\\t%s\\tfile\\n' \"$f\" 2>/dev/null; "
+>>>>>>> local_model_catalog
                 f"done"
             )
 
             try:
                 result = subprocess.run(
                     ssh_base + [scan_cmd],
-                    timeout=20, capture_output=True, text=True, check=False,
+                    timeout=45, capture_output=True, text=True, check=False,
                 )
                 models = []
                 for line in result.stdout.strip().splitlines():
