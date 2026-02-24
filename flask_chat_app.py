@@ -320,6 +320,20 @@ class FlaskChatApp:
             except Exception as e:
                 return jsonify({"success": False, "error": str(e)}), 500
 
+        @app.route('/api/openrouter/catalog')
+        def get_openrouter_catalog():
+            return jsonify(self.config.get("openrouter_catalog", []))
+
+        @app.route('/api/openrouter/refresh', methods=['POST'])
+        def refresh_openrouter_catalog():
+            from api_clients import fetch_openrouter_catalog
+            catalog = fetch_openrouter_catalog()
+            if not catalog:
+                return jsonify({"success": False, "error": "Failed to fetch catalog from OpenRouter"}), 502
+            self.config.set("openrouter_catalog", catalog)
+            self.config.save_config()
+            return jsonify({"success": True, "count": len(catalog)})
+
         @app.route('/api/chat/history')
         def get_chat_history():
             chats = self.chat_manager.get_chat_list()

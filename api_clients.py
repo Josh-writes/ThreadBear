@@ -578,6 +578,39 @@ def call_llamacpp_stream(messages: List[Dict], config: Dict) -> Iterator[str]:
 
 
 # --- OpenRouter ---
+def fetch_openrouter_catalog() -> List[Dict]:
+    """Fetch the full model catalog from OpenRouter (no auth needed)."""
+    try:
+        resp = _web_session.get("https://openrouter.ai/api/v1/models", timeout=30)
+        resp.raise_for_status()
+        data = resp.json().get("data", [])
+        catalog = []
+        for m in data:
+            pricing = m.get("pricing", {})
+            prompt_price = str(pricing.get("prompt", "0"))
+            completion_price = str(pricing.get("completion", "0"))
+            try:
+                p_val = float(prompt_price)
+            except (ValueError, TypeError):
+                p_val = 0
+            try:
+                c_val = float(completion_price)
+            except (ValueError, TypeError):
+                c_val = 0
+            catalog.append({
+                "id": m.get("id", ""),
+                "name": m.get("name", m.get("id", "")),
+                "context_length": m.get("context_length", 0),
+                "prompt_price": prompt_price,
+                "completion_price": completion_price,
+                "is_free": p_val == 0 and c_val == 0,
+            })
+        return catalog
+    except Exception as e:
+        print(f"Failed to fetch OpenRouter catalog: {e}")
+        return []
+
+
 def call_openrouter(messages: List[Dict], config: Dict) -> str:
     try:
         from config_manager import ConfigManager

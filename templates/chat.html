@@ -1693,6 +1693,54 @@
             border-radius: 3px;
         }
 
+        /* OpenRouter Browse Panel */
+        .model-browse-list {
+            max-height: calc(100vh - 320px);
+            overflow-y: auto;
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+        }
+        .model-browse-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 10px;
+            border-bottom: 1px solid var(--border-color);
+            font-size: 13px;
+            cursor: pointer;
+        }
+        .model-browse-item:last-child { border-bottom: none; }
+        .model-browse-item:hover { background: var(--hover-bg); }
+        .model-browse-item input[type="checkbox"] { flex-shrink: 0; cursor: pointer; }
+        .model-browse-info { flex: 1; min-width: 0; }
+        .model-browse-id {
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            color: var(--text-primary);
+            font-weight: 500;
+        }
+        .model-browse-name {
+            font-size: 11px;
+            color: var(--text-secondary);
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .model-badge {
+            flex-shrink: 0;
+            font-size: 11px;
+            padding: 2px 6px;
+            border-radius: 10px;
+            background: var(--hover-bg);
+            color: var(--text-secondary);
+            white-space: nowrap;
+        }
+        .model-badge.free {
+            background: #d4edda;
+            color: #155724;
+        }
+
         .chat-history::-webkit-scrollbar-thumb {
             background: #4d4d4f;
             border-radius: 3px;
@@ -1928,6 +1976,10 @@
         [data-theme="dark"] .settings-btn:hover {
             background: #21262d;
         }
+        [data-theme="dark"] .model-badge.free {
+            background: #1a3a2a;
+            color: #4ade80;
+        }
         
         /* CSS from work doc section 3 */
         .doc-chip { display:inline-block; margin:2px 6px 0 0; padding:4px 8px; border:1px solid #d1d5db; border-radius:999px; font-size:12px; }
@@ -1981,6 +2033,9 @@
                         </button>
                         <button class="settings-menu-item" id="openAppearanceSettingsBtn">
                             🎨 Appearance
+                        </button>
+                        <button class="settings-menu-item" id="openBrowseModelsBtn">
+                            🔍 Browse OpenRouter Models
                         </button>
                     </div>
                 </div>
@@ -2335,6 +2390,34 @@
                     <button class="control-btn" id="cancelPromptBtn">Cancel</button>
                     <button class="control-btn danger" id="deletePromptBtn" style="margin-left: auto;">Delete</button>
                 </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- OpenRouter Browse Panel -->
+    <div class="settings-panel" id="openrouterBrowsePanel">
+        <div class="settings-header">
+            <h3>OpenRouter Models</h3>
+            <button class="control-btn" id="closeBrowseModelsBtn">✕</button>
+        </div>
+        <div class="settings-content">
+            <input type="text" class="setting-input" id="browseModelSearch" placeholder="Search models..." style="margin-bottom: 10px;">
+            <div style="display: flex; gap: 12px; align-items: center; margin-bottom: 10px; flex-wrap: wrap;">
+                <label style="display: flex; align-items: center; gap: 4px; font-size: 13px; color: var(--text-secondary); cursor: pointer;">
+                    <input type="checkbox" id="browseFreeOnly"> Free only
+                </label>
+                <select class="setting-input" id="browseSortSelect" style="width: auto; flex: 0 0 auto; padding: 4px 8px; font-size: 13px;">
+                    <option value="name">Sort: Name</option>
+                    <option value="context">Sort: Context</option>
+                    <option value="price">Sort: Price</option>
+                </select>
+            </div>
+            <div class="model-browse-list" id="modelBrowseList">
+                <!-- Populated by JS -->
+            </div>
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border-color);">
+                <span id="browseSelectedCount" style="font-size: 13px; color: var(--text-secondary);">0 models selected</span>
+                <button class="control-btn" id="refreshCatalogBtn" style="padding: 6px 14px;">Refresh Catalog</button>
             </div>
         </div>
     </div>

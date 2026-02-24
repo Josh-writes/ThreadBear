@@ -181,6 +181,17 @@
     cancelPromptBtn: $('cancelPromptBtn'),
     deletePromptBtn: $('deletePromptBtn'),
 
+    // OpenRouter Browse panel
+    openBrowseModelsBtn: $('openBrowseModelsBtn'),
+    openrouterBrowsePanel: $('openrouterBrowsePanel'),
+    closeBrowseModelsBtn: $('closeBrowseModelsBtn'),
+    browseModelSearch: $('browseModelSearch'),
+    browseFreeOnly: $('browseFreeOnly'),
+    browseSortSelect: $('browseSortSelect'),
+    modelBrowseList: $('modelBrowseList'),
+    browseSelectedCount: $('browseSelectedCount'),
+    refreshCatalogBtn: $('refreshCatalogBtn'),
+
     // Context menus
     chatContextMenu: $('contextMenu'),
     menuLoadChat: $('loadChatMenuItem'),
@@ -1654,6 +1665,164 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
     });
 
     E.closeSystemSettingsBtn.addEventListener('click', () => E.systemSettingsPanel.classList.remove('open'));
+
+    // ===== OpenRouter Browse Models Panel =====
+    let _browseDebounce = null;
+    state.openrouterCatalog = [];
+
+    function formatContextLength(ctx) {
+      if (!ctx) return '?';
+      if (ctx >= 1000000) return (ctx / 1000000).toFixed(1) + 'M';
+      if (ctx >= 1000) return Math.round(ctx / 1000) + 'k';
+      return String(ctx);
+    }
+
+    function formatPrice(priceStr) {
+      const v = parseFloat(priceStr);
+      if (!v || v === 0) return null;
+      // Price is per token; show per million tokens
+      const perM = v * 1000000;
+      if (perM < 0.01) return '<$0.01/M';
+      return '$' + perM.toFixed(2) + '/M';
+    }
+
+    async function loadBrowseCatalog() {
+      let catalog = await getJSON('/api/openrouter/catalog');
+      if (!catalog || !Array.isArray(catalog) || catalog.length === 0) {
+        // Auto-fetch on first open
+        E.refreshCatalogBtn.textContent = 'Refreshing...';
+        E.refreshCatalogBtn.disabled = true;
+        try {
+          const res = await postJSON('/api/openrouter/refresh', {});
+          if (res.success) {
+            catalog = await getJSON('/api/openrouter/catalog');
+          }
+        } finally {
+          E.refreshCatalogBtn.textContent = 'Refresh Catalog';
+          E.refreshCatalogBtn.disabled = false;
+        }
+      }
+      state.openrouterCatalog = Array.isArray(catalog) ? catalog : [];
+      renderBrowseList();
+    }
+
+    async function getSelectedOpenRouterModels() {
+      const data = await getJSON('/api/models/openrouter');
+      return new Set(data.models || []);
+    }
+
+    async function renderBrowseList() {
+      const search = (E.browseModelSearch.value || '').toLowerCase();
+      const freeOnly = E.browseFreeOnly.checked;
+      const sort = E.browseSortSelect.value;
+      const selected = await getSelectedOpenRouterModels();
+
+      let list = state.openrouterCatalog.filter(m => {
+        if (freeOnly && !m.is_free) return false;
+        if (search) {
+          return m.id.toLowerCase().includes(search) || (m.name || '').toLowerCase().includes(search);
+        }
+        return true;
+      });
+
+      // Sort
+      if (sort === 'name') list.sort((a, b) => a.id.localeCompare(b.id));
+      else if (sort === 'context') list.sort((a, b) => (b.context_length || 0) - (a.context_length || 0));
+      else if (sort === 'price') list.sort((a, b) => parseFloat(a.prompt_price || 0) - parseFloat(b.prompt_price || 0));
+
+      E.modelBrowseList.innerHTML = '';
+      list.forEach(m => {
+        const row = el('div');
+        row.className = 'model-browse-item';
+
+        const cb = el('input');
+        cb.type = 'checkbox';
+        cb.checked = selected.has(m.id);
+        cb.addEventListener('change', async () => {
+          if (cb.checked) {
+            await postJSON(`/api/models/openrouter/add`, { model: m.id });
+          } else {
+            await fetch(`/api/models/openrouter/delete/${encodeURIComponent(m.id)}`, { method: 'DELETE' });
+          }
+          await refreshModelsHeader(state.currentProvider, state.currentModel);
+          updateBrowseSelectedCount();
+        });
+
+        const info = el('div');
+        info.className = 'model-browse-info';
+        const idLine = el('div');
+        idLine.className = 'model-browse-id';
+        idLine.textContent = m.id;
+        idLine.title = m.id;
+        info.appendChild(idLine);
+        if (m.name && m.name !== m.id) {
+          const nameLine = el('div');
+          nameLine.className = 'model-browse-name';
+          nameLine.textContent = m.name;
+          info.appendChild(nameLine);
+        }
+
+        const ctxBadge = el('span');
+        ctxBadge.className = 'model-badge';
+        ctxBadge.textContent = formatContextLength(m.context_length);
+
+        const priceBadge = el('span');
+        if (m.is_free) {
+          priceBadge.className = 'model-badge free';
+          priceBadge.textContent = 'Free';
+        } else {
+          priceBadge.className = 'model-badge';
+          priceBadge.textContent = formatPrice(m.prompt_price) || '?';
+        }
+
+        row.appendChild(cb);
+        row.appendChild(info);
+        row.appendChild(ctxBadge);
+        row.appendChild(priceBadge);
+        E.modelBrowseList.appendChild(row);
+      });
+
+      updateBrowseSelectedCount();
+    }
+
+    async function updateBrowseSelectedCount() {
+      const selected = await getSelectedOpenRouterModels();
+      E.browseSelectedCount.textContent = selected.size + ' model' + (selected.size !== 1 ? 's' : '') + ' selected';
+    }
+
+    E.openBrowseModelsBtn.addEventListener('click', async () => {
+      E.settingsDropdown.classList.remove('open');
+      E.openrouterBrowsePanel.classList.add('open');
+      await loadBrowseCatalog();
+    });
+
+    E.closeBrowseModelsBtn.addEventListener('click', () => {
+      E.openrouterBrowsePanel.classList.remove('open');
+    });
+
+    E.browseModelSearch.addEventListener('input', () => {
+      clearTimeout(_browseDebounce);
+      _browseDebounce = setTimeout(() => renderBrowseList(), 300);
+    });
+
+    E.browseFreeOnly.addEventListener('change', () => renderBrowseList());
+    E.browseSortSelect.addEventListener('change', () => renderBrowseList());
+
+    E.refreshCatalogBtn.addEventListener('click', async () => {
+      E.refreshCatalogBtn.textContent = 'Refreshing...';
+      E.refreshCatalogBtn.disabled = true;
+      try {
+        const res = await postJSON('/api/openrouter/refresh', {});
+        if (res.success) {
+          state.openrouterCatalog = await getJSON('/api/openrouter/catalog');
+          if (!Array.isArray(state.openrouterCatalog)) state.openrouterCatalog = [];
+          renderBrowseList();
+        }
+      } finally {
+        E.refreshCatalogBtn.textContent = 'Refresh Catalog';
+        E.refreshCatalogBtn.disabled = false;
+      }
+    });
 
     // Provider change in settings panel (INDEPENDENT from header)
     E.providerSelect.addEventListener('change', async () => {
