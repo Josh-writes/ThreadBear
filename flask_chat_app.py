@@ -323,7 +323,7 @@ class FlaskChatApp:
         @app.route('/api/browse/<provider>/toggle', methods=['POST'])
         def toggle_browse_model(provider):
             """Add or remove a model from stored_{provider}_models (used by browse panel)."""
-            BROWSEABLE = ("openrouter", "groq", "google", "mistral")
+            BROWSEABLE = ("openrouter", "groq", "google", "mistral", "llamacpp")
             if provider not in BROWSEABLE:
                 return jsonify({"success": False, "error": f"Provider '{provider}' not browseable"}), 400
             data = request.get_json() or {}
@@ -357,16 +357,24 @@ class FlaskChatApp:
 
         @app.route('/api/browse/<provider>/catalog')
         def get_browse_catalog(provider):
-            BROWSEABLE = ("openrouter", "groq", "google", "mistral")
+            BROWSEABLE = ("openrouter", "groq", "google", "mistral", "llamacpp")
             if provider not in BROWSEABLE:
                 return jsonify({"success": False, "error": f"Provider '{provider}' not browseable"}), 400
             return jsonify(self.config.get(f"{provider}_catalog", []))
 
         @app.route('/api/browse/<provider>/refresh', methods=['POST'])
         def refresh_browse_catalog(provider):
-            BROWSEABLE = ("openrouter", "groq", "google", "mistral")
+            BROWSEABLE = ("openrouter", "groq", "google", "mistral", "llamacpp")
             if provider not in BROWSEABLE:
                 return jsonify({"success": False, "error": f"Provider '{provider}' not browseable"}), 400
+            if provider == "llamacpp":
+                # Scan models directory via SSH
+                scanned = _ssh_scan_models_dir(self)
+                if scanned:
+                    self.config.set("llamacpp_catalog", scanned)
+                    self.config.save_config()
+                    return jsonify({"success": True, "count": len(scanned)})
+                return jsonify({"success": False, "error": "Failed to scan models directory via SSH"}), 502
             if provider == "openrouter":
                 from api_clients import fetch_openrouter_catalog
                 catalog = fetch_openrouter_catalog()
@@ -1292,48 +1300,31 @@ class FlaskChatApp:
 
         @app.route('/api/llamacpp/refresh', methods=['POST'])
         def llamacpp_refresh():
-            """Refresh available models from llama.cpp server."""
+            """Refresh available models by scanning the remote models directory via SSH."""
             try:
-                from api_clients import get_available_llamacpp_models
-                models = get_available_llamacpp_models(self.config.config)
-
-                if models:
-                    self.config.update_stored_models("llamacpp", models)
+                # Primary: scan the models directory via SSH for all .gguf files
+                scanned = _ssh_scan_models_dir(self)
+                if scanned:
+                    model_names = [m["id"] for m in scanned]
+                    self.config.update_stored_models("llamacpp", model_names)
+                    # Cache the full catalog for browse panel
+                    self.config.set("llamacpp_catalog", scanned)
+                    self.config.save_config()
 
                     # Auto-select first real model if current is just "model"
                     current = self.config.get("llamacpp_model", "model")
-                    if current == "model" and models:
-                        self.config.set("llamacpp_model", models[0])
+                    if current == "model" and model_names:
+                        self.config.set("llamacpp_model", model_names[0])
                         self.config.save_config()
 
-                    return jsonify({"success": True, "models": models})
+                    return jsonify({"success": True, "models": model_names, "catalog": scanned})
 
-                # Try to get model info from /slots if /v1/models didn't work
-                base = self.config.get("llamacpp_url", "http://127.0.0.1:8080").rstrip("/")
-                try:
-                    r = requests.get(f"{base}/slots", timeout=5)
-                    if r.status_code == 200:
-                        slots = r.json()
-                        if not isinstance(slots, list):
-                            slots = [slots] if slots else []
-                        slot_models = []
-                        for slot in slots:
-                            model_path = slot.get("model", "") or slot.get("model_path", "")
-                            if model_path:
-                                # Extract just the filename
-                                model_name = model_path.split("/")[-1].split("\\")[-1]
-                                if model_name and model_name not in slot_models:
-                                    slot_models.append(model_name)
-                        if slot_models:
-                            self.config.update_stored_models("llamacpp", slot_models)
-                            # Auto-select if current is just "model"
-                            current = self.config.get("llamacpp_model", "model")
-                            if current == "model":
-                                self.config.set("llamacpp_model", slot_models[0])
-                                self.config.save_config()
-                            return jsonify({"success": True, "models": slot_models})
-                except:
-                    pass
+                # Fallback: query the running server's /v1/models
+                from api_clients import get_available_llamacpp_models
+                models = get_available_llamacpp_models(self.config.config)
+                if models:
+                    self.config.update_stored_models("llamacpp", models)
+                    return jsonify({"success": True, "models": models, "note": "From server API"})
 
                 # Return stored models if we can't fetch new ones
                 stored = self.config.get("stored_llamacpp_models", [])
@@ -1427,6 +1418,71 @@ class FlaskChatApp:
                 return result.stdout.strip() or result.stderr.strip() or "(empty log)"
             except Exception as e:
                 return f"(could not fetch log: {e})"
+
+        def _ssh_scan_models_dir(self_ref):
+            """Scan the remote models directory via SSH for .gguf files/folders.
+            Returns a list of dicts: [{"id": name, "size_gb": float, "path": str}, ...]
+            """
+            cfg = self_ref.config
+            if not cfg.get("llamacpp_ssh_enabled"):
+                return []
+
+            ssh_host = cfg.get("llamacpp_ssh_host", "192.168.2.115")
+            ssh_port = int(cfg.get("llamacpp_ssh_port", 2222))
+            ssh_user = cfg.get("llamacpp_ssh_user", "josh")
+            model_dir = cfg.get("llamacpp_model_dir", "/home/josh/models")
+
+            ssh_base = [
+                "ssh", "-p", str(ssh_port),
+                "-o", "ConnectTimeout=5",
+                "-o", "StrictHostKeyChecking=accept-new",
+                f"{ssh_user}@{ssh_host}",
+            ]
+
+            # List directories and .gguf files in model_dir, with sizes
+            # For each entry: if it's a directory, find .gguf inside; if it's a .gguf file, use directly
+            scan_cmd = (
+                f"cd {model_dir} 2>/dev/null && "
+                f"for d in */; do "
+                f"  if [ -d \"$d\" ]; then "
+                f"    gguf=$(find \"$d\" -maxdepth 1 -name '*.gguf' -printf '%f\\t%s\\n' 2>/dev/null | head -1); "
+                f"    if [ -n \"$gguf\" ]; then "
+                f"      name=${{d%/}}; "
+                f"      size=$(echo \"$gguf\" | cut -f2); "
+                f"      echo \"$name\\t$size\\tdir\"; "
+                f"    fi; "
+                f"  fi; "
+                f"done; "
+                f"for f in *.gguf; do "
+                f"  [ -f \"$f\" ] && stat --printf='%n\\t%s\\tfile\\n' \"$f\" 2>/dev/null; "
+                f"done"
+            )
+
+            try:
+                result = subprocess.run(
+                    ssh_base + [scan_cmd],
+                    timeout=20, capture_output=True, text=True, check=False,
+                )
+                models = []
+                for line in result.stdout.strip().splitlines():
+                    parts = line.split("\t")
+                    if len(parts) >= 2:
+                        name = parts[0].strip()
+                        try:
+                            size_bytes = int(parts[1])
+                            size_gb = round(size_bytes / (1024**3), 1)
+                        except (ValueError, IndexError):
+                            size_gb = 0
+                        if name:
+                            models.append({
+                                "id": name,
+                                "size_gb": size_gb,
+                                "path": f"{model_dir}/{name}",
+                            })
+                return models
+            except Exception as e:
+                print(f"SSH scan models dir failed: {e}")
+                return []
 
         def _ssh_start_single_model(self_ref, model_path, n_gpu_layers, n_ctx):
             """Start a dedicated single-model llama-server via SSH with custom ngl. Returns (success, message)."""

@@ -1680,7 +1680,7 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
 
     // ===== Browse Models Panel (multi-provider) =====
     let _browseDebounce = null;
-    const BROWSE_PROVIDERS = ['openrouter', 'groq', 'google', 'mistral'];
+    const BROWSE_PROVIDERS = ['openrouter', 'groq', 'google', 'mistral', 'llamacpp'];
     state.browseCatalog = [];  // catalog for currently-selected browse provider
 
     function getBrowseProvider() {
@@ -1757,7 +1757,10 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
       });
 
       if (sort === 'name') list.sort((a, b) => a.id.localeCompare(b.id));
-      else if (sort === 'context') list.sort((a, b) => (b.context_length || 0) - (a.context_length || 0));
+      else if (sort === 'context') {
+        if (provider === 'llamacpp') list.sort((a, b) => (b.size_gb || 0) - (a.size_gb || 0));
+        else list.sort((a, b) => (b.context_length || 0) - (a.context_length || 0));
+      }
       else if (sort === 'price') list.sort((a, b) => parseFloat(a.prompt_price || 0) - parseFloat(b.prompt_price || 0));
 
       E.modelBrowseList.innerHTML = '';
@@ -1792,7 +1795,11 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
 
         const ctxBadge = el('span');
         ctxBadge.className = 'model-badge';
-        ctxBadge.textContent = formatContextLength(m.context_length);
+        if (provider === 'llamacpp' && m.size_gb) {
+          ctxBadge.textContent = m.size_gb + ' GB';
+        } else {
+          ctxBadge.textContent = formatContextLength(m.context_length);
+        }
 
         row.appendChild(cb);
         row.appendChild(info);
@@ -2134,6 +2141,14 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
     E.refreshModelsBtn?.addEventListener('click', async () => {
       const provider = E.providerHeader.value;
       try {
+        // For llamacpp, scan the models directory via SSH first
+        if (provider === 'llamacpp') {
+          const res = await fetch('/api/llamacpp/refresh', { method: 'POST' });
+          const data = await res.json();
+          if (!data.success) {
+            console.warn('llamacpp refresh warning:', data.error || data.note);
+          }
+        }
         await refreshModelsHeader(provider, E.modelHeader.value);
         await refreshModelsSettings(provider);
         alert('Models refreshed.');
