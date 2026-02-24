@@ -181,12 +181,14 @@
     cancelPromptBtn: $('cancelPromptBtn'),
     deletePromptBtn: $('deletePromptBtn'),
 
-    // OpenRouter Browse panel
+    // Browse Models panel
     openBrowseModelsBtn: $('openBrowseModelsBtn'),
     openrouterBrowsePanel: $('openrouterBrowsePanel'),
     closeBrowseModelsBtn: $('closeBrowseModelsBtn'),
+    browseProviderSelect: $('browseProviderSelect'),
     browseModelSearch: $('browseModelSearch'),
     browseFreeOnly: $('browseFreeOnly'),
+    browseFreeOnlyLabel: $('browseFreeOnlyLabel'),
     browseSortSelect: $('browseSortSelect'),
     modelBrowseList: $('modelBrowseList'),
     browseSelectedCount: $('browseSelectedCount'),
@@ -1676,9 +1678,18 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
 
     E.closeSystemSettingsBtn.addEventListener('click', () => E.systemSettingsPanel.classList.remove('open'));
 
-    // ===== OpenRouter Browse Models Panel =====
+    // ===== Browse Models Panel (multi-provider) =====
     let _browseDebounce = null;
-    state.openrouterCatalog = [];
+    const BROWSE_PROVIDERS = ['openrouter', 'groq'];
+    state.browseCatalog = [];  // catalog for currently-selected browse provider
+
+    function getBrowseProvider() {
+      return E.browseProviderSelect.value || 'openrouter';
+    }
+
+    function browseProviderHasPricing(provider) {
+      return provider === 'openrouter';
+    }
 
     function formatContextLength(ctx) {
       if (!ctx) return '?';
@@ -1690,44 +1701,54 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
     function formatPrice(priceStr) {
       const v = parseFloat(priceStr);
       if (!v || v === 0) return null;
-      // Price is per token; show per million tokens
       const perM = v * 1000000;
       if (perM < 0.01) return '<$0.01/M';
       return '$' + perM.toFixed(2) + '/M';
     }
 
     async function loadBrowseCatalog() {
-      let catalog = await getJSON('/api/openrouter/catalog');
+      const provider = getBrowseProvider();
+      const hasPricing = browseProviderHasPricing(provider);
+      // Show/hide free-only checkbox and price sort based on provider
+      E.browseFreeOnlyLabel.style.display = hasPricing ? '' : 'none';
+      E.browseFreeOnly.checked = false;
+      // Show/hide price sort option
+      const priceOpt = E.browseSortSelect.querySelector('option[value="price"]');
+      if (priceOpt) priceOpt.style.display = hasPricing ? '' : 'none';
+      if (!hasPricing && E.browseSortSelect.value === 'price') E.browseSortSelect.value = 'name';
+
+      let catalog = await getJSON(`/api/browse/${provider}/catalog`);
       if (!catalog || !Array.isArray(catalog) || catalog.length === 0) {
-        // Auto-fetch on first open
         E.refreshCatalogBtn.textContent = 'Refreshing...';
         E.refreshCatalogBtn.disabled = true;
         try {
-          const res = await postJSON('/api/openrouter/refresh', {});
+          const res = await postJSON(`/api/browse/${provider}/refresh`, {});
           if (res.success) {
-            catalog = await getJSON('/api/openrouter/catalog');
+            catalog = await getJSON(`/api/browse/${provider}/catalog`);
           }
         } finally {
           E.refreshCatalogBtn.textContent = 'Refresh Catalog';
           E.refreshCatalogBtn.disabled = false;
         }
       }
-      state.openrouterCatalog = Array.isArray(catalog) ? catalog : [];
+      state.browseCatalog = Array.isArray(catalog) ? catalog : [];
       renderBrowseList();
     }
 
-    async function getSelectedOpenRouterModels() {
-      const data = await getJSON('/api/models/openrouter');
+    async function getSelectedBrowseModels(provider) {
+      const data = await getJSON(`/api/models/${provider}`);
       return new Set(data.models || []);
     }
 
     async function renderBrowseList() {
+      const provider = getBrowseProvider();
+      const hasPricing = browseProviderHasPricing(provider);
       const search = (E.browseModelSearch.value || '').toLowerCase();
-      const freeOnly = E.browseFreeOnly.checked;
+      const freeOnly = hasPricing && E.browseFreeOnly.checked;
       const sort = E.browseSortSelect.value;
-      const selected = await getSelectedOpenRouterModels();
+      const selected = await getSelectedBrowseModels(provider);
 
-      let list = state.openrouterCatalog.filter(m => {
+      let list = state.browseCatalog.filter(m => {
         if (freeOnly && !m.is_free) return false;
         if (search) {
           return m.id.toLowerCase().includes(search) || (m.name || '').toLowerCase().includes(search);
@@ -1735,7 +1756,6 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
         return true;
       });
 
-      // Sort
       if (sort === 'name') list.sort((a, b) => a.id.localeCompare(b.id));
       else if (sort === 'context') list.sort((a, b) => (b.context_length || 0) - (a.context_length || 0));
       else if (sort === 'price') list.sort((a, b) => parseFloat(a.prompt_price || 0) - parseFloat(b.prompt_price || 0));
@@ -1749,10 +1769,9 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
         cb.type = 'checkbox';
         cb.checked = selected.has(m.id);
         cb.addEventListener('change', async () => {
-          await postJSON('/api/openrouter/models/toggle', { model: m.id, checked: cb.checked });
-          // Always refresh the header dropdown if currently on openrouter
-          if (state.currentProvider === 'openrouter') {
-            await refreshModelsHeader('openrouter', state.currentModel);
+          await postJSON(`/api/browse/${provider}/toggle`, { model: m.id, checked: cb.checked });
+          if (state.currentProvider === provider) {
+            await refreshModelsHeader(provider, state.currentModel);
           }
           updateBrowseSelectedCount();
         });
@@ -1775,19 +1794,22 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
         ctxBadge.className = 'model-badge';
         ctxBadge.textContent = formatContextLength(m.context_length);
 
-        const priceBadge = el('span');
-        if (m.is_free) {
-          priceBadge.className = 'model-badge free';
-          priceBadge.textContent = 'Free';
-        } else {
-          priceBadge.className = 'model-badge';
-          priceBadge.textContent = formatPrice(m.prompt_price) || '?';
-        }
-
         row.appendChild(cb);
         row.appendChild(info);
         row.appendChild(ctxBadge);
-        row.appendChild(priceBadge);
+
+        if (hasPricing) {
+          const priceBadge = el('span');
+          if (m.is_free) {
+            priceBadge.className = 'model-badge free';
+            priceBadge.textContent = 'Free';
+          } else {
+            priceBadge.className = 'model-badge';
+            priceBadge.textContent = formatPrice(m.prompt_price) || '?';
+          }
+          row.appendChild(priceBadge);
+        }
+
         E.modelBrowseList.appendChild(row);
       });
 
@@ -1795,18 +1817,28 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
     }
 
     async function updateBrowseSelectedCount() {
-      const selected = await getSelectedOpenRouterModels();
+      const provider = getBrowseProvider();
+      const selected = await getSelectedBrowseModels(provider);
       E.browseSelectedCount.textContent = selected.size + ' model' + (selected.size !== 1 ? 's' : '') + ' selected';
     }
 
     E.openBrowseModelsBtn.addEventListener('click', async () => {
       E.settingsDropdown.classList.remove('open');
+      // Auto-select current provider if browseable
+      if (BROWSE_PROVIDERS.includes(state.currentProvider)) {
+        E.browseProviderSelect.value = state.currentProvider;
+      }
       E.openrouterBrowsePanel.classList.add('open');
       await loadBrowseCatalog();
     });
 
     E.closeBrowseModelsBtn.addEventListener('click', () => {
       E.openrouterBrowsePanel.classList.remove('open');
+    });
+
+    E.browseProviderSelect.addEventListener('change', async () => {
+      E.browseModelSearch.value = '';
+      await loadBrowseCatalog();
     });
 
     E.browseModelSearch.addEventListener('input', () => {
@@ -1818,13 +1850,14 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
     E.browseSortSelect.addEventListener('change', () => renderBrowseList());
 
     E.refreshCatalogBtn.addEventListener('click', async () => {
+      const provider = getBrowseProvider();
       E.refreshCatalogBtn.textContent = 'Refreshing...';
       E.refreshCatalogBtn.disabled = true;
       try {
-        const res = await postJSON('/api/openrouter/refresh', {});
+        const res = await postJSON(`/api/browse/${provider}/refresh`, {});
         if (res.success) {
-          state.openrouterCatalog = await getJSON('/api/openrouter/catalog');
-          if (!Array.isArray(state.openrouterCatalog)) state.openrouterCatalog = [];
+          state.browseCatalog = await getJSON(`/api/browse/${provider}/catalog`);
+          if (!Array.isArray(state.browseCatalog)) state.browseCatalog = [];
           renderBrowseList();
         }
       } finally {

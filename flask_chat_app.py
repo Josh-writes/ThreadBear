@@ -320,28 +320,27 @@ class FlaskChatApp:
             except Exception as e:
                 return jsonify({"success": False, "error": str(e)}), 500
 
-        @app.route('/api/openrouter/models/toggle', methods=['POST'])
-        def toggle_openrouter_model():
-            """Add or remove a model from stored_openrouter_models (used by browse panel)."""
+        @app.route('/api/browse/<provider>/toggle', methods=['POST'])
+        def toggle_browse_model(provider):
+            """Add or remove a model from stored_{provider}_models (used by browse panel)."""
+            BROWSEABLE = ("openrouter", "groq")
+            if provider not in BROWSEABLE:
+                return jsonify({"success": False, "error": f"Provider '{provider}' not browseable"}), 400
             data = request.get_json() or {}
             model = (data.get("model") or "").strip()
             checked = data.get("checked", True)
             if not model:
                 return jsonify({"success": False, "error": "missing model"}), 400
-            key = "stored_openrouter_models"
+            key = f"stored_{provider}_models"
             lst = list(self.config.get(key, []))
-            # Also pull in custom list so we don't lose those
-            custom = list(self.config.get("custom_openrouter_models", []))
-            # Merge: stored is the master list for browse panel
-            # Seed stored from current models if empty, then clear custom so stored takes priority
+            custom = list(self.config.get(f"custom_{provider}_models", []))
             if not lst:
-                lst = list(self.get_provider_models("openrouter"))
+                lst = list(self.get_provider_models(provider))
             if custom:
-                # Migrate custom into stored and clear custom so stored is canonical
                 for c in custom:
                     if c not in lst:
                         lst.append(c)
-                self.config.set("custom_openrouter_models", [])
+                self.config.set(f"custom_{provider}_models", [])
                 custom = []
             if checked:
                 if model not in lst:
@@ -349,25 +348,39 @@ class FlaskChatApp:
             else:
                 if model in lst:
                     lst.remove(model)
-                # Also remove from custom if present
                 if model in custom:
                     custom.remove(model)
-                    self.config.set("custom_openrouter_models", custom)
+                    self.config.set(f"custom_{provider}_models", custom)
             self.config.set(key, lst)
             self.config.save_config()
             return jsonify({"success": True, "models": lst})
 
-        @app.route('/api/openrouter/catalog')
-        def get_openrouter_catalog():
-            return jsonify(self.config.get("openrouter_catalog", []))
+        @app.route('/api/browse/<provider>/catalog')
+        def get_browse_catalog(provider):
+            BROWSEABLE = ("openrouter", "groq")
+            if provider not in BROWSEABLE:
+                return jsonify({"success": False, "error": f"Provider '{provider}' not browseable"}), 400
+            return jsonify(self.config.get(f"{provider}_catalog", []))
 
-        @app.route('/api/openrouter/refresh', methods=['POST'])
-        def refresh_openrouter_catalog():
-            from api_clients import fetch_openrouter_catalog
-            catalog = fetch_openrouter_catalog()
+        @app.route('/api/browse/<provider>/refresh', methods=['POST'])
+        def refresh_browse_catalog(provider):
+            BROWSEABLE = ("openrouter", "groq")
+            if provider not in BROWSEABLE:
+                return jsonify({"success": False, "error": f"Provider '{provider}' not browseable"}), 400
+            if provider == "openrouter":
+                from api_clients import fetch_openrouter_catalog
+                catalog = fetch_openrouter_catalog()
+            elif provider == "groq":
+                from api_clients import fetch_groq_catalog
+                api_key = os.getenv('GROQ_API_KEY') or self.config.get('groq_api_key')
+                if not api_key or api_key == "your_groq_api_key_here":
+                    return jsonify({"success": False, "error": "Groq API key not configured"}), 400
+                catalog = fetch_groq_catalog(api_key)
+            else:
+                catalog = []
             if not catalog:
-                return jsonify({"success": False, "error": "Failed to fetch catalog from OpenRouter"}), 502
-            self.config.set("openrouter_catalog", catalog)
+                return jsonify({"success": False, "error": f"Failed to fetch catalog from {provider}"}), 502
+            self.config.set(f"{provider}_catalog", catalog)
             self.config.save_config()
             return jsonify({"success": True, "count": len(catalog)})
 

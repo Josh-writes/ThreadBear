@@ -2035,7 +2035,7 @@
                             🎨 Appearance
                         </button>
                         <button class="settings-menu-item" id="openBrowseModelsBtn">
-                            🔍 Browse OpenRouter Models
+                            🔍 Browse Models
                         </button>
                     </div>
                 </div>
@@ -2394,16 +2394,20 @@
         </div>
     </div>
 
-    <!-- OpenRouter Browse Panel -->
+    <!-- Browse Models Panel -->
     <div class="settings-panel" id="openrouterBrowsePanel">
         <div class="settings-header">
-            <h3>OpenRouter Models</h3>
+            <h3>Browse Models</h3>
             <button class="control-btn" id="closeBrowseModelsBtn">✕</button>
         </div>
         <div class="settings-content">
+            <select class="setting-input" id="browseProviderSelect" style="margin-bottom: 10px; font-size: 13px;">
+                <option value="openrouter">OpenRouter</option>
+                <option value="groq">Groq</option>
+            </select>
             <input type="text" class="setting-input" id="browseModelSearch" placeholder="Search models..." style="margin-bottom: 10px;">
             <div style="display: flex; gap: 12px; align-items: center; margin-bottom: 10px; flex-wrap: wrap;">
-                <label style="display: flex; align-items: center; gap: 4px; font-size: 13px; color: var(--text-secondary); cursor: pointer;">
+                <label id="browseFreeOnlyLabel" style="display: flex; align-items: center; gap: 4px; font-size: 13px; color: var(--text-secondary); cursor: pointer;">
                     <input type="checkbox" id="browseFreeOnly"> Free only
                 </label>
                 <select class="setting-input" id="browseSortSelect" style="width: auto; flex: 0 0 auto; padding: 4px 8px; font-size: 13px;">

@@ -23,6 +23,34 @@ def estimate_tokens(text: str) -> int:
 
 
 # --- Groq ---
+def fetch_groq_catalog(api_key: str) -> List[Dict]:
+    """Fetch the model catalog from Groq's API (requires auth)."""
+    try:
+        resp = _web_session.get(
+            "https://api.groq.com/openai/v1/models",
+            headers={"Authorization": f"Bearer {api_key}"},
+            timeout=30,
+        )
+        resp.raise_for_status()
+        data = resp.json().get("data", [])
+        catalog = []
+        for m in data:
+            if not m.get("active", True):
+                continue
+            catalog.append({
+                "id": m.get("id", ""),
+                "name": m.get("owned_by", m.get("id", "")),
+                "context_length": m.get("context_window", 0),
+                "prompt_price": None,
+                "completion_price": None,
+                "is_free": False,
+            })
+        return catalog
+    except Exception as e:
+        print(f"Failed to fetch Groq catalog: {e}")
+        return []
+
+
 def call_groq(messages: List[Dict], config: Dict) -> str:
     try:
         from config_manager import ConfigManager
