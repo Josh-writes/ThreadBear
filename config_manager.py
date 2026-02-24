@@ -241,6 +241,13 @@ class ConfigManager:
         ms = self.config["model_settings"].get(provider, {}).get(model, {})
         if "context_window" in ms and ms["context_window"]:
             return int(ms["context_window"])
+        # Check cached catalog for this provider
+        catalog = self.config.get(f"{provider}_catalog", [])
+        for entry in catalog:
+            if entry.get("id") == model:
+                ctx = entry.get("context_length", 0)
+                if ctx > 0:
+                    return int(ctx)
         return DEFAULT_CONTEXT_WINDOWS.get(provider, 8192)
 
     def reload_api_keys_from_env(self) -> None:
