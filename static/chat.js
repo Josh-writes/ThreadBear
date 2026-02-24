@@ -1680,7 +1680,7 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
 
     // ===== Browse Models Panel (multi-provider) =====
     let _browseDebounce = null;
-    const BROWSE_PROVIDERS = ['openrouter', 'groq'];
+    const BROWSE_PROVIDERS = ['openrouter', 'groq', 'google', 'mistral'];
     state.browseCatalog = [];  // catalog for currently-selected browse provider
 
     function getBrowseProvider() {

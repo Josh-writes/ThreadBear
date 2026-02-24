@@ -184,6 +184,39 @@ def call_groq_stream(messages: List[Dict], config: Dict) -> Iterator[str]:
 
 
 # --- Google (Gemini) ---
+def fetch_google_catalog(api_key: str) -> List[Dict]:
+    """Fetch the model catalog from Google's Gemini API (requires auth)."""
+    try:
+        resp = _web_session.get(
+            "https://generativelanguage.googleapis.com/v1beta/models",
+            params={"key": api_key, "pageSize": 1000},
+            timeout=30,
+        )
+        resp.raise_for_status()
+        data = resp.json().get("models", [])
+        catalog = []
+        for m in data:
+            # Only include models that support generateContent (chat)
+            methods = m.get("supportedGenerationMethods", [])
+            if "generateContent" not in methods:
+                continue
+            # name is like "models/gemini-1.5-pro-001" — strip prefix
+            raw_name = m.get("name", "")
+            model_id = raw_name.replace("models/", "") if raw_name.startswith("models/") else raw_name
+            catalog.append({
+                "id": model_id,
+                "name": m.get("displayName", model_id),
+                "context_length": m.get("inputTokenLimit", 0),
+                "prompt_price": None,
+                "completion_price": None,
+                "is_free": False,
+            })
+        return catalog
+    except Exception as e:
+        print(f"Failed to fetch Google catalog: {e}")
+        return []
+
+
 def call_google_stream(messages: List[Dict], config: Dict) -> Iterator[str]:
     """
     Simple streaming adapter for Google: we call the non-streaming endpoint once
@@ -263,6 +296,38 @@ def call_google(messages: List[Dict], config: Dict) -> str:
 
 
 # --- Mistral ---
+def fetch_mistral_catalog(api_key: str) -> List[Dict]:
+    """Fetch the model catalog from Mistral's API (requires auth)."""
+    try:
+        resp = _web_session.get(
+            "https://api.mistral.ai/v1/models",
+            headers={"Authorization": f"Bearer {api_key}"},
+            timeout=30,
+        )
+        resp.raise_for_status()
+        data = resp.json().get("data", [])
+        catalog = []
+        for m in data:
+            if m.get("archived", False):
+                continue
+            # Only include models that support chat
+            caps = m.get("capabilities", {})
+            if not caps.get("completion_chat", True):
+                continue
+            catalog.append({
+                "id": m.get("id", ""),
+                "name": m.get("name") or m.get("id", ""),
+                "context_length": m.get("max_context_length", 0),
+                "prompt_price": None,
+                "completion_price": None,
+                "is_free": False,
+            })
+        return catalog
+    except Exception as e:
+        print(f"Failed to fetch Mistral catalog: {e}")
+        return []
+
+
 def call_mistral(messages: List[Dict], config: Dict) -> str:
     try:
         from config_manager import ConfigManager

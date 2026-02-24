@@ -323,7 +323,7 @@ class FlaskChatApp:
         @app.route('/api/browse/<provider>/toggle', methods=['POST'])
         def toggle_browse_model(provider):
             """Add or remove a model from stored_{provider}_models (used by browse panel)."""
-            BROWSEABLE = ("openrouter", "groq")
+            BROWSEABLE = ("openrouter", "groq", "google", "mistral")
             if provider not in BROWSEABLE:
                 return jsonify({"success": False, "error": f"Provider '{provider}' not browseable"}), 400
             data = request.get_json() or {}
@@ -357,27 +357,37 @@ class FlaskChatApp:
 
         @app.route('/api/browse/<provider>/catalog')
         def get_browse_catalog(provider):
-            BROWSEABLE = ("openrouter", "groq")
+            BROWSEABLE = ("openrouter", "groq", "google", "mistral")
             if provider not in BROWSEABLE:
                 return jsonify({"success": False, "error": f"Provider '{provider}' not browseable"}), 400
             return jsonify(self.config.get(f"{provider}_catalog", []))
 
         @app.route('/api/browse/<provider>/refresh', methods=['POST'])
         def refresh_browse_catalog(provider):
-            BROWSEABLE = ("openrouter", "groq")
+            BROWSEABLE = ("openrouter", "groq", "google", "mistral")
             if provider not in BROWSEABLE:
                 return jsonify({"success": False, "error": f"Provider '{provider}' not browseable"}), 400
             if provider == "openrouter":
                 from api_clients import fetch_openrouter_catalog
                 catalog = fetch_openrouter_catalog()
-            elif provider == "groq":
-                from api_clients import fetch_groq_catalog
-                api_key = os.getenv('GROQ_API_KEY') or self.config.get('groq_api_key')
-                if not api_key or api_key == "your_groq_api_key_here":
-                    return jsonify({"success": False, "error": "Groq API key not configured"}), 400
-                catalog = fetch_groq_catalog(api_key)
             else:
-                catalog = []
+                # Groq, Google, Mistral all need an API key
+                env_map = {"groq": "GROQ_API_KEY", "google": "GOOGLE_API_KEY", "mistral": "MISTRAL_API_KEY"}
+                env_var = env_map.get(provider, "")
+                api_key = os.getenv(env_var, "") or self.config.get(f"{provider}_api_key", "")
+                if not api_key or api_key.startswith("your_"):
+                    return jsonify({"success": False, "error": f"{provider} API key not configured"}), 400
+                if provider == "groq":
+                    from api_clients import fetch_groq_catalog
+                    catalog = fetch_groq_catalog(api_key)
+                elif provider == "google":
+                    from api_clients import fetch_google_catalog
+                    catalog = fetch_google_catalog(api_key)
+                elif provider == "mistral":
+                    from api_clients import fetch_mistral_catalog
+                    catalog = fetch_mistral_catalog(api_key)
+                else:
+                    catalog = []
             if not catalog:
                 return jsonify({"success": False, "error": f"Failed to fetch catalog from {provider}"}), 502
             self.config.set(f"{provider}_catalog", catalog)
