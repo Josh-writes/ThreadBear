@@ -1439,19 +1439,15 @@ class FlaskChatApp:
                 f"{ssh_user}@{ssh_host}",
             ]
 
-            # List directories and .gguf files in model_dir, with sizes
-            # For each entry: if it's a directory, find .gguf inside; if it's a .gguf file, use directly
+            # List ALL top-level directories and top-level .gguf files in model_dir.
+            # Some model formats are stored as folders (e.g. safetensors) with no top-level .gguf.
             scan_cmd = (
                 f"cd {model_dir} 2>/dev/null && "
                 f"for d in */; do "
-                f"  if [ -d \"$d\" ]; then "
-                f"    gguf=$(find \"$d\" -maxdepth 1 -name '*.gguf' -printf '%f\\t%s\\n' 2>/dev/null | head -1); "
-                f"    if [ -n \"$gguf\" ]; then "
-                f"      name=${{d%/}}; "
-                f"      size=$(echo \"$gguf\" | cut -f2); "
-                f"      echo \"$name\\t$size\\tdir\"; "
-                f"    fi; "
-                f"  fi; "
+                f"  [ -d \"$d\" ] || continue; "
+                f"  size=$(du -sb \"$d\" 2>/dev/null | cut -f1); "
+                f"  [ -n \"$size\" ] || size=0; "
+                f"  echo \"${{d%/}}\\t$size\\tdir\"; "
                 f"done; "
                 f"for f in *.gguf; do "
                 f"  [ -f \"$f\" ] && stat --printf='%n\\t%s\\tfile\\n' \"$f\" 2>/dev/null; "
