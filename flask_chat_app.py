@@ -811,6 +811,70 @@ class FlaskChatApp:
                     if not self.temporary_mode and not self.incognito_mode:
                         self.chat_manager.add_message("assistant", full, model)
 
+                    # --- Auto-title generation after first exchange ---
+                    try:
+                        chat_hist = self.chat_manager.current_chat.get("chat_history", [])
+                        if (
+                            not self.temporary_mode
+                            and not self.incognito_mode
+                            and self.chat_manager.current_chat.get("title") == "New Chat"
+                            and len(chat_hist) == 2
+                        ):
+                            title_provider = self.config.get("title_provider", "groq")
+                            title_model = self.config.get("title_model", "llama-3.1-8b-instant")
+
+                            title_stream = {
+                                "groq": call_groq_stream,
+                                "google": call_google_stream,
+                                "mistral": call_mistral_stream,
+                                "openrouter": call_openrouter_stream,
+                                "llamacpp": call_llamacpp_stream,
+                            }.get(title_provider)
+
+                            if title_stream:
+                                user_text = chat_hist[0].get("content", "")[:500]
+                                asst_text = chat_hist[1].get("content", "")[:500]
+                                title_prompt = (
+                                    "Generate a short title (under 60 characters, no quotes) "
+                                    "summarizing this conversation.\n"
+                                    f"User: {user_text}\n"
+                                    f"Assistant: {asst_text}\n"
+                                    "Title:"
+                                )
+
+                                title_cfg = dict(self.config.config)
+                                api_key = self.config.get_api_key(title_provider)
+                                if api_key:
+                                    title_cfg[f"{title_provider}_api_key"] = api_key
+                                if title_provider == "llamacpp":
+                                    detected_url, _ = self._get_llamacpp_connection()
+                                    title_cfg["llamacpp_url"] = detected_url
+                                title_cfg.update({
+                                    "model": title_model,
+                                    f"{title_provider}_model": title_model,
+                                    f"{title_provider}_temperature": 0.3,
+                                    f"{title_provider}_max_tokens": 60,
+                                    f"{title_provider}_system_prompt": "",
+                                    "temperature": 0.3,
+                                    "system_prompt": "",
+                                    "max_tokens": 60,
+                                })
+
+                                generated = ""
+                                for chunk in title_stream(
+                                    [{"role": "user", "content": title_prompt}],
+                                    title_cfg,
+                                ):
+                                    generated += chunk
+
+                                generated = generated.strip().strip('"').strip("'").strip()
+                                if generated:
+                                    generated = generated[:60]
+                                    if self.chat_manager.update_title(generated):
+                                        yield f"data: {json.dumps({'type':'title','title':generated,'filename':self.chat_manager.current_chat_file})}\n\n"
+                    except Exception as title_err:
+                        print(f"Auto-title generation failed: {title_err}")
+
                     yield f"data: {json.dumps({'type':'complete'})}\n\n"
                 except Exception as e:
                     err = f"Error: {e}"

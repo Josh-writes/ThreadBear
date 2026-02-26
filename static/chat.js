@@ -1355,6 +1355,11 @@ async function loadPrompts() {
             }
             E.messages.scrollTop = E.messages.scrollHeight;
           }
+        } else if (data.type === 'title') {
+          const ti = state.history.findIndex(c => c.filename === (data.filename || state.currentChatFile));
+          if (ti !== -1) state.history[ti].title = data.title;
+          renderChatTitle();
+          renderHistory();
         } else if (data.type === 'complete') {
           src.close();
           state.streaming = false;

@@ -92,6 +92,10 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "llamacpp_server_args": "-ngl 99 -t 16",
     "llamacpp_total_vram_gb": 0,
 
+    # Auto-title generation
+    "title_provider": "groq",
+    "title_model": "llama-3.1-8b-instant",
+
     # Misc
     "temp_mode_warning": True,
 }
