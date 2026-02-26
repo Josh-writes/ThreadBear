@@ -225,17 +225,16 @@ def fetch_google_catalog(api_key: str) -> List[Dict]:
 def call_google_stream(messages: List[Dict], config: Dict) -> Iterator[str]:
     """
     True streaming adapter for Google Gemini API using streamGenerateContent endpoint.
-    Uses Server-Sent Events (SSE) to stream response chunks as they're generated.
+    Uses alt=sse to get Server-Sent Events format from Gemini.
+    Yields plain text chunks (the flask layer wraps them in SSE for the frontend).
     """
     try:
         api_key = os.getenv('GOOGLE_API_KEY') or config.get('google_api_key')
         if not api_key or api_key == "your_google_api_key_here":
-            yield f"data: {json.dumps({'type':'error','content':'Google API key not found. Please set GOOGLE_API_KEY environment variable.'})}\n\n"
-            yield f"data: {json.dumps({'type':'complete'})}\n\n"
+            yield "Error: Google API key not found. Please set GOOGLE_API_KEY environment variable."
             return
 
         model_name = config.get("google_model", "gemini-2.0-flash")
-        # Use streamGenerateContent endpoint for true streaming
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:streamGenerateContent"
 
         full_prompt = ""
@@ -243,7 +242,7 @@ def call_google_stream(messages: List[Dict], config: Dict) -> Iterator[str]:
         if system_instruction:
             full_prompt += f"System: {system_instruction}\n\n"
         for msg in messages:
-            role = "user" if msg["role"] == "user" else "model"
+            role = "User" if msg["role"] == "user" else "Assistant"
             full_prompt += f"{role}: {msg['content']}\n\n"
 
         gen_cfg = {
@@ -257,22 +256,16 @@ def call_google_stream(messages: List[Dict], config: Dict) -> Iterator[str]:
             gen_cfg["topK"] = config["top_k"]
 
         req = (config.get("max_tokens")
-               or config.get("openrouter_max_tokens")
-               or config.get("groq_max_tokens")
-               or config.get("mistral_max_tokens")
                or config.get("google_max_tokens"))
         if isinstance(req, int) and req > 0:
-            gen_cfg["maxOutputTokens"] = min(req, 4096 if "google" == "groq" else req)
+            gen_cfg["maxOutputTokens"] = req
 
         payload = {
             "contents": [{"parts": [{"text": full_prompt.strip()}]}],
             "generationConfig": gen_cfg
         }
-        headers = {
-            "Content-Type": "application/json",
-            "Accept": "text/event-stream"
-        }
-        params = {"key": api_key}
+        headers = {"Content-Type": "application/json"}
+        params = {"key": api_key, "alt": "sse"}
 
         response = _web_session.post(url, headers=headers, json=payload, params=params, stream=True, timeout=60)
 
@@ -284,10 +277,9 @@ def call_google_stream(messages: List[Dict], config: Dict) -> Iterator[str]:
                 if line.startswith('data: '):
                     payload_str = line[6:].strip()
                     if not payload_str or payload_str == '[DONE]':
-                        break
+                        continue
                     try:
                         chunk_data = json.loads(payload_str)
-                        # Extract content from each chunk in the stream
                         if 'candidates' in chunk_data and chunk_data['candidates']:
                             candidate = chunk_data['candidates'][0]
                             if 'content' in candidate:
@@ -298,11 +290,10 @@ def call_google_stream(messages: List[Dict], config: Dict) -> Iterator[str]:
                     except json.JSONDecodeError:
                         continue
         else:
-            yield f"data: {json.dumps({'type':'error','content':'Error: ' + str(response.status_code) + ' ' + str(response.reason) + ' - ' + str(response.text)})}\n\n"
-            yield f"data: {json.dumps({'type':'complete'})}\n\n"
+            error_text = response.text[:500] if response.text else response.reason
+            yield f"Error: Google API {response.status_code} — {error_text}"
     except Exception as e:
-        yield f"data: {json.dumps({'type':'error','content':'Google streaming error: ' + str(e)})}\n\n"
-        yield f"data: {json.dumps({'type':'complete'})}\n\n"
+        yield f"Error: Google streaming error: {e}"
 
 def call_google(messages: List[Dict], config: Dict) -> str:
     try:
