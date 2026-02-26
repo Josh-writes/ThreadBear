@@ -239,8 +239,24 @@
     if (!selectedModel || !loadedModel) return false;
     const byName = loadedModel.name || '';
     const byPath = loadedModel.path || '';
+    const byConfigured = loadedModel.configured_name || '';
     const byBasename = byPath.split('/').pop().split('\\').pop();
-    return selectedModel === byName || selectedModel === byPath || selectedModel === byBasename;
+
+    // Exact match first (includes configured_name — the name the user selected)
+    if (selectedModel === byName || selectedModel === byPath || selectedModel === byBasename || selectedModel === byConfigured) return true;
+
+    // Normalize: lowercase, strip .gguf suffix, collapse separators
+    const norm = (s) => s.toLowerCase().replace(/\.gguf$/i, '').replace(/[-_]/g, '');
+    const sel = norm(selectedModel);
+    const candidates = [byName, byPath, byBasename, byConfigured].map(norm);
+
+    // Normalized exact match
+    if (candidates.some(c => c === sel)) return true;
+
+    // Substring: selected model name appears in loaded path/name or vice versa
+    if (candidates.some(c => c && (c.includes(sel) || sel.includes(c)))) return true;
+
+    return false;
   }
 
   function formatVramLabel(vram) {
@@ -708,11 +724,7 @@
         } else {
           E.contextWindowInput.value = '';
         }
-        if (settings.n_gpu_layers !== undefined) {
-          E.nglInput.value = settings.n_gpu_layers;
-        } else {
-          E.nglInput.value = '';
-        }
+        E.nglInput.value = (settings.n_gpu_layers !== undefined) ? settings.n_gpu_layers : 99;
         if (E.vramRequiredInput) {
           if (settings.vram_required_gb !== undefined) {
             E.vramRequiredInput.value = settings.vram_required_gb;
@@ -1969,13 +1981,11 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
           settings.context_window = cw;
         }
 
-        // GPU layers (llamacpp only, -1 = all, blank = default/all)
+        // GPU layers (llamacpp only, default 99 = all on GPU)
         const nglVal = E.nglInput.value.trim();
-        if (nglVal !== '') {
-          const ngl = parseInt(nglVal);
-          if (ngl >= -1) {
-            settings.n_gpu_layers = ngl;
-          }
+        const ngl = (nglVal !== '') ? parseInt(nglVal) : 99;
+        if (ngl >= -1) {
+          settings.n_gpu_layers = ngl;
         }
 
         if (E.vramRequiredInput) {
@@ -2110,6 +2120,7 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
           const status = await statusResp.json();
           const loadedModel = (status.loaded_models || [])[0];
           if (status.success && loadedModel && !modelMatchesLoaded(m, loadedModel)) {
+            // Different model loaded — unload it first, then auto-load the new one
             E.loadUnloadModelBtn.disabled = true;
             E.loadUnloadModelBtn.innerHTML = 'Unloading<span class="loading-dots"></span>';
             const unloadResp = await fetch('/api/llamacpp/unload', {
@@ -2119,16 +2130,21 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
             });
             const unloadData = await unloadResp.json();
             if (unloadData.success) {
-              // Unload complete — show "Load" for the newly selected model
+              // Brief "Load" then auto-load the new model
               E.loadUnloadModelBtn.textContent = 'Load';
               E.loadUnloadModelBtn.disabled = false;
               E.ctxSizeSelect.style.display = '';
+              // Auto-load new model after a short delay
+              setTimeout(() => triggerModelLoad(m), 500);
             } else {
               console.warn('Unload failed:', unloadData.error);
-              // Refresh status to recover
               await updateLoadUnloadButtonText();
             }
-            return; // Skip the updateLoadUnloadButtonText below — we already set the state
+            return;
+          } else if (status.success && status.server_running && !loadedModel) {
+            // Server running but no model loaded — auto-load the selected model
+            setTimeout(() => triggerModelLoad(m), 500);
+            return;
           }
         } catch (err) {
           console.warn('Could not auto-unload previous model on selection change:', err);
@@ -2922,6 +2938,52 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
     }
   }
 
+  // Auto-load a model on the llama.cpp server (used after model switch in dropdown)
+  async function triggerModelLoad(modelName) {
+    if (!modelName) return;
+    console.log(`[auto-load] Triggering load for ${modelName}`);
+    E.loadUnloadModelBtn.disabled = true;
+    E.loadUnloadModelBtn.innerHTML = 'Loading<span class="loading-dots"></span>';
+    E.ctxSizeSelect.style.display = 'none';
+    try {
+      const nCtx = parseInt(E.ctxSizeSelect.value) || 0;
+      const loadPayload = { model: modelName, n_ctx: nCtx, n_gpu_layers: 99 };
+      // Fetch per-model settings for custom n_gpu_layers
+      try {
+        const msRes = await fetch(`/api/models/llamacpp/settings/${encodeURIComponent(modelName)}`);
+        const msData = await msRes.json();
+        if (msData.success && msData.settings && msData.settings.n_gpu_layers !== undefined) {
+          loadPayload.n_gpu_layers = msData.settings.n_gpu_layers;
+        }
+      } catch (_) {}
+      const resp = await fetch('/api/llamacpp/load', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(loadPayload),
+      });
+      const json = await resp.json();
+      if (json.success && json.loading) {
+        // Async load started — poll status until done
+        setTimeout(async () => {
+          try { await updateLoadUnloadButtonText(); } catch (_) {}
+        }, 3000);
+      } else if (json.success) {
+        // Synchronous load completed
+        await updateLoadUnloadButtonText();
+      } else {
+        console.warn('[auto-load] Load failed:', json.error);
+        E.loadUnloadModelBtn.textContent = 'Load';
+        E.loadUnloadModelBtn.disabled = false;
+        E.ctxSizeSelect.style.display = '';
+      }
+    } catch (err) {
+      console.error('[auto-load] Error:', err);
+      E.loadUnloadModelBtn.textContent = 'Load';
+      E.loadUnloadModelBtn.disabled = false;
+      E.ctxSizeSelect.style.display = '';
+    }
+  }
+
   async function updateLoadUnloadButtonText() {
     const provider = E.providerHeader.value;
     const supportsLoadUnload = (provider === 'llamacpp');
@@ -3042,6 +3104,7 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
 
         if (status.success && status.loaded_models && status.loaded_models.length > 0) {
           const loadedModel = status.loaded_models[0];
+          console.log(`[btn-match] selected="${E.modelHeader.value}" loaded name="${loadedModel.name}" path="${loadedModel.path}" match=${modelMatchesLoaded(E.modelHeader.value, loadedModel)}`);
           if (!modelMatchesLoaded(E.modelHeader.value, loadedModel)) {
             E.loadUnloadModelBtn.textContent = 'Load';
             E.loadUnloadModelBtn.disabled = false;
@@ -3213,8 +3276,8 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
           } else {
             console.log('Making llamacpp load API call...');
             const nCtx = parseInt(E.ctxSizeSelect.value) || 0;
-            // Fetch per-model settings to get custom n_gpu_layers
-            const loadPayload = { model: modelName, n_ctx: nCtx };
+            // Fetch per-model settings to get custom n_gpu_layers (default 99)
+            const loadPayload = { model: modelName, n_ctx: nCtx, n_gpu_layers: 99 };
             try {
               const msRes = await fetch(`/api/models/llamacpp/settings/${encodeURIComponent(modelName)}`);
               const msData = await msRes.json();
