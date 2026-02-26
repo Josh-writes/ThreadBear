@@ -560,17 +560,36 @@ def _resolve_llamacpp_model(config: Dict) -> str:
         resp = _web_session.get(f"{base}/v1/models", timeout=5)
         if resp.status_code == 200:
             models = resp.json().get("data", [])
-            # Exact match
-            for m in models:
-                if m.get("id") == configured:
-                    return configured
-            # Single model loaded — just use it
-            if len(models) == 1 and models[0].get("id"):
-                return models[0]["id"]
-            # Partial/fuzzy: configured name appears in the server's model id or vice versa
+            ids = [m.get("id", "") for m in models]
+
+            # 1. Exact match
+            if configured in ids:
+                return configured
+
+            # 2. Strip .gguf suffix and try again (stale config may have extension)
+            bare = configured.rsplit(".gguf", 1)[0] if configured.endswith(".gguf") else configured
+            if bare != configured and bare in ids:
+                return bare
+
+            # 3. Single model on server — just use it
+            if len(ids) == 1 and ids[0]:
+                return ids[0]
+
+            # 4. Find loaded/ready models and prefer those
             for m in models:
                 mid = m.get("id", "")
-                if configured in mid or mid in configured:
+                status_val = ""
+                st = m.get("status")
+                if isinstance(st, dict):
+                    status_val = st.get("value", "")
+                if status_val in ("loaded", "ready"):
+                    # If configured name matches this loaded model (with or without .gguf)
+                    if configured == mid or bare == mid or mid in configured:
+                        return mid
+
+            # 5. Last resort: find any model whose id matches stripped name
+            for mid in ids:
+                if bare == mid:
                     return mid
     except Exception:
         pass

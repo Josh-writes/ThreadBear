@@ -1090,6 +1090,10 @@ class FlaskChatApp:
                 if not model:
                     return jsonify({"success": False, "error": "No model specified"}), 400
 
+                # Normalize: strip .gguf suffix to match router alias format
+                if model.endswith(".gguf") and "/" not in model:
+                    model = model.rsplit(".gguf", 1)[0]
+
                 base = self.config.get("llamacpp_url", "http://192.168.2.115:8080").rstrip("/")
                 model_dir = self.config.get("llamacpp_model_dir", "/home/josh/models")
 
@@ -1186,6 +1190,8 @@ class FlaskChatApp:
                         return jsonify({"success": False, "error": f"Server offline: {msg}"}), 503
 
                 # --- Router mode load (async) ---
+                # Capture the previously loaded model BEFORE updating config
+                prev_model = self.config.get("llamacpp_model", "")
                 self._single_model_loading = True
                 self.config.set("llamacpp_model", model)
                 self.config.save_config()
@@ -1193,10 +1199,9 @@ class FlaskChatApp:
                 def _bg_router_load():
                     try:
                         # Unload any currently loaded model first to free VRAM
-                        current_model = self.config.get("llamacpp_model", "")
-                        if current_model and current_model != model:
+                        if prev_model and prev_model != model:
                             try:
-                                requests.post(f"{base}/models/unload", json={"model": current_model}, timeout=30)
+                                requests.post(f"{base}/models/unload", json={"model": prev_model}, timeout=30)
                                 time.sleep(1)
                             except Exception:
                                 pass
