@@ -2115,42 +2115,8 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
       state.currentModel = m;
       await postJSON('/api/config/update', { provider, model: m });
 
-      if (provider === 'llamacpp') {
-        try {
-          const statusResp = await fetch('/api/llamacpp/status');
-          const status = await statusResp.json();
-          const loadedModel = (status.loaded_models || [])[0];
-          if (status.success && loadedModel && !modelMatchesLoaded(m, loadedModel)) {
-            // Different model loaded — unload it first, then auto-load the new one
-            E.loadUnloadModelBtn.disabled = true;
-            E.loadUnloadModelBtn.innerHTML = 'Unloading<span class="loading-dots"></span>';
-            const unloadResp = await fetch('/api/llamacpp/unload', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ slot_id: 0 })
-            });
-            const unloadData = await unloadResp.json();
-            if (unloadData.success) {
-              // Brief "Load" then auto-load the new model
-              E.loadUnloadModelBtn.textContent = 'Load';
-              E.loadUnloadModelBtn.disabled = false;
-              E.ctxSizeSelect.style.display = '';
-              // Auto-load new model after a short delay
-              setTimeout(() => triggerModelLoad(m), 500);
-            } else {
-              console.warn('Unload failed:', unloadData.error);
-              await updateLoadUnloadButtonText();
-            }
-            return;
-          } else if (status.success && status.server_running && !loadedModel) {
-            // Server running but no model loaded — auto-load the selected model
-            setTimeout(() => triggerModelLoad(m), 500);
-            return;
-          }
-        } catch (err) {
-          console.warn('Could not auto-unload previous model on selection change:', err);
-        }
-      }
+      // For llamacpp, just update the button text — don't auto-load on model switch.
+      // Model will be loaded when user clicks Load or sends a message.
       
       // Update max tokens label for the selected model
       await updateModelMaxTokensLabel(provider, m);
@@ -3041,10 +3007,21 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
           E.loadUnloadModelBtn.innerHTML = `Loading${modelInfo}<span class="loading-dots"></span>`;
           E.loadUnloadModelBtn.disabled = true;
           E.ctxSizeSelect.style.display = 'none';
-          setTimeout(async () => {
-            try { await updateLoadUnloadButtonText(); } catch (_) {}
-          }, 3000);
+          // Use setInterval for reliable polling (setTimeout can be throttled in background tabs)
+          if (!window._loadPollInterval) {
+            window._loadPollInterval = setInterval(async () => {
+              try {
+                await updateLoadUnloadButtonText();
+              } catch (_) {}
+            }, 3000);
+          }
           return;
+        }
+
+        // Clear loading poll interval if we're no longer loading
+        if (window._loadPollInterval) {
+          clearInterval(window._loadPollInterval);
+          window._loadPollInterval = null;
         }
 
         // Show load error if the background load failed

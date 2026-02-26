@@ -787,9 +787,7 @@ class FlaskChatApp:
                         if model and model.endswith(".gguf") and "/" not in model:
                             model = model.rsplit(".gguf", 1)[0]
 
-                        print(f"[stream] Checking model '{model}' at {base_url}")
                         loaded_ok, load_err = self._ensure_model_loaded(model, base_url)
-                        print(f"[stream] _ensure_model_loaded -> ok={loaded_ok}, err={load_err!r}")
                         if not loaded_ok:
                             yield f"data: {json.dumps({'type':'error','content': f'Auto-load failed: {load_err}'})}\n\n"
                             yield f"data: {json.dumps({'type':'complete'})}\n\n"
@@ -995,11 +993,13 @@ class FlaskChatApp:
                 except Exception:
                     pass
 
-                # If a model is reported as loaded, clear transient loading state.
+                # If the specific model we're loading is reported as loaded, clear transient loading state.
                 # This avoids stale UI "Loading..." state when the background load thread
                 # has not finished yet but llama.cpp is already serving inference.
                 if loaded and self._model_loading:
-                    self._model_loading = False
+                    loading_model = self.config.get("llamacpp_model", "")
+                    if any(lm.get("name") == loading_model or lm.get("path") == loading_model for lm in loaded):
+                        self._model_loading = False
 
                 # Try to get n_ctx from /slots for loaded models
                 if loaded:
@@ -1166,20 +1166,17 @@ class FlaskChatApp:
                         # Unload any currently loaded model first to free VRAM
                         if prev_model and prev_model != model:
                             try:
-                                print(f"[bg-load] Unloading previous model: {prev_model}")
                                 requests.post(f"{base}/models/unload", json={"model": prev_model}, timeout=30)
                                 time.sleep(1)
-                            except Exception as e:
-                                print(f"[bg-load] Unload failed (ok): {e}")
+                            except Exception:
+                                pass
 
                         # Load via router mode API (POST /models/load)
                         loaded = False
                         load_error = ""
 
                         try:
-                            print(f"[bg-load] POST /models/load model={model} base={base}")
                             r = requests.post(f"{base}/models/load", json={"model": model}, timeout=30)
-                            print(f"[bg-load] POST response: {r.status_code} {r.text[:200]}")
                             if r.status_code == 200:
                                 rj = r.json()
                                 if rj.get("success"):
@@ -1222,10 +1219,8 @@ class FlaskChatApp:
                                 load_error = f"Server returned {r.status_code}"
                         except requests.exceptions.ConnectionError:
                             load_error = "Server crashed during load"
-                            print(f"[bg-load] ConnectionError during load")
                         except Exception as e:
                             load_error = str(e)
-                            print(f"[bg-load] Exception during load: {e}")
 
                         # Fallback: legacy slots API
                         if not loaded and "crashed" not in load_error:
