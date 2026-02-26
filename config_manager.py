@@ -32,7 +32,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "groq_base_url": "https://api.groq.com/openai/v1",
 
     # Google
-    "google_model": "gemini-1.5-pro",
+    "google_model": "gemini-2.0-flash",
     "google_temperature": 0.7,
     "google_system_prompt": "",
     "google_max_tokens": 4096,
@@ -149,7 +149,7 @@ class ConfigManager:
                 "llama-3.3-70b-versatile", "llama-3.1-8b-instant",
                 "mixtral-8x7b-32768", "gemma2-9b-it"
             ],
-            "google": ["gemini-1.5-pro", "gemini-1.5-flash", "gemini-2.0-flash"],
+            "google": ["gemini-2.0-flash", "gemini-2.0-flash-lite", "gemini-2.5-flash"],
             "mistral": ["mistral-small-latest", "mistral-medium-latest", "mistral-large-latest", "open-mistral-nemo"],
             "openrouter": ["meta-llama/llama-3.2-3b-instruct:free", "mistralai/mistral-7b-instruct:free"],
             "llamacpp": ["model"],  # Placeholder - will be populated from server

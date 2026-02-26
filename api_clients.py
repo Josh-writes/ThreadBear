@@ -186,6 +186,8 @@ def call_groq_stream(messages: List[Dict], config: Dict) -> Iterator[str]:
 # --- Google (Gemini) ---
 def fetch_google_catalog(api_key: str) -> List[Dict]:
     """Fetch the model catalog from Google's Gemini API (requires auth)."""
+    # Known deprecated models to exclude
+    DEPRECATED_PREFIXES = ("gemini-1.5", "gemini-pro", "gemini-ultra")
     try:
         resp = _web_session.get(
             "https://generativelanguage.googleapis.com/v1beta/models",
@@ -203,6 +205,9 @@ def fetch_google_catalog(api_key: str) -> List[Dict]:
             # name is like "models/gemini-1.5-pro-001" — strip prefix
             raw_name = m.get("name", "")
             model_id = raw_name.replace("models/", "") if raw_name.startswith("models/") else raw_name
+            # Skip deprecated models
+            if any(model_id.startswith(p) for p in DEPRECATED_PREFIXES):
+                continue
             catalog.append({
                 "id": model_id,
                 "name": m.get("displayName", model_id),
@@ -219,32 +224,83 @@ def fetch_google_catalog(api_key: str) -> List[Dict]:
 
 def call_google_stream(messages: List[Dict], config: Dict) -> Iterator[str]:
     """
-    Simple streaming adapter for Google: we call the non-streaming endpoint once
-    and then yield the text in small chunks so the UI can display progressive output.
-    If you later switch to Google's real streaming API, replace the body of this
-    function with a true stream parser and keep the same signature.
+    True streaming adapter for Google Gemini API using streamGenerateContent endpoint.
+    Uses alt=sse to get Server-Sent Events format from Gemini.
+    Yields plain text chunks (the flask layer wraps them in SSE for the frontend).
     """
     try:
-        text = call_google(messages, config)  # existing non-streaming call
-        if text is None:
+        api_key = os.getenv('GOOGLE_API_KEY') or config.get('google_api_key')
+        if not api_key or api_key == "your_google_api_key_here":
+            yield "Error: Google API key not found. Please set GOOGLE_API_KEY environment variable."
             return
-        # If it's an error (e.g., starts with "Error:"), still yield it so the UI shows it
-        if not isinstance(text, str):
-            text = str(text)
 
-        CHUNK = 500  # characters per chunk for a smooth UI
-        for i in range(0, len(text), CHUNK):
-            yield text[i:i+CHUNK]
+        model_name = config.get("google_model", "gemini-2.0-flash")
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:streamGenerateContent"
+
+        full_prompt = ""
+        system_instruction = config.get("google_system_prompt", "")
+        if system_instruction:
+            full_prompt += f"System: {system_instruction}\n\n"
+        for msg in messages:
+            role = "User" if msg["role"] == "user" else "Assistant"
+            full_prompt += f"{role}: {msg['content']}\n\n"
+
+        gen_cfg = {
+            "temperature": config.get("google_temperature", 0.7),
+            "topP": 0.8,
+            "topK": 10
+        }
+        if "top_p" in config:
+            gen_cfg["topP"] = config["top_p"]
+        if "top_k" in config:
+            gen_cfg["topK"] = config["top_k"]
+
+        req = (config.get("max_tokens")
+               or config.get("google_max_tokens"))
+        if isinstance(req, int) and req > 0:
+            gen_cfg["maxOutputTokens"] = req
+
+        payload = {
+            "contents": [{"parts": [{"text": full_prompt.strip()}]}],
+            "generationConfig": gen_cfg
+        }
+        headers = {"Content-Type": "application/json"}
+        params = {"key": api_key, "alt": "sse"}
+
+        response = _web_session.post(url, headers=headers, json=payload, params=params, stream=True, timeout=60)
+
+        if response.status_code == 200:
+            for line in response.iter_lines():
+                if not line:
+                    continue
+                line = line.decode('utf-8', errors='ignore')
+                if line.startswith('data: '):
+                    payload_str = line[6:].strip()
+                    if not payload_str or payload_str == '[DONE]':
+                        continue
+                    try:
+                        chunk_data = json.loads(payload_str)
+                        if 'candidates' in chunk_data and chunk_data['candidates']:
+                            candidate = chunk_data['candidates'][0]
+                            if 'content' in candidate:
+                                parts = candidate['content'].get('parts', [])
+                                for part in parts:
+                                    if 'text' in part and part['text']:
+                                        yield part['text']
+                    except json.JSONDecodeError:
+                        continue
+        else:
+            error_text = response.text[:500] if response.text else response.reason
+            yield f"Error: Google API {response.status_code} — {error_text}"
     except Exception as e:
-        yield f"data: {json.dumps({'type':'error','content':'Google streaming error: ' + str(e)})}\n\n"
-        yield f"data: {json.dumps({'type':'complete'})}\n\n"
+        yield f"Error: Google streaming error: {e}"
 
 def call_google(messages: List[Dict], config: Dict) -> str:
     try:
         api_key = os.getenv('GOOGLE_API_KEY') or config.get('google_api_key')
         if not api_key or api_key == "your_google_api_key_here":
             return "Error: Google API key not found. Please set GOOGLE_API_KEY environment variable."
-        model_name = config.get("google_model", "gemini-1.5-pro")
+        model_name = config.get("google_model", "gemini-2.0-flash")
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent"
 
         full_prompt = ""

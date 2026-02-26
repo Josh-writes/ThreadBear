@@ -2094,6 +2094,7 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
     // Header provider/model
     E.providerHeader.addEventListener('change', async () => {
       const p = E.providerHeader.value;
+      state.currentProvider = p;  // Keep state in sync
 
       // Mirror to settings immediately
       E.providerSelect.value = p;
