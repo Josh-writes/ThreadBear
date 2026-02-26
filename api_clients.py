@@ -546,6 +546,37 @@ def get_available_llamacpp_models(config_or_url=None) -> List[str]:
     except Exception:
         return []
 
+
+def _resolve_llamacpp_model(config: Dict) -> str:
+    """Resolve the model name to the ID the llama.cpp server actually expects.
+
+    In router mode the server uses aliases (dir name or filename-without-.gguf).
+    In single-model mode it uses the full filesystem path.
+    Query /v1/models to find what the server actually knows.
+    """
+    configured = config.get("llamacpp_model", "model")
+    try:
+        base = _llamacpp_base_from(config)
+        resp = _web_session.get(f"{base}/v1/models", timeout=5)
+        if resp.status_code == 200:
+            models = resp.json().get("data", [])
+            # Exact match
+            for m in models:
+                if m.get("id") == configured:
+                    return configured
+            # Single model loaded — just use it
+            if len(models) == 1 and models[0].get("id"):
+                return models[0]["id"]
+            # Partial/fuzzy: configured name appears in the server's model id or vice versa
+            for m in models:
+                mid = m.get("id", "")
+                if configured in mid or mid in configured:
+                    return mid
+    except Exception:
+        pass
+    return configured
+
+
 def call_llamacpp(messages: List[Dict], config: Dict) -> str:
     """
     Call llama.cpp server API (OpenAI-compatible) synchronously.
@@ -564,7 +595,7 @@ def call_llamacpp(messages: List[Dict], config: Dict) -> str:
         # Sanitize for strict role-alternation chat templates
         api_messages = _llamacpp_sanitize_messages(api_messages)
 
-        model_name = config.get("llamacpp_model", "model")
+        model_name = _resolve_llamacpp_model(config)
 
         data = {
             "model": model_name,
@@ -615,7 +646,7 @@ def call_llamacpp_stream(messages: List[Dict], config: Dict) -> Iterator[str]:
         # Sanitize for strict role-alternation chat templates
         api_messages = _llamacpp_sanitize_messages(api_messages)
 
-        model_name = config.get("llamacpp_model", "model")
+        model_name = _resolve_llamacpp_model(config)
 
         data = {
             "model": model_name,

@@ -942,11 +942,8 @@ class FlaskChatApp:
                         for m in rm.json().get("data", []):
                             mid = m.get("id", "")
                             status_val = m.get("status", {}).get("value", "") if isinstance(m.get("status"), dict) else ""
-                            # Router mode: only count "ready" models as loaded
-                            # Legacy mode / single-model: no status field, treat all as loaded
-                            if mid and (status_val in ("ready", "") or not status_val):
-                                if status_val == "unloaded" or status_val == "loading":
-                                    continue
+                            # Skip models that are explicitly unloaded or still loading
+                            if mid and status_val not in ("unloaded", "loading"):
                                 # In single-model mode, the id is the full path — use the
                                 # configured model name for display consistency
                                 display_name = mid
@@ -1507,7 +1504,11 @@ class FlaskChatApp:
 
         def _ssh_scan_models_dir(self_ref):
             """Scan the remote models directory via SSH for .gguf files/folders.
-            Returns a list of dicts: [{"id": name, "size_gb": float, "path": str}, ...]
+            Returns a list of dicts: [{"id": alias, "size_gb": float, "path": str, "gguf": relpath}, ...]
+
+            The "id" matches what llama.cpp router mode uses as the model alias:
+              - Root .gguf files:  filename without .gguf extension
+              - Subdirectory models: the directory name (first path component)
             """
             cfg = self_ref.config
             if not cfg.get("llamacpp_ssh_enabled"):
@@ -1526,7 +1527,6 @@ class FlaskChatApp:
             ]
 
             # Recursively find ALL .gguf files in model_dir and subdirectories.
-            # Uses GNU find -printf for efficient single-command scanning.
             # %P = path relative to model_dir, %s = size in bytes
             q_model_dir = shlex.quote(model_dir)
             scan_cmd = (
@@ -1538,23 +1538,43 @@ class FlaskChatApp:
                     ssh_base + [scan_cmd],
                     timeout=45, capture_output=True, text=True, check=False,
                 )
-                models = []
+                seen_aliases = {}  # alias -> model dict (dedup subdirs with multiple .gguf)
                 for line in result.stdout.strip().splitlines():
                     parts = line.split("\t")
-                    if len(parts) >= 2:
-                        name = parts[0].strip()
-                        try:
-                            size_bytes = int(parts[1])
-                            size_gb = round(size_bytes / (1024**3), 1)
-                        except (ValueError, IndexError):
-                            size_gb = 0
-                        if name:
-                            models.append({
-                                "id": name,
-                                "size_gb": size_gb,
-                                "path": f"{model_dir}/{name}",
-                            })
-                return models
+                    if len(parts) < 2:
+                        continue
+                    rel_path = parts[0].strip()
+                    if not rel_path:
+                        continue
+                    try:
+                        size_bytes = int(parts[1])
+                        size_gb = round(size_bytes / (1024**3), 1)
+                    except (ValueError, IndexError):
+                        size_gb = 0
+
+                    # Derive the alias the same way llama.cpp router does:
+                    #   "subdir/Model.gguf"  -> alias = "subdir"
+                    #   "Model.gguf"         -> alias = "Model" (strip .gguf)
+                    if "/" in rel_path:
+                        alias = rel_path.split("/")[0]
+                    else:
+                        alias = rel_path.rsplit(".gguf", 1)[0]
+
+                    # Keep the largest .gguf if a subdir has multiple
+                    if alias in seen_aliases:
+                        if size_gb > seen_aliases[alias]["size_gb"]:
+                            seen_aliases[alias]["size_gb"] = size_gb
+                            seen_aliases[alias]["gguf"] = rel_path
+                            seen_aliases[alias]["path"] = f"{model_dir}/{rel_path}"
+                    else:
+                        seen_aliases[alias] = {
+                            "id": alias,
+                            "size_gb": size_gb,
+                            "path": f"{model_dir}/{rel_path}",
+                            "gguf": rel_path,
+                        }
+
+                return list(seen_aliases.values())
             except Exception as e:
                 print(f"SSH scan models dir failed: {e}")
                 return []
