@@ -74,6 +74,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
 
     # llama.cpp remote server
     "llamacpp_url": "http://192.168.2.115:8080",
+    "llamacpp_zerotier_url": "http://10.210.60.6:8080",
     "llamacpp_model_dir": "/home/josh/models",
     "llamacpp_model": "model",
     "llamacpp_temperature": 0.7,
@@ -84,6 +85,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     # llama.cpp SSH remote management
     "llamacpp_ssh_enabled": True,
     "llamacpp_ssh_host": "192.168.2.115",
+    "llamacpp_zerotier_ssh_host": "10.210.60.6",
     "llamacpp_ssh_port": 2222,
     "llamacpp_ssh_user": "josh",
     "llamacpp_server_binary": "~/src/llama.cpp/build/bin/llama-server",

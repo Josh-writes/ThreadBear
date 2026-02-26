@@ -76,6 +76,10 @@ class FlaskChatApp:
         self._idle_unloaded = False  # True when model was auto-unloaded due to idle
         self._last_load_error = None  # Dict with error details from last failed load (one-shot)
 
+        # ZeroTier fallback: cache the detected (url, ssh_host) tuple
+        self._cached_connection = None  # (url, ssh_host, timestamp)
+        self._connection_cache_ttl = 30  # seconds
+
         self.setup_routes()
         self.server = None
 
@@ -646,7 +650,9 @@ class FlaskChatApp:
             if provider == "llamacpp":
                 ms = self.config.get_model_settings(provider, model)
                 if "context_window" not in ms or not ms["context_window"]:
-                    auto = get_llamacpp_context_size(self.config.config)
+                    _ctx_cfg = dict(self.config.config)
+                    _ctx_cfg["llamacpp_url"], _ = self._get_llamacpp_connection()
+                    auto = get_llamacpp_context_size(_ctx_cfg)
                     if auto > 0:
                         context_window = auto
 
@@ -755,6 +761,10 @@ class FlaskChatApp:
 
                     # Build merged config to pass to API clients
                     merged_cfg = dict(self.config.config)
+                    # Override llamacpp_url with detected (LAN/ZeroTier) URL
+                    if provider == "llamacpp":
+                        detected_url, _ = self._get_llamacpp_connection()
+                        merged_cfg["llamacpp_url"] = detected_url
                     merged_cfg.update({
                         "model": model,
                         f"{provider}_model": model,
@@ -922,6 +932,9 @@ class FlaskChatApp:
 
             # Build a merged config that pins the chosen model (and per-model settings)
             merged_cfg = dict(self.config.config)
+            if provider == "llamacpp":
+                detected_url, _ = self._get_llamacpp_connection()
+                merged_cfg["llamacpp_url"] = detected_url
             if model:
                 merged_cfg["model"] = model
                 merged_cfg[f"{provider}_model"] = model
@@ -942,7 +955,8 @@ class FlaskChatApp:
         def llamacpp_status():
             """Get llama.cpp server status and loaded model info."""
             try:
-                base = self.config.get("llamacpp_url", "http://192.168.2.115:8080").rstrip("/")
+                base, _ = self._get_llamacpp_connection(force_refresh=True)
+                base = base.rstrip("/")
                 ssh_on = bool(self.config.get("llamacpp_ssh_enabled", False))
                 loaded = []
 
@@ -1052,7 +1066,8 @@ class FlaskChatApp:
         def llamacpp_models():
             """List available models from llama.cpp server (requires --models-dir on server)."""
             try:
-                base = self.config.get("llamacpp_url", "http://127.0.0.1:8080").rstrip("/")
+                base, _ = self._get_llamacpp_connection()
+                base = base.rstrip("/")
                 r = requests.get(f"{base}/v1/models", timeout=5)
                 if r.status_code == 200:
                     data = r.json()
@@ -1090,7 +1105,8 @@ class FlaskChatApp:
                 if model.endswith(".gguf") and "/" not in model:
                     model = model.rsplit(".gguf", 1)[0]
 
-                base = self.config.get("llamacpp_url", "http://192.168.2.115:8080").rstrip("/")
+                base, _ = self._get_llamacpp_connection()
+                base = base.rstrip("/")
                 model_dir = self.config.get("llamacpp_model_dir", "/home/josh/models")
 
                 # Guard against known VRAM over-commit before attempting load
@@ -1235,7 +1251,9 @@ class FlaskChatApp:
                             _reset_idle_timer(self)
                             _start_idle_timer(self)
                             try:
-                                detected_ctx = get_llamacpp_context_size(self.config.config)
+                                _ctx_cfg = dict(self.config.config)
+                                _ctx_cfg["llamacpp_url"], _ = self._get_llamacpp_connection()
+                                detected_ctx = get_llamacpp_context_size(_ctx_cfg)
                                 if detected_ctx > 0:
                                     self.config.set_model_settings("llamacpp", model, {"context_window": detected_ctx})
                                     print(f"[load] Detected n_ctx={detected_ctx}")
@@ -1275,7 +1293,8 @@ class FlaskChatApp:
                 slot_id = data.get("slot_id", 0)
                 model_name = self.config.get("llamacpp_model", "")
 
-                base = self.config.get("llamacpp_url", "http://192.168.2.115:8080").rstrip("/")
+                base, _ = self._get_llamacpp_connection()
+                base = base.rstrip("/")
 
                 # Method 1: Router mode /models/unload (newer llama.cpp with --models-dir)
                 if model_name:
@@ -1311,7 +1330,8 @@ class FlaskChatApp:
                         try:
                             with self_ref.app.test_request_context():
                                 # Trigger unload via the same logic
-                                base = self_ref.config.get("llamacpp_url", "http://192.168.2.115:8080").rstrip("/")
+                                base, _ = self_ref._get_llamacpp_connection()
+                                base = base.rstrip("/")
                                 model_name = self_ref.config.get("llamacpp_model", "")
 
                                 if model_name:
@@ -1386,7 +1406,7 @@ class FlaskChatApp:
             """Fetch the last N lines of /tmp/llama-server.log via SSH."""
             cfg = self_ref.config
             try:
-                ssh_host = cfg.get("llamacpp_ssh_host", "192.168.2.115")
+                _, ssh_host = self_ref._get_llamacpp_connection()
                 ssh_port = int(cfg.get("llamacpp_ssh_port", 2222))
                 ssh_user = cfg.get("llamacpp_ssh_user", "josh")
                 result = subprocess.run(
@@ -1410,7 +1430,7 @@ class FlaskChatApp:
             if not cfg.get("llamacpp_ssh_enabled"):
                 return []
 
-            ssh_host = cfg.get("llamacpp_ssh_host", "192.168.2.115")
+            _, ssh_host = self_ref._get_llamacpp_connection()
             ssh_port = int(cfg.get("llamacpp_ssh_port", 2222))
             ssh_user = cfg.get("llamacpp_ssh_user", "josh")
             model_dir = cfg.get("llamacpp_model_dir", "/home/josh/models")
@@ -1486,7 +1506,8 @@ class FlaskChatApp:
         def llamacpp_server_ensure():
             """Ensure llama-server is running — idempotent. Auto-starts via SSH if needed."""
             # Already running?
-            base = self.config.get("llamacpp_url", "http://127.0.0.1:8080").rstrip("/")
+            base, _ = self._get_llamacpp_connection()
+            base = base.rstrip("/")
             try:
                 r = requests.get(f"{base}/health", timeout=2)
                 if r.status_code == 200:
@@ -1510,7 +1531,7 @@ class FlaskChatApp:
             if not cfg.get("llamacpp_ssh_enabled"):
                 return jsonify({"success": False, "error": "SSH management is disabled"}), 400
 
-            ssh_host = cfg.get("llamacpp_ssh_host", "192.168.2.115")
+            _, ssh_host = self._get_llamacpp_connection()
             ssh_port = int(cfg.get("llamacpp_ssh_port", 2222))
             ssh_user = cfg.get("llamacpp_ssh_user", "josh")
 
@@ -1541,6 +1562,8 @@ class FlaskChatApp:
                 "llamacpp_server_binary": self.config.get("llamacpp_server_binary", ""),
                 "llamacpp_server_args": self.config.get("llamacpp_server_args", ""),
                 "llamacpp_total_vram_gb": float(self.config.get("llamacpp_total_vram_gb", 0) or 0),
+                "llamacpp_zerotier_ssh_host": self.config.get("llamacpp_zerotier_ssh_host", ""),
+                "llamacpp_zerotier_url": self.config.get("llamacpp_zerotier_url", ""),
             })
 
         @app.route('/api/llamacpp/ssh-config', methods=['POST'])
@@ -1550,6 +1573,7 @@ class FlaskChatApp:
             allowed = {
                 "llamacpp_ssh_enabled", "llamacpp_ssh_host", "llamacpp_ssh_port",
                 "llamacpp_ssh_user", "llamacpp_server_binary", "llamacpp_server_args", "llamacpp_total_vram_gb",
+                "llamacpp_zerotier_ssh_host", "llamacpp_zerotier_url",
             }
             for key in allowed:
                 if key in data:
@@ -1921,6 +1945,59 @@ class FlaskChatApp:
     
     
     # --------------- helpers ---------------
+
+    def _get_llamacpp_connection(self, force_refresh=False):
+        """Return (url, ssh_host) for the reachable llama.cpp server.
+
+        Tries LAN first, falls back to ZeroTier.  Caches the result for
+        ``_connection_cache_ttl`` seconds so rapid polls don't re-probe.
+        """
+        import socket
+
+        now = time.time()
+        if not force_refresh and self._cached_connection:
+            url, ssh_host, ts = self._cached_connection
+            if now - ts < self._connection_cache_ttl:
+                return url, ssh_host
+
+        lan_url = self.config.get("llamacpp_url", "http://192.168.2.115:8080").rstrip("/")
+        zt_url = self.config.get("llamacpp_zerotier_url", "http://10.210.60.6:8080").rstrip("/")
+        lan_ssh = self.config.get("llamacpp_ssh_host", "192.168.2.115")
+        zt_ssh = self.config.get("llamacpp_zerotier_ssh_host", "10.210.60.6")
+
+        # 1. Try LAN /health
+        try:
+            r = requests.get(f"{lan_url}/health", timeout=1.5)
+            if r.status_code == 200:
+                self._cached_connection = (lan_url, lan_ssh, now)
+                return lan_url, lan_ssh
+        except Exception:
+            pass
+
+        # 2. Try ZeroTier /health
+        try:
+            r = requests.get(f"{zt_url}/health", timeout=1.5)
+            if r.status_code == 200:
+                self._cached_connection = (zt_url, zt_ssh, now)
+                return zt_url, zt_ssh
+        except Exception:
+            pass
+
+        # 3. Server not running — check SSH port reachability (LAN then ZeroTier)
+        ssh_port = int(self.config.get("llamacpp_ssh_port", 2222))
+        for url, ssh_host in [(lan_url, lan_ssh), (zt_url, zt_ssh)]:
+            try:
+                s = socket.create_connection((ssh_host, ssh_port), timeout=1.5)
+                s.close()
+                self._cached_connection = (url, ssh_host, now)
+                return url, ssh_host
+            except Exception:
+                pass
+
+        # 4. Nothing reachable — default to LAN
+        self._cached_connection = (lan_url, lan_ssh, now)
+        return lan_url, lan_ssh
+
     def _ensure_llamacpp_server(self):
         """Auto-start llama.cpp server if not running and SSH is enabled. Non-blocking."""
         if not self.config.get("llamacpp_ssh_enabled"):
@@ -1928,8 +2005,9 @@ class FlaskChatApp:
         if self._server_starting:
             return  # Already starting
 
-        # Quick health check
-        base = self.config.get("llamacpp_url", "http://127.0.0.1:8080").rstrip("/")
+        # Quick health check (uses cached connection probe)
+        base, _ = self._get_llamacpp_connection()
+        base = base.rstrip("/")
         try:
             r = requests.get(f"{base}/health", timeout=2)
             if r.status_code == 200:
@@ -1956,7 +2034,7 @@ class FlaskChatApp:
         if not cfg.get("llamacpp_ssh_enabled"):
             return False, "SSH management is disabled"
 
-        ssh_host = cfg.get("llamacpp_ssh_host", "192.168.2.115")
+        detected_url, ssh_host = self._get_llamacpp_connection()
         ssh_port = int(cfg.get("llamacpp_ssh_port", 2222))
         ssh_user = cfg.get("llamacpp_ssh_user", "josh")
         binary = cfg.get("llamacpp_server_binary", "~/src/llama.cpp/build/bin/llama-server")
@@ -1966,8 +2044,8 @@ class FlaskChatApp:
         # Strip any -ngl from extra_args since we control it via the ngl parameter
         extra_args = re.sub(r'-ngl\s+\d+', '', extra_args).strip()
 
-        parsed = urlparse(cfg.get("llamacpp_url", "http://192.168.2.115:8080"))
-        server_host = parsed.hostname or "0.0.0.0"
+        parsed = urlparse(detected_url)
+        server_host = "0.0.0.0"  # Always bind to all interfaces for ZeroTier accessibility
         server_port = parsed.port or 8080
 
         ssh_base = [
@@ -2010,7 +2088,7 @@ class FlaskChatApp:
             return False, f"SSH error: {e}"
 
         # Poll /health until server is ready (up to 15s)
-        base = cfg.get("llamacpp_url", "http://192.168.2.115:8080").rstrip("/")
+        base = detected_url.rstrip("/")
         for _ in range(30):
             time.sleep(0.5)
             try:
@@ -2036,7 +2114,7 @@ class FlaskChatApp:
         try:
             if not self.config.get("llamacpp_ssh_enabled"):
                 return
-            ssh_host = self.config.get("llamacpp_ssh_host", "")
+            _, ssh_host = self._get_llamacpp_connection()
             ssh_port = int(self.config.get("llamacpp_ssh_port", 2222))
             ssh_user = self.config.get("llamacpp_ssh_user", "")
             if not ssh_host or not ssh_user:

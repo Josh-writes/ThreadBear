@@ -2332,6 +2332,18 @@
                         <input type="number" class="setting-input" id="totalVramInput" min="0" max="200" step="0.1" placeholder="Optional (e.g. 24)">
                         <span class="setting-hint" style="font-size: 11px; color: var(--text-secondary); margin-top: 2px; display: block;">If set, loads are blocked when model's estimated VRAM exceeds this. Reduce ngl to offload to RAM.</span>
                     </div>
+                    <div class="setting-group" style="margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border-color);">
+                        <label class="setting-label" style="font-weight: 600;">ZeroTier Fallback</label>
+                        <span class="setting-hint" style="font-size: 11px; color: var(--text-secondary); margin-bottom: 8px; display: block;">LAN is tried first. If unreachable, ZeroTier address is used automatically.</span>
+                    </div>
+                    <div class="setting-group">
+                        <label class="setting-label">ZeroTier SSH Host</label>
+                        <input type="text" class="setting-input" id="ztSshHostInput" placeholder="10.210.60.6">
+                    </div>
+                    <div class="setting-group">
+                        <label class="setting-label">ZeroTier Server URL</label>
+                        <input type="text" class="setting-input" id="ztUrlInput" placeholder="http://10.210.60.6:8080">
+                    </div>
                     <button class="control-btn" id="sshSaveBtn" style="margin-top: 8px; padding: 6px 16px;">Save SSH Settings</button>
                     <span id="sshSaveStatus" style="margin-left: 8px; font-size: 12px; color: var(--text-muted);"></span>
                 </div>

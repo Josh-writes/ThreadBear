@@ -2275,6 +2275,10 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
             $('sshBinaryInput').value = data.llamacpp_server_binary || '';
             $('sshArgsInput').value = data.llamacpp_server_args || '';
             if (E.totalVramInput) E.totalVramInput.value = data.llamacpp_total_vram_gb || '';
+            const ztSshHost = $('ztSshHostInput');
+            const ztUrl = $('ztUrlInput');
+            if (ztSshHost) ztSshHost.value = data.llamacpp_zerotier_ssh_host || '';
+            if (ztUrl) ztUrl.value = data.llamacpp_zerotier_url || '';
           }
         } catch (e) {
           console.warn('Failed to load SSH config:', e);
@@ -2292,6 +2296,8 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
               llamacpp_server_binary: $('sshBinaryInput').value.trim(),
               llamacpp_server_args: $('sshArgsInput').value.trim(),
               llamacpp_total_vram_gb: parseFloat(E.totalVramInput?.value || '0') || 0,
+              llamacpp_zerotier_ssh_host: ($('ztSshHostInput')?.value || '').trim(),
+              llamacpp_zerotier_url: ($('ztUrlInput')?.value || '').trim(),
             };
             const resp = await fetch('/api/llamacpp/ssh-config', {
               method: 'POST',
