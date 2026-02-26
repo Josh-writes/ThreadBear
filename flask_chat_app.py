@@ -780,6 +780,21 @@ class FlaskChatApp:
                     if "top_p" in ms: merged_cfg["top_p"] = ms["top_p"]
                     if "top_k" in ms: merged_cfg["top_k"] = ms["top_k"]
 
+                    # Auto-load model for llamacpp if not already loaded
+                    if provider == "llamacpp":
+                        base_url = merged_cfg["llamacpp_url"].rstrip("/")
+                        # Normalize model name (strip .gguf suffix)
+                        if model and model.endswith(".gguf") and "/" not in model:
+                            model = model.rsplit(".gguf", 1)[0]
+
+                        print(f"[stream] Checking model '{model}' at {base_url}")
+                        loaded_ok, load_err = self._ensure_model_loaded(model, base_url)
+                        print(f"[stream] _ensure_model_loaded -> ok={loaded_ok}, err={load_err!r}")
+                        if not loaded_ok:
+                            yield f"data: {json.dumps({'type':'error','content': f'Auto-load failed: {load_err}'})}\n\n"
+                            yield f"data: {json.dumps({'type':'complete'})}\n\n"
+                            return
+
                     full = ""
                     # Track inference time for idle timeout (llamacpp only)
                     if provider == "llamacpp":
@@ -1136,31 +1151,7 @@ class FlaskChatApp:
 
                 # --- Unified load path: always use router ---
 
-                def _ensure_server_with_ngl(ngl):
-                    """Ensure server is running with the correct ngl. Restart if needed."""
-                    server_reachable = False
-                    try:
-                        requests.get(f"{base}/health", timeout=3)
-                        server_reachable = True
-                    except Exception:
-                        pass
-
-                    if server_reachable and ngl == self._current_server_ngl:
-                        return True, "already running"
-
-                    if server_reachable and ngl != self._current_server_ngl:
-                        # Server is up but with wrong ngl — restart with new ngl
-                        if self.config.get("llamacpp_ssh_enabled"):
-                            print(f"[load] ngl changed {self._current_server_ngl} -> {ngl}, restarting server")
-                            return self._do_ssh_start_server(ngl=ngl)
-                        return True, "already running (cannot restart without SSH)"
-
-                    # Server not reachable — start it
-                    if self.config.get("llamacpp_ssh_enabled"):
-                        return self._do_ssh_start_server(ngl=ngl)
-                    return False, "Server offline and SSH management is disabled"
-
-                ok, msg = _ensure_server_with_ngl(n_gpu_layers)
+                ok, msg = self._ensure_server_with_ngl(n_gpu_layers, base)
                 if not ok:
                     return jsonify({"success": False, "error": f"Server offline: {msg}"}), 503
 
@@ -1175,17 +1166,20 @@ class FlaskChatApp:
                         # Unload any currently loaded model first to free VRAM
                         if prev_model and prev_model != model:
                             try:
+                                print(f"[bg-load] Unloading previous model: {prev_model}")
                                 requests.post(f"{base}/models/unload", json={"model": prev_model}, timeout=30)
                                 time.sleep(1)
-                            except Exception:
-                                pass
+                            except Exception as e:
+                                print(f"[bg-load] Unload failed (ok): {e}")
 
                         # Load via router mode API (POST /models/load)
                         loaded = False
                         load_error = ""
 
                         try:
+                            print(f"[bg-load] POST /models/load model={model} base={base}")
                             r = requests.post(f"{base}/models/load", json={"model": model}, timeout=30)
+                            print(f"[bg-load] POST response: {r.status_code} {r.text[:200]}")
                             if r.status_code == 200:
                                 rj = r.json()
                                 if rj.get("success"):
@@ -1194,21 +1188,32 @@ class FlaskChatApp:
                                     while time.time() - poll_start < poll_timeout:
                                         time.sleep(2)
                                         try:
-                                            mr = requests.get(f"{base}/v1/models", timeout=5)
+                                            mr = requests.get(f"{base}/v1/models", timeout=(2, 5))
                                             if mr.status_code == 200:
-                                                for m in mr.json().get("data", []):
+                                                models_data = mr.json().get("data", [])
+                                                found = False
+                                                for m in models_data:
                                                     if m.get("id") == model:
-                                                        st = m.get("status", {}).get("value", "")
+                                                        found = True
+                                                        st = m.get("status", {}).get("value", "") if isinstance(m.get("status"), dict) else ""
+                                                        elapsed = int(time.time() - poll_start)
+                                                        print(f"[bg-load] Poll {elapsed}s: {model} status={st}")
                                                         if st in ("ready", "loaded"):
                                                             loaded = True
                                                             break
                                                         elif st == "unloaded":
-                                                            load_error = "Model failed to load (likely OOM)"
+                                                            load_error = "Model failed to load (likely OOM — check server log)"
                                                             break
+                                                if not found:
+                                                    # Model disappeared from list — child process crashed
+                                                    load_error = "Model process crashed during load (likely OOM)"
                                             if loaded or load_error:
                                                 break
-                                        except Exception:
-                                            pass
+                                        except requests.exceptions.ConnectionError:
+                                            load_error = "Server crashed during model load"
+                                            break
+                                        except Exception as poll_ex:
+                                            print(f"[bg-load] Poll error: {poll_ex}")
                                     if not loaded and not load_error:
                                         load_error = f"Model load timed out after {poll_timeout}s"
                                 else:
@@ -1217,8 +1222,10 @@ class FlaskChatApp:
                                 load_error = f"Server returned {r.status_code}"
                         except requests.exceptions.ConnectionError:
                             load_error = "Server crashed during load"
+                            print(f"[bg-load] ConnectionError during load")
                         except Exception as e:
                             load_error = str(e)
+                            print(f"[bg-load] Exception during load: {e}")
 
                         # Fallback: legacy slots API
                         if not loaded and "crashed" not in load_error:
@@ -1266,7 +1273,11 @@ class FlaskChatApp:
                                 log_tail = _ssh_get_log_tail(self, 15)
                             except Exception:
                                 pass
-                            is_oom = "OOM" in load_error or "crashed" in load_error
+                            is_oom = ("OOM" in load_error or "crashed" in load_error
+                                      or "out of memory" in log_tail.lower()
+                                      or "cudaMalloc failed" in log_tail)
+                            if is_oom and "OOM" not in load_error:
+                                load_error = f"Out of memory — model requires more VRAM than available (ngl={n_gpu_layers})"
                             self._last_load_error = {
                                 "model": model,
                                 "error": load_error,
@@ -1410,7 +1421,7 @@ class FlaskChatApp:
                 ssh_port = int(cfg.get("llamacpp_ssh_port", 2222))
                 ssh_user = cfg.get("llamacpp_ssh_user", "josh")
                 result = subprocess.run(
-                    ["ssh", "-p", str(ssh_port), "-o", "ConnectTimeout=5",
+                    ["ssh", "-T", "-n", "-p", str(ssh_port), "-o", "ConnectTimeout=5",
                      f"{ssh_user}@{ssh_host}", f"tail -{lines} /tmp/llama-server.log"],
                     timeout=20, capture_output=True, text=True, check=False,
                 )
@@ -1436,7 +1447,7 @@ class FlaskChatApp:
             model_dir = cfg.get("llamacpp_model_dir", "/home/josh/models")
 
             ssh_base = [
-                "ssh", "-p", str(ssh_port),
+                "ssh", "-T", "-n", "-p", str(ssh_port),
                 "-o", "ConnectTimeout=5",
                 "-o", "StrictHostKeyChecking=accept-new",
                 f"{ssh_user}@{ssh_host}",
@@ -1540,7 +1551,7 @@ class FlaskChatApp:
                 "-p", str(ssh_port),
                 "-o", "ConnectTimeout=5",
                 f"{ssh_user}@{ssh_host}",
-                "pkill -f llama-server",
+                "pkill -f '[l]lama-server'",
             ]
 
             try:
@@ -1946,6 +1957,151 @@ class FlaskChatApp:
     
     # --------------- helpers ---------------
 
+    def _ensure_server_with_ngl(self, ngl, base):
+        """Ensure llama.cpp server is running with the correct ngl. Restart if needed."""
+        server_reachable = False
+        try:
+            requests.get(f"{base}/health", timeout=3)
+            server_reachable = True
+        except Exception:
+            pass
+
+        if server_reachable and ngl == self._current_server_ngl:
+            return True, "already running"
+
+        if server_reachable and ngl != self._current_server_ngl:
+            if self.config.get("llamacpp_ssh_enabled"):
+                print(f"[load] ngl changed {self._current_server_ngl} -> {ngl}, restarting server")
+                return self._do_ssh_start_server(ngl=ngl)
+            return True, "already running (cannot restart without SSH)"
+
+        # Server not reachable — start it
+        if self.config.get("llamacpp_ssh_enabled"):
+            return self._do_ssh_start_server(ngl=ngl)
+        return False, "Server offline and SSH management is disabled"
+
+    def _ensure_model_loaded(self, model, base, progress_callback=None):
+        """Ensure a model is loaded and ready on the llama.cpp server.
+
+        Returns (success: bool, error: str).
+        progress_callback: optional callable(str) to report status messages.
+        """
+        def _report(msg):
+            if progress_callback:
+                progress_callback(msg)
+
+        # 1. If another thread is already loading/restarting, wait for it first
+        if self._model_loading or self._server_starting:
+            _report("Waiting for model to finish loading...")
+            print(f"[auto-load] Waiting for background load (loading={self._model_loading}, starting={self._server_starting})")
+            waited = 0
+            while (self._model_loading or self._server_starting) and waited < 180:
+                time.sleep(2)
+                waited += 2
+                # Check if it became ready
+                try:
+                    rm = requests.get(f"{base}/v1/models", timeout=(2, 5))
+                    if rm.status_code == 200:
+                        for m in rm.json().get("data", []):
+                            if m.get("id") == model:
+                                st = m.get("status", {}).get("value", "") if isinstance(m.get("status"), dict) else ""
+                                if st in ("ready", "loaded", ""):
+                                    print(f"[auto-load] Model ready after {waited}s wait")
+                                    return True, ""
+                except Exception:
+                    pass
+            if self._model_loading or self._server_starting:
+                return False, "Timed out waiting for model load"
+            # Loading finished — fall through to check below
+
+        # 2. Check if model is already loaded
+        try:
+            rm = requests.get(f"{base}/v1/models", timeout=(2, 5))
+            if rm.status_code == 200:
+                for m in rm.json().get("data", []):
+                    if m.get("id") == model:
+                        st = m.get("status", {}).get("value", "") if isinstance(m.get("status"), dict) else ""
+                        if st in ("ready", "loaded", ""):
+                            print(f"[auto-load] Model '{model}' already loaded")
+                            return True, ""
+        except Exception:
+            pass
+
+        # 3. Not loaded and no one is loading — trigger load ourselves
+        _report("Loading model...")
+
+        # Resolve ngl from per-model settings
+        ms = self.config.get_model_settings("llamacpp", model)
+        n_gpu_layers = ms.get("n_gpu_layers")
+        if n_gpu_layers is not None:
+            n_gpu_layers = int(n_gpu_layers)
+        else:
+            n_gpu_layers = 99
+
+        # Ensure server is running with correct ngl
+        ok, msg = self._ensure_server_with_ngl(n_gpu_layers, base)
+        if not ok:
+            return False, f"Server offline: {msg}"
+
+        # Set loading state
+        self._model_loading = True
+        self.config.set("llamacpp_model", model)
+        self.config.save_config()
+
+        try:
+            # Unload any other model first
+            try:
+                rm = requests.get(f"{base}/v1/models", timeout=5)
+                if rm.status_code == 200:
+                    for m in rm.json().get("data", []):
+                        mid = m.get("id", "")
+                        if mid and mid != model:
+                            st = m.get("status", {}).get("value", "") if isinstance(m.get("status"), dict) else ""
+                            if st not in ("unloaded",):
+                                requests.post(f"{base}/models/unload", json={"model": mid}, timeout=30)
+                                time.sleep(1)
+            except Exception:
+                pass
+
+            # POST /models/load
+            try:
+                r = requests.post(f"{base}/models/load", json={"model": model}, timeout=30)
+                if r.status_code != 200 or not r.json().get("success"):
+                    err = r.json().get("error", f"Server returned {r.status_code}") if r.status_code == 200 else f"Server returned {r.status_code}"
+                    return False, err
+            except requests.exceptions.ConnectionError:
+                return False, "Server crashed during load"
+            except Exception as e:
+                return False, str(e)
+
+            # Poll until ready
+            poll_timeout = 180
+            poll_start = time.time()
+            while time.time() - poll_start < poll_timeout:
+                time.sleep(2)
+                elapsed = int(time.time() - poll_start)
+                _report(f"Loading model... ({elapsed}s)")
+                try:
+                    mr = requests.get(f"{base}/v1/models", timeout=5)
+                    if mr.status_code == 200:
+                        for m in mr.json().get("data", []):
+                            if m.get("id") == model:
+                                st = m.get("status", {}).get("value", "")
+                                if st in ("ready", "loaded"):
+                                    print(f"[auto-load] {model} loaded successfully (ngl={n_gpu_layers})")
+                                    self._last_inference_time = time.time()
+                                    return True, ""
+                                elif st == "unloaded":
+                                    return False, "Model failed to load (likely OOM)"
+                except requests.exceptions.ConnectionError:
+                    return False, "Server crashed during load"
+                except Exception:
+                    pass
+
+            return False, f"Model load timed out after {poll_timeout}s"
+        finally:
+            self._model_loading = False
+
     def _get_llamacpp_connection(self, force_refresh=False):
         """Return (url, ssh_host) for the reachable llama.cpp server.
 
@@ -2034,7 +2190,10 @@ class FlaskChatApp:
         if not cfg.get("llamacpp_ssh_enabled"):
             return False, "SSH management is disabled"
 
+        # Use cached connection (don't re-probe — server is about to be killed/restarted)
         detected_url, ssh_host = self._get_llamacpp_connection()
+        # Invalidate cache since we're restarting the server
+        self._cached_connection = None
         ssh_port = int(cfg.get("llamacpp_ssh_port", 2222))
         ssh_user = cfg.get("llamacpp_ssh_user", "josh")
         binary = cfg.get("llamacpp_server_binary", "~/src/llama.cpp/build/bin/llama-server")
@@ -2049,7 +2208,7 @@ class FlaskChatApp:
         server_port = parsed.port or 8080
 
         ssh_base = [
-            "ssh",
+            "ssh", "-T", "-n",
             "-p", str(ssh_port),
             "-o", "ConnectTimeout=5",
             "-o", "StrictHostKeyChecking=accept-new",
@@ -2057,31 +2216,46 @@ class FlaskChatApp:
         ]
 
         # Kill any existing llama-server processes to free VRAM
+        print(f"[ssh] Connecting to {ssh_user}@{ssh_host}:{ssh_port} (detected URL: {detected_url})")
         try:
             subprocess.run(
-                ssh_base + ["pkill -9 -f llama-server"],
-                timeout=20, capture_output=True, text=True, check=False,
+                ssh_base + ["pkill -9 -f '[l]lama-server'"],
+                timeout=10, capture_output=True, text=True, check=False,
             )
             time.sleep(1)
-        except Exception:
-            pass
+        except subprocess.TimeoutExpired:
+            print(f"[ssh] pkill timed out — SSH to {ssh_host} may be unreachable")
+            return False, f"SSH command timed out (pkill) — is {ssh_host} reachable?"
+        except Exception as e:
+            print(f"[ssh] pkill failed: {e}")
 
         # Start fresh instance with specified ngl
+        # Use setsid + disown to fully detach from SSH session, close all fds
         start_cmd = (
-            f"nohup {binary} "
+            f"setsid {binary} "
             f"--host {server_host} --port {server_port} "
             f"--models-dir {model_dir} "
             f"-ngl {ngl} {extra_args} "
-            f"> /tmp/llama-server.log 2>&1 &"
+            f"< /dev/null > /tmp/llama-server.log 2>&1 & disown; exit 0"
         )
+
+        # Use -T (no PTY) and -n (no stdin) so SSH exits cleanly after launching
+        ssh_start = [
+            "ssh", "-T", "-n",
+            "-p", str(ssh_port),
+            "-o", "ConnectTimeout=5",
+            "-o", "StrictHostKeyChecking=accept-new",
+            f"{ssh_user}@{ssh_host}",
+        ]
 
         try:
             subprocess.run(
-                ssh_base + [start_cmd],
-                timeout=20, capture_output=True, text=True, check=False,
+                ssh_start + [start_cmd],
+                timeout=10, capture_output=True, text=True, check=False,
             )
         except subprocess.TimeoutExpired:
-            return False, "SSH command timed out (start)"
+            print(f"[ssh] start command timed out on {ssh_host}")
+            return False, f"SSH command timed out (start) — host: {ssh_host}"
         except FileNotFoundError:
             return False, "ssh binary not found"
         except Exception as e:
@@ -2122,7 +2296,7 @@ class FlaskChatApp:
             print("Stopping remote llama-server via SSH...")
             subprocess.run(
                 ["ssh", "-p", str(ssh_port), "-o", "ConnectTimeout=5",
-                 f"{ssh_user}@{ssh_host}", "pkill -f llama-server"],
+                 f"{ssh_user}@{ssh_host}", "pkill -f '[l]lama-server'"],
                 timeout=10, capture_output=True, check=False,
             )
             print("Remote llama-server stopped.")
