@@ -74,6 +74,7 @@ class FlaskChatApp:
         self._last_inference_time = 0  # Timestamp of last inference for idle timeout
         self._idle_timer = None  # Background thread for idle timeout checking
         self._idle_unloaded = False  # True when model was auto-unloaded due to idle
+        self._last_load_error = None  # Dict with error details from last failed load (one-shot)
 
         self.setup_routes()
         self.server = None
@@ -1036,6 +1037,11 @@ class FlaskChatApp:
                 if self._server_starting and not loaded:
                     response["starting"] = True
 
+                # Surface load errors (one-shot: cleared after reporting)
+                if self._last_load_error and not loaded and not self._single_model_loading:
+                    response["load_error"] = self._last_load_error
+                    self._last_load_error = None
+
                 return jsonify(response)
             except requests.exceptions.ConnectionError:
                 # Server unreachable — if we're starting it, report that
@@ -1136,6 +1142,7 @@ class FlaskChatApp:
                             ok, msg = _ssh_start_single_model(self, model, n_gpu_layers, n_ctx)
                             if ok:
                                 print(f"[load] Single-model server ready for {model}")
+                                self._last_load_error = None
                                 # Auto-detect context size
                                 try:
                                     detected_ctx = get_llamacpp_context_size(self.config.config)
@@ -1150,6 +1157,18 @@ class FlaskChatApp:
                             else:
                                 print(f"[load] Single-model server FAILED: {msg}")
                                 self._single_model_mode = False
+                                log_tail = ""
+                                try:
+                                    log_tail = _ssh_get_log_tail(self, 15)
+                                except Exception:
+                                    pass
+                                is_oom = "OOM" in msg or "crashed" in msg
+                                self._last_load_error = {
+                                    "model": model,
+                                    "error": msg,
+                                    "oom": is_oom,
+                                    "log": log_tail,
+                                }
                         finally:
                             self._single_model_loading = False
 
@@ -1225,7 +1244,7 @@ class FlaskChatApp:
                                                 for m in mr.json().get("data", []):
                                                     if m.get("id") == model:
                                                         st = m.get("status", {}).get("value", "")
-                                                        if st == "ready":
+                                                        if st in ("ready", "loaded"):
                                                             loaded = True
                                                             break
                                                         elif st == "unloaded":
@@ -1273,6 +1292,7 @@ class FlaskChatApp:
 
                         if loaded:
                             print(f"[load] Router mode: {model} loaded successfully")
+                            self._last_load_error = None
                             _reset_idle_timer(self)
                             _start_idle_timer(self)
                             try:
@@ -1284,6 +1304,19 @@ class FlaskChatApp:
                                 pass
                         else:
                             print(f"[load] Router mode FAILED: {load_error}")
+                            # Fetch server log tail for diagnostics
+                            log_tail = ""
+                            try:
+                                log_tail = _ssh_get_log_tail(self, 15)
+                            except Exception:
+                                pass
+                            is_oom = "OOM" in load_error or "crashed" in load_error
+                            self._last_load_error = {
+                                "model": model,
+                                "error": load_error,
+                                "oom": is_oom,
+                                "log": log_tail,
+                            }
                     finally:
                         self._single_model_loading = False
 

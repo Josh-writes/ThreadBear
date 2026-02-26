@@ -2978,6 +2978,52 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
           return;
         }
 
+        // Show load error if the background load failed
+        if (status.load_error) {
+          const err = status.load_error;
+          E.loadUnloadModelBtn.textContent = 'Load';
+          E.loadUnloadModelBtn.disabled = false;
+          E.ctxSizeSelect.style.display = '';
+
+          // Build error dialog
+          const overlay = document.createElement('div');
+          overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:10000;display:flex;align-items:center;justify-content:center';
+          const dialog = document.createElement('div');
+          dialog.style.cssText = 'background:var(--bg-primary,#1e1e1e);color:var(--text-primary,#e0e0e0);border:1px solid var(--border-color,#444);border-radius:10px;padding:20px 24px;max-width:520px;width:90%;max-height:80vh;overflow-y:auto;font-size:14px';
+
+          const isOOM = err.oom || /OOM|crash|out of memory/i.test(err.error);
+          const title = isOOM ? 'Load Failed — Out of Memory' : 'Model Load Failed';
+
+          let html = `<h3 style="margin:0 0 12px;color:#ff6b6b">${title}</h3>`;
+          html += `<p style="margin:0 0 8px"><strong>Model:</strong> ${err.model}</p>`;
+          html += `<p style="margin:0 0 12px"><strong>Error:</strong> ${err.error}</p>`;
+
+          if (isOOM) {
+            html += `<div style="background:rgba(255,170,0,0.1);border:1px solid rgba(255,170,0,0.3);border-radius:6px;padding:10px 12px;margin:0 0 12px">`;
+            html += `<strong style="color:#ffaa00">Suggestion:</strong> This model needs more VRAM than available. Try:`;
+            html += `<ul style="margin:6px 0 0;padding-left:20px">`;
+            html += `<li>Reduce <strong>GPU layers (ngl)</strong> in model settings to offload layers to system RAM</li>`;
+            html += `<li>Use a smaller quantization (e.g. Q4_K_M instead of Q8_0)</li>`;
+            html += `<li>Try a smaller model</li>`;
+            html += `</ul></div>`;
+          }
+
+          if (err.log) {
+            html += `<details style="margin:8px 0 0"><summary style="cursor:pointer;color:#888">Server log</summary>`;
+            html += `<pre style="background:#111;padding:8px;border-radius:4px;overflow-x:auto;font-size:12px;margin:6px 0 0;white-space:pre-wrap">${err.log.replace(/</g,'&lt;')}</pre>`;
+            html += `</details>`;
+          }
+
+          html += `<div style="margin-top:16px;text-align:right"><button id="loadErrClose" style="background:#444;color:#fff;border:none;padding:6px 18px;border-radius:5px;cursor:pointer;font-size:13px">Close</button></div>`;
+
+          dialog.innerHTML = html;
+          overlay.appendChild(dialog);
+          document.body.appendChild(overlay);
+          overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
+          dialog.querySelector('#loadErrClose').addEventListener('click', () => overlay.remove());
+          return;
+        }
+
         // Check if model was auto-unloaded due to idle
         if (status.idle_unloaded) {
           _stopIdlePoll();
@@ -3087,14 +3133,14 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
       await updateContextTokenSummary();
     }
 
-    // Handle llamacpp refresh asynchronously in background
+    // For llamacpp: immediately check server status (fast), then refresh model list in background (slow SSH)
     if (state.currentProvider === 'llamacpp') {
+      await updateLoadUnloadButtonText();
       (async () => {
         try {
           await fetch('/api/llamacpp/refresh', { method: 'POST' });
           await refreshModelsHeader('llamacpp', E.modelHeader.value);
           await refreshModelsSettings('llamacpp');
-          await updateLoadUnloadButtonText();
         } catch (e) {
           console.warn('Skipping initial llamacpp refresh:', e);
         }
