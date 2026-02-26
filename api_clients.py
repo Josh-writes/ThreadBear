@@ -219,22 +219,82 @@ def fetch_google_catalog(api_key: str) -> List[Dict]:
 
 def call_google_stream(messages: List[Dict], config: Dict) -> Iterator[str]:
     """
-    Simple streaming adapter for Google: we call the non-streaming endpoint once
-    and then yield the text in small chunks so the UI can display progressive output.
-    If you later switch to Google's real streaming API, replace the body of this
-    function with a true stream parser and keep the same signature.
+    True streaming adapter for Google Gemini API using streamGenerateContent endpoint.
+    Uses Server-Sent Events (SSE) to stream response chunks as they're generated.
     """
     try:
-        text = call_google(messages, config)  # existing non-streaming call
-        if text is None:
+        api_key = os.getenv('GOOGLE_API_KEY') or config.get('google_api_key')
+        if not api_key or api_key == "your_google_api_key_here":
+            yield f"data: {json.dumps({'type':'error','content':'Google API key not found. Please set GOOGLE_API_KEY environment variable.'})}\n\n"
+            yield f"data: {json.dumps({'type':'complete'})}\n\n"
             return
-        # If it's an error (e.g., starts with "Error:"), still yield it so the UI shows it
-        if not isinstance(text, str):
-            text = str(text)
 
-        CHUNK = 500  # characters per chunk for a smooth UI
-        for i in range(0, len(text), CHUNK):
-            yield text[i:i+CHUNK]
+        model_name = config.get("google_model", "gemini-1.5-pro")
+        # Use streamGenerateContent endpoint for true streaming
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:streamGenerateContent"
+
+        full_prompt = ""
+        system_instruction = config.get("google_system_prompt", "")
+        if system_instruction:
+            full_prompt += f"System: {system_instruction}\n\n"
+        for msg in messages:
+            role = "user" if msg["role"] == "user" else "model"
+            full_prompt += f"{role}: {msg['content']}\n\n"
+
+        gen_cfg = {
+            "temperature": config.get("google_temperature", 0.7),
+            "topP": 0.8,
+            "topK": 10
+        }
+        if "top_p" in config:
+            gen_cfg["topP"] = config["top_p"]
+        if "top_k" in config:
+            gen_cfg["topK"] = config["top_k"]
+
+        req = (config.get("max_tokens")
+               or config.get("openrouter_max_tokens")
+               or config.get("groq_max_tokens")
+               or config.get("mistral_max_tokens")
+               or config.get("google_max_tokens"))
+        if isinstance(req, int) and req > 0:
+            gen_cfg["maxOutputTokens"] = min(req, 4096 if "google" == "groq" else req)
+
+        payload = {
+            "contents": [{"parts": [{"text": full_prompt.strip()}]}],
+            "generationConfig": gen_cfg
+        }
+        headers = {
+            "Content-Type": "application/json",
+            "Accept": "text/event-stream"
+        }
+        params = {"key": api_key}
+
+        response = _web_session.post(url, headers=headers, json=payload, params=params, stream=True, timeout=60)
+
+        if response.status_code == 200:
+            for line in response.iter_lines():
+                if not line:
+                    continue
+                line = line.decode('utf-8', errors='ignore')
+                if line.startswith('data: '):
+                    payload_str = line[6:].strip()
+                    if not payload_str or payload_str == '[DONE]':
+                        break
+                    try:
+                        chunk_data = json.loads(payload_str)
+                        # Extract content from each chunk in the stream
+                        if 'candidates' in chunk_data and chunk_data['candidates']:
+                            candidate = chunk_data['candidates'][0]
+                            if 'content' in candidate:
+                                parts = candidate['content'].get('parts', [])
+                                for part in parts:
+                                    if 'text' in part and part['text']:
+                                        yield part['text']
+                    except json.JSONDecodeError:
+                        continue
+        else:
+            yield f"data: {json.dumps({'type':'error','content':'Error: ' + str(response.status_code) + ' ' + str(response.reason) + ' - ' + str(response.text)})}\n\n"
+            yield f"data: {json.dumps({'type':'complete'})}\n\n"
     except Exception as e:
         yield f"data: {json.dumps({'type':'error','content':'Google streaming error: ' + str(e)})}\n\n"
         yield f"data: {json.dumps({'type':'complete'})}\n\n"
