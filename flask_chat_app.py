@@ -70,6 +70,10 @@ class FlaskChatApp:
         self.pending_messages: Dict[int, Dict[str, str]] = {}
         self._single_model_mode = False  # True when running a dedicated single-model server
         self._single_model_loading = False  # True while the background thread is starting the server
+        self._server_starting = False  # True while router server is starting (no model)
+        self._last_inference_time = 0  # Timestamp of last inference for idle timeout
+        self._idle_timer = None  # Background thread for idle timeout checking
+        self._idle_unloaded = False  # True when model was auto-unloaded due to idle
 
         self.setup_routes()
         self.server = None
@@ -756,6 +760,9 @@ class FlaskChatApp:
                     if "top_k" in ms: merged_cfg["top_k"] = ms["top_k"]
 
                     full = ""
+                    # Track inference time for idle timeout (llamacpp only)
+                    if provider == "llamacpp":
+                        self._last_inference_time = time.time()
                     for chunk in stream_func(api_messages, merged_cfg):
                         if self.cancel_generation:
                             yield f"data: {json.dumps({'type':'error','content':'Generation cancelled'})}\n\n"
@@ -763,6 +770,9 @@ class FlaskChatApp:
                         full += chunk
                         yield f"data: {json.dumps({'type':'content','content':chunk})}\n\n"
                         time.sleep(0.005)
+                    # Update inference time after completion too
+                    if provider == "llamacpp":
+                        self._last_inference_time = time.time()
 
                     if not self.temporary_mode and not self.incognito_mode:
                         self.chat_manager.add_message("assistant", full, model)
@@ -1012,16 +1022,31 @@ class FlaskChatApp:
                     "server_running": True,
                     "loaded_models": loaded,
                     "slots": [],
-                    "ssh_enabled": ssh_on
+                    "ssh_enabled": ssh_on,
                 }
+
+                # Signal if model was auto-unloaded due to idle (one-shot flag)
+                if self._idle_unloaded and not loaded:
+                    response["idle_unloaded"] = True
+                    self._idle_unloaded = False  # Clear after reporting
 
                 # Surface background loading only when there is not yet a loaded model.
                 if self._single_model_loading and not loaded:
                     response["loading"] = True
                     response["loading_model"] = self.config.get("llamacpp_model", "unknown")
 
+                # Surface server-starting state (distinct from model loading)
+                if self._server_starting and not loaded:
+                    response["starting"] = True
+
                 return jsonify(response)
             except requests.exceptions.ConnectionError:
+                # Server unreachable — if we're starting it, report that
+                if self._server_starting:
+                    return jsonify({"success": True, "server_running": False, "loaded_models": [],
+                                    "starting": True,
+                                    "ssh_enabled": bool(self.config.get("llamacpp_ssh_enabled", False)),
+                                    "message": "Server is starting..."})
                 return jsonify({"success": False, "server_running": False, "loaded_models": [],
                                 "ssh_enabled": bool(self.config.get("llamacpp_ssh_enabled", False)),
                                 "message": "Cannot connect to llama.cpp server"})
@@ -1118,6 +1143,9 @@ class FlaskChatApp:
                                         print(f"[load] Detected n_ctx={detected_ctx}")
                                 except Exception:
                                     pass
+                                # Model loaded — start idle timer and record inference time
+                                _reset_idle_timer(self)
+                                _start_idle_timer(self)
                             else:
                                 print(f"[load] Single-model server FAILED: {msg}")
                                 self._single_model_mode = False
@@ -1243,6 +1271,8 @@ class FlaskChatApp:
 
                         if loaded:
                             print(f"[load] Router mode: {model} loaded successfully")
+                            _reset_idle_timer(self)
+                            _start_idle_timer(self)
                             try:
                                 detected_ctx = get_llamacpp_context_size(self.config.config)
                                 if detected_ctx > 0:
@@ -1304,6 +1334,55 @@ class FlaskChatApp:
                 return jsonify({"success": False, "error": "All unload methods failed"})
             except Exception as e:
                 return jsonify({"success": False, "error": str(e)}), 500
+
+        def _start_idle_timer(self_ref):
+            """Start the background idle timeout checker. Checks every 60s if model should be unloaded."""
+            def _idle_check_loop():
+                while True:
+                    time.sleep(60)
+                    if self_ref._last_inference_time <= 0:
+                        continue
+                    elapsed = time.time() - self_ref._last_inference_time
+                    if elapsed > 300:  # 5 minutes idle
+                        print(f"[idle] Model idle for {elapsed:.0f}s, auto-unloading...")
+                        try:
+                            with self_ref.app.test_request_context():
+                                # Trigger unload via the same logic
+                                base = self_ref.config.get("llamacpp_url", "http://192.168.2.115:8080").rstrip("/")
+                                model_name = self_ref.config.get("llamacpp_model", "")
+
+                                if self_ref._single_model_mode:
+                                    ok, msg = _ssh_start_server(self_ref)
+                                    if ok:
+                                        self_ref._single_model_mode = False
+                                        print("[idle] Auto-unloaded (single-model mode -> router)")
+                                elif model_name:
+                                    try:
+                                        requests.post(f"{base}/models/unload", json={"model": model_name}, timeout=30)
+                                        print(f"[idle] Auto-unloaded {model_name} via router")
+                                    except Exception:
+                                        try:
+                                            requests.post(f"{base}/slots/0?action=erase", timeout=30)
+                                            print(f"[idle] Auto-unloaded via slots API")
+                                        except Exception as e2:
+                                            print(f"[idle] Auto-unload failed: {e2}")
+                        except Exception as e:
+                            print(f"[idle] Auto-unload error: {e}")
+                        finally:
+                            self_ref._last_inference_time = 0  # Reset so we don't keep trying
+                            self_ref._idle_unloaded = True  # Signal for frontend
+
+            if self_ref._idle_timer is None or not self_ref._idle_timer.is_alive():
+                self_ref._idle_unloaded = False
+                t = threading.Thread(target=_idle_check_loop, daemon=True)
+                t.start()
+                self_ref._idle_timer = t
+                print("[idle] Idle timeout checker started (5 min threshold)")
+
+        def _reset_idle_timer(self_ref):
+            """Reset the idle timer after a model load or inference."""
+            self_ref._last_inference_time = time.time()
+            self_ref._idle_unloaded = False
 
         @app.route('/api/llamacpp/refresh', methods=['POST'])
         def llamacpp_refresh():
@@ -1446,39 +1525,12 @@ class FlaskChatApp:
                 f"{ssh_user}@{ssh_host}",
             ]
 
-            # List ALL top-level directories and top-level .gguf files in model_dir.
-            # This supports both folder-based model formats and single .gguf files.
+            # Recursively find ALL .gguf files in model_dir and subdirectories.
+            # Uses GNU find -printf for efficient single-command scanning.
+            # %P = path relative to model_dir, %s = size in bytes
             q_model_dir = shlex.quote(model_dir)
             scan_cmd = (
-                f"cd {q_model_dir} 2>/dev/null || exit 1; "
-                f"find . -mindepth 1 -maxdepth 1 \\( "
-                f" -type d -o -type f -name '*.gguf' \\) | while IFS= read -r entry; do "
-                f"  name=${{entry#./}}; "
-                f"  if [ -d \"$entry\" ]; then "
-                f"    size=$(du -sb \"$entry\" 2>/dev/null | cut -f1); "
-                f"    [ -n \"$size\" ] || size=$(du -sk \"$entry\" 2>/dev/null | awk '{{print $1 * 1024}}'); "
-                f"    [ -n \"$size\" ] || size=0; "
-                f"    printf '%s\\t%s\\tdir\\n' \"$name\" \"$size\"; "
-                f"  elif [ -f \"$entry\" ]; then "
-                f"    size=$(wc -c < \"$entry\" 2>/dev/null); "
-                f"    [ -n \"$size\" ] || size=0; "
-                f"    printf '%s\\t%s\\tfile\\n' \"$name\" \"$size\"; "
-                f"  fi; " )
-
-            # List ALL top-level directories and top-level .gguf files in model_dir.
-            # Some model formats are stored as folders (e.g. safetensors) with no top-level .gguf.
-            scan_cmd = (
-                f"cd {model_dir} 2>/dev/null && "
-                f"for d in */; do "
-                f"  [ -d \"$d\" ] || continue; "
-                f"  size=$(du -sb \"$d\" 2>/dev/null | cut -f1); "
-                f"  [ -n \"$size\" ] || size=0; "
-                f"  echo \"${{d%/}}\\t$size\\tdir\"; "
-                f"done; "
-                f"for f in *.gguf; do "
-                f"  [ -f \"$f\" ] && stat --printf='%n\\t%s\\tfile\\n' \"$f\" 2>/dev/null; "
-
-                f"done"
+                f"find {q_model_dir} -name '*.gguf' -type f -printf '%P\\t%s\\n'"
             )
 
             try:
@@ -1654,7 +1706,7 @@ class FlaskChatApp:
         @app.route('/api/llamacpp/server/start', methods=['POST'])
         def llamacpp_server_start():
             """Start llama-server on remote machine via SSH (async)."""
-            self._single_model_loading = True  # Reuse loading flag to show progress
+            self._server_starting = True
 
             def _bg_start_server():
                 try:
@@ -1664,7 +1716,7 @@ class FlaskChatApp:
                     else:
                         print(f"[server] Router start FAILED: {msg}")
                 finally:
-                    self._single_model_loading = False
+                    self._server_starting = False
 
             threading.Thread(target=_bg_start_server, daemon=True).start()
             return jsonify({"success": True, "starting": True, "message": "Starting server in background..."})

@@ -2112,11 +2112,23 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
           if (status.success && loadedModel && !modelMatchesLoaded(m, loadedModel)) {
             E.loadUnloadModelBtn.disabled = true;
             E.loadUnloadModelBtn.innerHTML = 'Unloading<span class="loading-dots"></span>';
-            await fetch('/api/llamacpp/unload', {
+            const unloadResp = await fetch('/api/llamacpp/unload', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ slot_id: 0 })
             });
+            const unloadData = await unloadResp.json();
+            if (unloadData.success) {
+              // Unload complete — show "Load" for the newly selected model
+              E.loadUnloadModelBtn.textContent = 'Load';
+              E.loadUnloadModelBtn.disabled = false;
+              E.ctxSizeSelect.style.display = '';
+            } else {
+              console.warn('Unload failed:', unloadData.error);
+              // Refresh status to recover
+              await updateLoadUnloadButtonText();
+            }
+            return; // Skip the updateLoadUnloadButtonText below — we already set the state
           }
         } catch (err) {
           console.warn('Could not auto-unload previous model on selection change:', err);
@@ -2895,7 +2907,21 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
     }
   }
 
-  // ADD this full function (place it near other helpers)
+  // Idle polling: periodically check status when a model is loaded
+  let _idlePollInterval = null;
+  function _startIdlePoll() {
+    if (_idlePollInterval) return; // already running
+    _idlePollInterval = setInterval(async () => {
+      try { await updateLoadUnloadButtonText(); } catch (_) {}
+    }, 60000); // every 60s
+  }
+  function _stopIdlePoll() {
+    if (_idlePollInterval) {
+      clearInterval(_idlePollInterval);
+      _idlePollInterval = null;
+    }
+  }
+
   async function updateLoadUnloadButtonText() {
     const provider = E.providerHeader.value;
     const supportsLoadUnload = (provider === 'llamacpp');
@@ -2929,16 +2955,42 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
         const status = await response.json();
         console.log('[status]', JSON.stringify(status));
 
+        // Server is starting (no model yet) — show starting state and keep polling
+        if (status.starting) {
+          E.loadUnloadModelBtn.innerHTML = 'Starting<span class="loading-dots"></span>';
+          E.loadUnloadModelBtn.disabled = true;
+          E.ctxSizeSelect.style.display = 'none';
+          setTimeout(async () => {
+            try { await updateLoadUnloadButtonText(); } catch (_) {}
+          }, 3000);
+          return;
+        }
+
         // Server is loading a model in the background — show loading state and keep polling
         if (status.loading) {
           const modelInfo = status.loading_model ? ` ${status.loading_model}` : '';
           E.loadUnloadModelBtn.innerHTML = `Loading${modelInfo}<span class="loading-dots"></span>`;
           E.loadUnloadModelBtn.disabled = true;
           E.ctxSizeSelect.style.display = 'none';
-          // Keep polling until loading is done
           setTimeout(async () => {
             try { await updateLoadUnloadButtonText(); } catch (_) {}
           }, 3000);
+          return;
+        }
+
+        // Check if model was auto-unloaded due to idle
+        if (status.idle_unloaded) {
+          _stopIdlePoll();
+          E.loadUnloadModelBtn.textContent = 'Load';
+          E.loadUnloadModelBtn.disabled = false;
+          E.ctxSizeSelect.style.display = '';
+          // Show subtle notification
+          const note = document.createElement('div');
+          note.textContent = 'Model unloaded due to inactivity';
+          note.style.cssText = 'position:fixed;top:12px;right:12px;background:#333;color:#fff;padding:8px 16px;border-radius:6px;z-index:9999;font-size:13px;opacity:0;transition:opacity 0.3s';
+          document.body.appendChild(note);
+          requestAnimationFrame(() => { note.style.opacity = '1'; });
+          setTimeout(() => { note.style.opacity = '0'; setTimeout(() => note.remove(), 400); }, 5000);
           return;
         }
 
@@ -2948,24 +3000,29 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
             E.loadUnloadModelBtn.textContent = 'Load';
             E.loadUnloadModelBtn.disabled = false;
             E.ctxSizeSelect.style.display = '';
+            _stopIdlePoll();
             return;
           }
           const vramInfo = formatVramLabel(Number(loadedModel.vram_required_gb));
           E.loadUnloadModelBtn.textContent = `Unload${vramInfo}`;
           E.loadUnloadModelBtn.disabled = false;
           E.ctxSizeSelect.style.display = 'none';
+          _startIdlePoll(); // Poll while model is loaded to detect idle unload
         } else if (status.success && status.server_running) {
           E.loadUnloadModelBtn.textContent = 'Load';
           E.loadUnloadModelBtn.disabled = false;
           E.ctxSizeSelect.style.display = '';
+          _stopIdlePoll();
         } else if (status.ssh_enabled) {
           E.loadUnloadModelBtn.textContent = 'Start Server';
           E.loadUnloadModelBtn.disabled = false;
           E.ctxSizeSelect.style.display = 'none';
+          _stopIdlePoll();
         } else {
           E.loadUnloadModelBtn.textContent = 'Server Offline';
           E.loadUnloadModelBtn.disabled = true;
           E.ctxSizeSelect.style.display = 'none';
+          _stopIdlePoll();
         }
       }
     } catch (error) {
