@@ -3060,10 +3060,18 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
           E.ctxSizeSelect.style.display = '';
           _stopIdlePoll();
         } else if (status.ssh_enabled) {
-          E.loadUnloadModelBtn.textContent = 'Start Server';
-          E.loadUnloadModelBtn.disabled = false;
+          // Server offline but SSH enabled — auto-start it
+          E.loadUnloadModelBtn.innerHTML = 'Starting<span class="loading-dots"></span>';
+          E.loadUnloadModelBtn.disabled = true;
           E.ctxSizeSelect.style.display = 'none';
           _stopIdlePoll();
+          // Fire-and-forget: kick off server ensure
+          fetch('/api/llamacpp/server/ensure', { method: 'POST' }).catch(() => {});
+          // Poll until server is ready
+          setTimeout(async () => {
+            try { await updateLoadUnloadButtonText(); } catch (_) {}
+          }, 3000);
+          return;
         } else {
           E.loadUnloadModelBtn.textContent = 'Server Offline';
           E.loadUnloadModelBtn.disabled = true;
@@ -3166,39 +3174,10 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
       if (!supportsLoadUnload(provider)) return;
 
       const btnText = E.loadUnloadModelBtn.textContent.trim();
-      const isStartServer = (btnText === 'Start Server');
       const isUnload = btnText.startsWith('Unload');
       const modelName = E.modelHeader.value;
 
-      // "Start Server" doesn't need a model selected
-      if (!isStartServer && !modelName) return;
-
-      // Handle "Start Server" action
-      if (isStartServer) {
-        E.loadUnloadModelBtn.disabled = true;
-        E.loadUnloadModelBtn.innerHTML = 'Starting<span class="loading-dots"></span>';
-        try {
-          const resp = await fetch('/api/llamacpp/server/start', { method: 'POST' });
-          const json = await resp.json();
-          if (json.success) {
-            // Server starting in background — keep button disabled, poll status
-            E.loadUnloadModelBtn.innerHTML = 'Starting<span class="loading-dots"></span>';
-            // Poll status until server is ready
-            setTimeout(async () => {
-              try { await updateLoadUnloadButtonText(); } catch (_) {}
-            }, 3000);
-          } else {
-            console.error('Failed to start server:', json.error);
-            E.loadUnloadModelBtn.textContent = 'Start Server';
-            E.loadUnloadModelBtn.disabled = false;
-          }
-        } catch (err) {
-          console.error('Error starting server:', err);
-          E.loadUnloadModelBtn.textContent = 'Start Server';
-          E.loadUnloadModelBtn.disabled = false;
-        }
-        return;
-      }
+      if (!modelName) return;
 
       console.log(`Starting ${isUnload ? 'unload' : 'load'} operation for ${provider} model: ${modelName}`);
 

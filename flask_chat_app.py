@@ -79,6 +79,10 @@ class FlaskChatApp:
         self.setup_routes()
         self.server = None
 
+        # Auto-start llama.cpp server at boot if provider is llamacpp
+        if self.config.get("provider") == "llamacpp":
+            self._ensure_llamacpp_server()
+
     # ---------------- Routes ----------------
     def setup_routes(self):
         app = self.app
@@ -464,10 +468,16 @@ class FlaskChatApp:
         @app.route('/api/config/update', methods=['POST'])
         def update_config():
             data = request.get_json() or {}
-            provider = data.get('provider', self.config.get("provider"))
+            old_provider = self.config.get("provider", "groq")
+            provider = data.get('provider', old_provider)
 
             if 'provider' in data:
                 self.config.set("provider", provider)
+                # Auto-start/stop llama.cpp server on provider change
+                if provider == 'llamacpp' and old_provider != 'llamacpp':
+                    self._ensure_llamacpp_server()
+                elif provider != 'llamacpp' and old_provider == 'llamacpp':
+                    threading.Thread(target=self._stop_remote_llama_server, daemon=True).start()
             if 'model' in data:
                 self.config.set(f"{provider}_model", data['model'])
                 self.config.add_recent_model(provider, data['model'])
@@ -1456,73 +1466,8 @@ class FlaskChatApp:
         # ---- llama.cpp SSH remote management ----
 
         def _ssh_start_server(self_ref):
-            """Start llama-server on remote machine via SSH. Returns (success, message)."""
-            cfg = self_ref.config
-            if not cfg.get("llamacpp_ssh_enabled"):
-                return False, "SSH management is disabled"
-
-            ssh_host = cfg.get("llamacpp_ssh_host", "192.168.2.115")
-            ssh_port = int(cfg.get("llamacpp_ssh_port", 2222))
-            ssh_user = cfg.get("llamacpp_ssh_user", "josh")
-            binary = cfg.get("llamacpp_server_binary", "~/src/llama.cpp/build/bin/llama-server")
-            extra_args = cfg.get("llamacpp_server_args", "-ngl 99 -t 16")
-            model_dir = cfg.get("llamacpp_model_dir", "/home/josh/models")
-
-            # Derive --host and --port from llamacpp_url
-            parsed = urlparse(cfg.get("llamacpp_url", "http://192.168.2.115:8080"))
-            server_host = parsed.hostname or "0.0.0.0"
-            server_port = parsed.port or 8080
-
-            ssh_base = [
-                "ssh",
-                "-p", str(ssh_port),
-                "-o", "ConnectTimeout=5",
-                "-o", "StrictHostKeyChecking=accept-new",
-                f"{ssh_user}@{ssh_host}",
-            ]
-
-            # Step 1: Kill any existing llama-server processes to free VRAM
-            try:
-                subprocess.run(
-                    ssh_base + ["pkill -9 -f llama-server"],
-                    timeout=20, capture_output=True, text=True, check=False,
-                )
-                time.sleep(1)  # Wait for VRAM to be released
-            except Exception:
-                pass  # OK if nothing to kill
-
-            # Step 2: Start fresh instance
-            start_cmd = (
-                f"nohup {binary} "
-                f"--host {server_host} --port {server_port} "
-                f"--models-dir {model_dir} "
-                f"{extra_args} "
-                f"> /tmp/llama-server.log 2>&1 &"
-            )
-
-            try:
-                subprocess.run(
-                    ssh_base + [start_cmd],
-                    timeout=20, capture_output=True, text=True, check=False,
-                )
-            except subprocess.TimeoutExpired:
-                return False, "SSH command timed out (start)"
-            except FileNotFoundError:
-                return False, "ssh binary not found"
-            except Exception as e:
-                return False, f"SSH error: {e}"
-
-            # Poll /health until server is ready (up to 15s)
-            base = cfg.get("llamacpp_url", "http://192.168.2.115:8080").rstrip("/")
-            for _ in range(30):
-                time.sleep(0.5)
-                try:
-                    r = requests.get(f"{base}/health", timeout=2)
-                    if r.status_code == 200:
-                        return True, "Server started"
-                except Exception:
-                    pass
-            return False, "Server did not become ready within 15 seconds"
+            """Start llama-server on remote machine via SSH. Delegates to instance method."""
+            return self_ref._do_ssh_start_server()
 
         def _ssh_get_log_tail(self_ref, lines=30):
             """Fetch the last N lines of /tmp/llama-server.log via SSH."""
@@ -1761,22 +1706,25 @@ class FlaskChatApp:
             log = _ssh_get_log_tail(self, lines)
             return jsonify({"success": True, "log": log})
 
-        @app.route('/api/llamacpp/server/start', methods=['POST'])
-        def llamacpp_server_start():
-            """Start llama-server on remote machine via SSH (async)."""
-            self._server_starting = True
+        @app.route('/api/llamacpp/server/ensure', methods=['POST'])
+        def llamacpp_server_ensure():
+            """Ensure llama-server is running — idempotent. Auto-starts via SSH if needed."""
+            # Already running?
+            base = self.config.get("llamacpp_url", "http://127.0.0.1:8080").rstrip("/")
+            try:
+                r = requests.get(f"{base}/health", timeout=2)
+                if r.status_code == 200:
+                    return jsonify({"success": True, "already_running": True})
+            except Exception:
+                pass
 
-            def _bg_start_server():
-                try:
-                    ok, msg = _ssh_start_server(self)
-                    if ok:
-                        print(f"[server] Router started: {msg}")
-                    else:
-                        print(f"[server] Router start FAILED: {msg}")
-                finally:
-                    self._server_starting = False
+            if self._server_starting:
+                return jsonify({"success": True, "starting": True, "message": "Server is already starting..."})
 
-            threading.Thread(target=_bg_start_server, daemon=True).start()
+            if not self.config.get("llamacpp_ssh_enabled"):
+                return jsonify({"success": False, "error": "SSH management is disabled"}), 400
+
+            self._ensure_llamacpp_server()
             return jsonify({"success": True, "starting": True, "message": "Starting server in background..."})
 
         @app.route('/api/llamacpp/server/stop', methods=['POST'])
@@ -2197,6 +2145,103 @@ class FlaskChatApp:
     
     
     # --------------- helpers ---------------
+    def _ensure_llamacpp_server(self):
+        """Auto-start llama.cpp server if not running and SSH is enabled. Non-blocking."""
+        if not self.config.get("llamacpp_ssh_enabled"):
+            return
+        if self._server_starting:
+            return  # Already starting
+
+        # Quick health check
+        base = self.config.get("llamacpp_url", "http://127.0.0.1:8080").rstrip("/")
+        try:
+            r = requests.get(f"{base}/health", timeout=2)
+            if r.status_code == 200:
+                return  # Already running
+        except Exception:
+            pass  # Server not reachable — start it
+
+        self._server_starting = True
+        def _bg():
+            try:
+                # Use the existing _ssh_start_server defined inside setup_routes
+                ok, msg = self._do_ssh_start_server()
+                if ok:
+                    print(f"[auto-start] Server started: {msg}")
+                else:
+                    print(f"[auto-start] Server start FAILED: {msg}")
+            finally:
+                self._server_starting = False
+        threading.Thread(target=_bg, daemon=True).start()
+
+    def _do_ssh_start_server(self):
+        """Start llama-server on remote machine via SSH. Returns (success, message)."""
+        cfg = self.config
+        if not cfg.get("llamacpp_ssh_enabled"):
+            return False, "SSH management is disabled"
+
+        ssh_host = cfg.get("llamacpp_ssh_host", "192.168.2.115")
+        ssh_port = int(cfg.get("llamacpp_ssh_port", 2222))
+        ssh_user = cfg.get("llamacpp_ssh_user", "josh")
+        binary = cfg.get("llamacpp_server_binary", "~/src/llama.cpp/build/bin/llama-server")
+        extra_args = cfg.get("llamacpp_server_args", "-ngl 99 -t 16")
+        model_dir = cfg.get("llamacpp_model_dir", "/home/josh/models")
+
+        parsed = urlparse(cfg.get("llamacpp_url", "http://192.168.2.115:8080"))
+        server_host = parsed.hostname or "0.0.0.0"
+        server_port = parsed.port or 8080
+
+        ssh_base = [
+            "ssh",
+            "-p", str(ssh_port),
+            "-o", "ConnectTimeout=5",
+            "-o", "StrictHostKeyChecking=accept-new",
+            f"{ssh_user}@{ssh_host}",
+        ]
+
+        # Kill any existing llama-server processes to free VRAM
+        try:
+            subprocess.run(
+                ssh_base + ["pkill -9 -f llama-server"],
+                timeout=20, capture_output=True, text=True, check=False,
+            )
+            time.sleep(1)
+        except Exception:
+            pass
+
+        # Start fresh instance
+        start_cmd = (
+            f"nohup {binary} "
+            f"--host {server_host} --port {server_port} "
+            f"--models-dir {model_dir} "
+            f"{extra_args} "
+            f"> /tmp/llama-server.log 2>&1 &"
+        )
+
+        try:
+            subprocess.run(
+                ssh_base + [start_cmd],
+                timeout=20, capture_output=True, text=True, check=False,
+            )
+        except subprocess.TimeoutExpired:
+            return False, "SSH command timed out (start)"
+        except FileNotFoundError:
+            return False, "ssh binary not found"
+        except Exception as e:
+            return False, f"SSH error: {e}"
+
+        # Poll /health until server is ready (up to 15s)
+        base = cfg.get("llamacpp_url", "http://192.168.2.115:8080").rstrip("/")
+        for _ in range(30):
+            time.sleep(0.5)
+            try:
+                r = requests.get(f"{base}/health", timeout=2)
+                if r.status_code == 200:
+                    return True, "Server started"
+            except Exception:
+                pass
+        return False, "Server did not become ready within 15 seconds"
+
     def get_provider_models(self, provider: str) -> List[str]:
         # Highest priority: user-defined custom list (if present)
         custom = self.config.get(f"custom_{provider}_models", [])
