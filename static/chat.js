@@ -570,10 +570,24 @@
   }
 
   function openMenuAt(menu, x, y, onOpen) {
-    menu.style.left = x + 'px';
-    menu.style.top = y + 'px';
+    // Show off-screen first so we can measure its size
+    menu.style.left = '-9999px';
+    menu.style.top = '-9999px';
     menu.style.display = 'block';
     if (onOpen) onOpen();
+
+    const mw = menu.offsetWidth;
+    const mh = menu.offsetHeight;
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+
+    // Flip left if it would overflow the right edge
+    if (x + mw > vw) x = Math.max(0, x - mw);
+    // Flip up if it would overflow the bottom edge
+    if (y + mh > vh) y = Math.max(0, y - mh);
+
+    menu.style.left = x + 'px';
+    menu.style.top = y + 'px';
     const closer = (ev) => {
       if (!menu.contains(ev.target)) { menu.style.display = 'none'; window.removeEventListener('mousedown', closer, true); }
     };
