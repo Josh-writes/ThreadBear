@@ -186,6 +186,8 @@ def call_groq_stream(messages: List[Dict], config: Dict) -> Iterator[str]:
 # --- Google (Gemini) ---
 def fetch_google_catalog(api_key: str) -> List[Dict]:
     """Fetch the model catalog from Google's Gemini API (requires auth)."""
+    # Known deprecated models to exclude
+    DEPRECATED_PREFIXES = ("gemini-1.5", "gemini-pro", "gemini-ultra")
     try:
         resp = _web_session.get(
             "https://generativelanguage.googleapis.com/v1beta/models",
@@ -203,6 +205,9 @@ def fetch_google_catalog(api_key: str) -> List[Dict]:
             # name is like "models/gemini-1.5-pro-001" — strip prefix
             raw_name = m.get("name", "")
             model_id = raw_name.replace("models/", "") if raw_name.startswith("models/") else raw_name
+            # Skip deprecated models
+            if any(model_id.startswith(p) for p in DEPRECATED_PREFIXES):
+                continue
             catalog.append({
                 "id": model_id,
                 "name": m.get("displayName", model_id),
