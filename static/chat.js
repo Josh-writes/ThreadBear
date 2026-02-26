@@ -185,6 +185,7 @@
     openBrowseModelsBtn: $('openBrowseModelsBtn'),
     openrouterBrowsePanel: $('openrouterBrowsePanel'),
     closeBrowseModelsBtn: $('closeBrowseModelsBtn'),
+    settingsOverlay: $('settingsOverlay'),
     browseProviderSelect: $('browseProviderSelect'),
     browseModelSearch: $('browseModelSearch'),
     browseFreeOnly: $('browseFreeOnly'),
@@ -208,6 +209,12 @@
     menuCopySelected: $('copySelectedMenuItem'),
     menuCopy: $('copyResponseMenuItem'),
     menuDelete: $('deleteResponseMenuItem'),
+
+    inputContextMenu: $('inputContextMenu'),
+    inputCut: $('inputCutMenuItem'),
+    inputCopy: $('inputCopyMenuItem'),
+    inputPaste: $('inputPasteMenuItem'),
+    inputSelectAll: $('inputSelectAllMenuItem'),
   };
 
   // ===== Helpers =====
@@ -1632,7 +1639,28 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
   }
 
   // ====== Settings bindings ======
+  // --- Settings panel overlay helpers ---
+  const ALL_SETTINGS_PANELS = () => [
+    E.settingsPanel, E.promptsSettingsPanel,
+    E.systemSettingsPanel, E.openrouterBrowsePanel,
+  ];
+
+  function openSettingsPanel(panel) {
+    // Close any other open panels first
+    ALL_SETTINGS_PANELS().forEach(p => p.classList.remove('open'));
+    panel.classList.add('open');
+    E.settingsOverlay.classList.add('open');
+  }
+
+  function closeAllSettingsPanels() {
+    ALL_SETTINGS_PANELS().forEach(p => p.classList.remove('open'));
+    E.settingsOverlay.classList.remove('open');
+  }
+
   function bindSettingsPanels() {
+    // Click overlay to close all settings panels
+    E.settingsOverlay.addEventListener('click', () => closeAllSettingsPanels());
+
     // Settings menu toggle
     E.settingsMenuBtn.addEventListener('click', (e) => {
       e.stopPropagation();
@@ -1649,8 +1677,8 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
     // Open Model Settings
     E.openModelSettingsBtn.addEventListener('click', async () => {
       E.settingsDropdown.classList.remove('open');
-      E.settingsPanel.classList.add('open');
-      
+      openSettingsPanel(E.settingsPanel);
+
       // When opening, refresh the model list and load settings for current provider
       const provider = E.providerSelect.value;
       await refreshModelsSettings(provider);
@@ -1673,27 +1701,27 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
       }
     });
     
-    E.closeSettingsBtn.addEventListener('click', () => E.settingsPanel.classList.remove('open'));
+    E.closeSettingsBtn.addEventListener('click', () => closeAllSettingsPanels());
 
     // Open System Prompts
     E.openPromptsSettingsBtn.addEventListener('click', async () => {
       E.settingsDropdown.classList.remove('open');
-      E.promptsSettingsPanel.classList.add('open');
+      openSettingsPanel(E.promptsSettingsPanel);
       await loadPromptsList();
     });
 
     E.closePromptsSettingsBtn.addEventListener('click', () => {
-      E.promptsSettingsPanel.classList.remove('open');
+      closeAllSettingsPanels();
       E.promptEditor.style.display = 'none';
     });
 
     // Open Appearance Settings  
     E.openAppearanceSettingsBtn.addEventListener('click', () => {
       E.settingsDropdown.classList.remove('open');
-      E.systemSettingsPanel.classList.add('open');
+      openSettingsPanel(E.systemSettingsPanel);
     });
 
-    E.closeSystemSettingsBtn.addEventListener('click', () => E.systemSettingsPanel.classList.remove('open'));
+    E.closeSystemSettingsBtn.addEventListener('click', () => closeAllSettingsPanels());
 
     // ===== Browse Models Panel (multi-provider) =====
     let _browseDebounce = null;
@@ -1852,12 +1880,12 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
       if (BROWSE_PROVIDERS.includes(state.currentProvider)) {
         E.browseProviderSelect.value = state.currentProvider;
       }
-      E.openrouterBrowsePanel.classList.add('open');
+      openSettingsPanel(E.openrouterBrowsePanel);
       await loadBrowseCatalog();
     });
 
     E.closeBrowseModelsBtn.addEventListener('click', () => {
-      E.openrouterBrowsePanel.classList.remove('open');
+      closeAllSettingsPanels();
     });
 
     E.browseProviderSelect.addEventListener('change', async () => {
@@ -2504,6 +2532,54 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
         await sendMessage();
       }
     });
+
+    // --- Input box right-click context menu (pywebview has no default) ---
+    E.userInput.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      const hasSelection = E.userInput.selectionStart !== E.userInput.selectionEnd;
+      E.inputCut.style.display = hasSelection ? '' : 'none';
+      E.inputCopy.style.display = hasSelection ? '' : 'none';
+      openMenuAt(E.inputContextMenu, e.pageX, e.pageY);
+    });
+
+    E.inputPaste.addEventListener('click', async () => {
+      E.inputContextMenu.style.display = 'none';
+      try {
+        const text = await navigator.clipboard.readText();
+        const start = E.userInput.selectionStart;
+        const end = E.userInput.selectionEnd;
+        const val = E.userInput.value;
+        E.userInput.value = val.slice(0, start) + text + val.slice(end);
+        const pos = start + text.length;
+        E.userInput.setSelectionRange(pos, pos);
+        E.userInput.focus();
+      } catch { /* clipboard permission denied */ }
+    });
+
+    E.inputCut.addEventListener('click', async () => {
+      E.inputContextMenu.style.display = 'none';
+      const start = E.userInput.selectionStart;
+      const end = E.userInput.selectionEnd;
+      const selected = E.userInput.value.slice(start, end);
+      try { await navigator.clipboard.writeText(selected); } catch {}
+      const val = E.userInput.value;
+      E.userInput.value = val.slice(0, start) + val.slice(end);
+      E.userInput.setSelectionRange(start, start);
+      E.userInput.focus();
+    });
+
+    E.inputCopy.addEventListener('click', async () => {
+      E.inputContextMenu.style.display = 'none';
+      const selected = E.userInput.value.slice(E.userInput.selectionStart, E.userInput.selectionEnd);
+      try { await navigator.clipboard.writeText(selected); } catch {}
+      E.userInput.focus();
+    });
+
+    E.inputSelectAll.addEventListener('click', () => {
+      E.inputContextMenu.style.display = 'none';
+      E.userInput.select();
+      E.userInput.focus();
+    });
   }
 
   // ====== Missing functions ======
@@ -3145,8 +3221,8 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
   async function init() {
     console.time('TB:init');
     // Close menus when scrolling/resizing
-    window.addEventListener('scroll', () => { E.chatContextMenu.style.display = 'none'; E.msgContextMenu.style.display = 'none'; });
-    window.addEventListener('resize', () => { E.chatContextMenu.style.display = 'none'; E.msgContextMenu.style.display = 'none'; });
+    window.addEventListener('scroll', () => { E.chatContextMenu.style.display = 'none'; E.msgContextMenu.style.display = 'none'; E.inputContextMenu.style.display = 'none'; });
+    window.addEventListener('resize', () => { E.chatContextMenu.style.display = 'none'; E.msgContextMenu.style.display = 'none'; E.inputContextMenu.style.display = 'none'; });
 
     // Bind UI immediately so app feels responsive
     bindMenus();
