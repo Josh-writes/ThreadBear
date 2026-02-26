@@ -229,7 +229,7 @@ def call_google_stream(messages: List[Dict], config: Dict) -> Iterator[str]:
             yield f"data: {json.dumps({'type':'complete'})}\n\n"
             return
 
-        model_name = config.get("google_model", "gemini-1.5-pro")
+        model_name = config.get("google_model", "gemini-2.0-flash")
         # Use streamGenerateContent endpoint for true streaming
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:streamGenerateContent"
 
@@ -304,7 +304,7 @@ def call_google(messages: List[Dict], config: Dict) -> str:
         api_key = os.getenv('GOOGLE_API_KEY') or config.get('google_api_key')
         if not api_key or api_key == "your_google_api_key_here":
             return "Error: Google API key not found. Please set GOOGLE_API_KEY environment variable."
-        model_name = config.get("google_model", "gemini-1.5-pro")
+        model_name = config.get("google_model", "gemini-2.0-flash")
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent"
 
         full_prompt = ""
