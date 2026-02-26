@@ -25,26 +25,26 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "openrouter_api_key": "your_openrouter_api_key_here",
 
     # Groq
-    "groq_model": "llama-3.3-70b-versatile",
+    "groq_model": "",
     "groq_temperature": 0.7,
     "groq_system_prompt": "",
     "groq_max_tokens": 131072,
     "groq_base_url": "https://api.groq.com/openai/v1",
 
     # Google
-    "google_model": "gemini-2.0-flash",
+    "google_model": "",
     "google_temperature": 0.7,
     "google_system_prompt": "",
     "google_max_tokens": 4096,
 
     # Mistral
-    "mistral_model": "mistral-medium-latest",
+    "mistral_model": "",
     "mistral_temperature": 0.7,
     "mistral_system_prompt": "",
     "mistral_max_tokens": 32768,
 
     # OpenRouter
-    "openrouter_model": "meta-llama/llama-3.2-3b-instruct:free",
+    "openrouter_model": "",
     "openrouter_temperature": 0.7,
     "openrouter_system_prompt": "",
     "openrouter_max_tokens": 8192,
@@ -76,7 +76,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "llamacpp_url": "http://192.168.2.115:8080",
     "llamacpp_zerotier_url": "http://10.210.60.6:8080",
     "llamacpp_model_dir": "/home/josh/models",
-    "llamacpp_model": "model",
+    "llamacpp_model": "",
     "llamacpp_temperature": 0.7,
     "llamacpp_system_prompt": "",
     "llamacpp_max_tokens": 8192,
@@ -151,14 +151,11 @@ class ConfigManager:
 
     def get_models_for_provider(self, provider: str) -> List[str]:
         defaults = {
-            "groq": [
-                "llama-3.3-70b-versatile", "llama-3.1-8b-instant",
-                "mixtral-8x7b-32768", "gemma2-9b-it"
-            ],
-            "google": ["gemini-2.0-flash", "gemini-2.0-flash-lite", "gemini-2.5-flash"],
-            "mistral": ["mistral-small-latest", "mistral-medium-latest", "mistral-large-latest", "open-mistral-nemo"],
-            "openrouter": ["meta-llama/llama-3.2-3b-instruct:free", "mistralai/mistral-7b-instruct:free"],
-            "llamacpp": ["model"],  # Placeholder - will be populated from server
+            "groq": [],
+            "google": [],
+            "mistral": [],
+            "openrouter": [],
+            "llamacpp": [],
         }
 
         # explicit override
