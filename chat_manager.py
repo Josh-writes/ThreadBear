@@ -21,8 +21,9 @@ class ChatManager:
             "token_count": 0,
         }
         self.current_chat_file: Optional[str] = None
+        self.branch_db = None  # Set by FlaskChatApp after init
         os.makedirs(self.chats_directory, exist_ok=True)
-        
+
         # Migrate old chats to include chat_id fields
         self.migrate_old_chats()
 
@@ -106,10 +107,35 @@ class ChatManager:
         try:
             with open(path, "w", encoding="utf-8") as f:
                 json.dump(self.current_chat, f, indent=2, ensure_ascii=False)
+
+            # Sync metadata to branch database if available
+            self._sync_to_branch_db()
+
             return True
         except Exception as e:
             print(f"Error saving chat: {e}")
             return False
+
+    def _sync_to_branch_db(self) -> None:
+        """Sync current chat metadata to the branch database."""
+        if not self.branch_db:
+            return
+        chat_id = self.current_chat.get("chat_id")
+        if not chat_id:
+            return
+        try:
+            hist = self.current_chat.get("chat_history", [])
+            self.branch_db.upsert_branch(
+                chat_id,
+                title=self.current_chat.get("title", ""),
+                parent_id=self.current_chat.get("parent_chat_id") or None,
+                root_id=self.current_chat.get("root_chat_id") or chat_id,
+                token_count=self.current_chat.get("token_count", 0),
+                message_count=len(hist),
+                filename=self.current_chat_file,
+            )
+        except Exception as e:
+            print(f"[BranchDB] Sync error: {e}")
 
     def delete_chat(self, filename: str) -> bool:
         path = os.path.join(self.chats_directory, filename)
@@ -302,6 +328,10 @@ class ChatManager:
             return msgs[-limit:]  # Slice creates a new list
         else:
             return list(msgs)  # Explicit copy
+
+    def get_token_count(self) -> int:
+        """Return the estimated token count for the current chat's history."""
+        return self.current_chat.get("token_count", 0)
 
     def get_conversation_context(self, max_messages: int = 10) -> List[Dict[str, str]]:
         msgs = self.get_messages(max_messages)

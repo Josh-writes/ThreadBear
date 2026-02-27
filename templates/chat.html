@@ -146,6 +146,120 @@
             color: var(--text-secondary);
         }
 
+        /* Folder items in sidebar */
+        .folder-item {
+            padding: 6px 12px;
+            margin: 2px 8px;
+            border-radius: 8px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 13px;
+            font-weight: 600;
+            color: var(--text-sidebar);
+            transition: all 0.2s ease;
+            user-select: none;
+        }
+
+        .folder-item:hover {
+            background: var(--bg-primary);
+        }
+
+        .folder-item .folder-chevron {
+            font-size: 10px;
+            transition: transform 0.15s ease;
+            width: 14px;
+            text-align: center;
+            flex-shrink: 0;
+        }
+
+        .folder-item .folder-chevron.expanded {
+            transform: rotate(90deg);
+        }
+
+        .folder-item .folder-icon {
+            flex-shrink: 0;
+        }
+
+        .folder-item .folder-name {
+            flex: 1;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .folder-item .folder-count {
+            font-size: 11px;
+            font-weight: 400;
+            color: var(--text-secondary);
+            flex-shrink: 0;
+        }
+
+        .folder-item.subfolder {
+            padding-left: 32px;
+            font-weight: 500;
+        }
+
+        .folder-contents {
+            display: none;
+        }
+
+        .folder-contents.expanded {
+            display: block;
+        }
+
+        .folder-contents .chat-item {
+            padding-left: 36px;
+        }
+
+        .folder-contents .folder-contents .chat-item {
+            padding-left: 52px;
+        }
+
+        .folder-file-item {
+            padding: 4px 12px 4px 36px;
+            margin: 1px 8px;
+            border-radius: 6px;
+            cursor: default;
+            font-size: 12px;
+            color: var(--text-secondary);
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .folder-contents .folder-contents .folder-file-item {
+            padding-left: 52px;
+        }
+
+        .folder-file-item:hover {
+            background: var(--bg-primary);
+        }
+
+        .folder-section-label {
+            padding: 8px 16px 4px;
+            font-size: 11px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            color: var(--text-secondary);
+        }
+
+        .folder-rename-input {
+            background: var(--bg-primary);
+            border: 1px solid #10a37f;
+            border-radius: 4px;
+            padding: 2px 6px;
+            font-size: 13px;
+            color: var(--text-primary);
+            outline: none;
+            width: 100%;
+        }
+
         .sidebar-footer {
             padding: 16px;
             border-top: 1px solid var(--sidebar-border);
@@ -2031,10 +2145,14 @@
                     <span>+</span>
                     New Chat
                 </button>
+                <button class="new-chat-btn" id="newFolderBtn" style="margin-top: 6px;">
+                    <span>+</span>
+                    New Folder
+                </button>
             </div>
-            
+
             <div class="chat-history" id="chatHistory">
-                <!-- Chat history items will be populated here -->
+                <!-- Folders and chat history items will be populated here -->
             </div>
             
             <div class="sidebar-footer">
@@ -2551,10 +2669,41 @@
             <span>Duplicate Chat</span>
         </div>
         <div class="context-menu-separator"></div>
+        <div class="context-menu-item" id="moveToFolderMenuItem">
+            <span>📁</span>
+            <span>Move to Folder...</span>
+        </div>
+        <div class="context-menu-item" id="removeFromFolderMenuItem" style="display: none;">
+            <span>📤</span>
+            <span>Remove from Folder</span>
+        </div>
+        <div class="context-menu-separator"></div>
         <div class="context-menu-item danger" id="deleteChatMenuItem">
             <span>🗑️</span>
             <span>Delete Chat</span>
         </div>
+    </div>
+
+    <!-- Folder context menu -->
+    <div class="context-menu" id="folderContextMenu">
+        <div class="context-menu-item" id="renameFolderMenuItem">
+            <span>✏️</span>
+            <span>Rename Folder</span>
+        </div>
+        <div class="context-menu-item" id="addSubfolderMenuItem">
+            <span>📁</span>
+            <span>Add Subfolder</span>
+        </div>
+        <div class="context-menu-separator"></div>
+        <div class="context-menu-item danger" id="deleteFolderMenuItem">
+            <span>🗑️</span>
+            <span>Delete Folder</span>
+        </div>
+    </div>
+
+    <!-- Move to folder submenu -->
+    <div class="context-menu" id="moveToFolderMenu">
+        <!-- Populated dynamically -->
     </div>
 
     <!-- Message context menu -->

@@ -34,6 +34,9 @@ except Exception as e:
 # App modules
 from config_manager import ConfigManager
 from chat_manager import ChatManager
+from message_compaction import MessageCompactor
+from branch_db import BranchDatabase
+from folder_manager import FolderManager
 from api_clients import (
     call_groq_stream, call_google_stream,
     call_mistral_stream, call_openrouter_stream, call_llamacpp_stream,
@@ -60,12 +63,17 @@ class FlaskChatApp:
         self.config = ConfigManager()
         # No longer auto-saves API keys to config.json - they're read from environment variables
         self.chat_manager = ChatManager()
+        self.compactor = MessageCompactor(config_manager=self.config)
+        self.branch_db = BranchDatabase()
+        self.folder_manager = FolderManager()
+        self.chat_manager.branch_db = self.branch_db  # share with chat_manager
+        # Migrate existing JSON chats into the branch database
+        self.branch_db.migrate_from_json(self.chat_manager.chats_directory)
 
         self.cancel_generation = False
         self.temporary_mode = False
         self.incognito_mode = False
         self.available_providers = ["groq", "google", "mistral", "openrouter", "llamacpp"]
-        self.last_renamed_chat = None
 
         self.pending_messages: Dict[int, Dict[str, str]] = {}
         self._current_server_ngl = 99  # Track the ngl the server was started with
@@ -573,6 +581,7 @@ class FlaskChatApp:
             self.config.save_config()
 
             # add user message unless incognito
+            last_renamed_chat = None
             if not self.incognito_mode:
                 # Track the current chat file before adding the message
                 old_filename = self.chat_manager.current_chat_file
@@ -580,25 +589,20 @@ class FlaskChatApp:
                 # Check if the chat was auto-renamed (first message)
                 new_filename = self.chat_manager.current_chat_file
                 if old_filename != new_filename:
-                    # Chat was auto-renamed, store the new filename to return it
-                    self.last_renamed_chat = new_filename
-                else:
-                    self.last_renamed_chat = None
-            else:
-                self.last_renamed_chat = None
+                    last_renamed_chat = new_filename
 
-            # selected context indices from UI
-            self.has_selected_context = ('selected_context' in data)
-            self.selected_context = data.get('selected_context') if self.has_selected_context else None
-            self.selected_summaries = data.get('selected_summaries', [])
+            # Store selected context and rename info in the per-request dict
+            has_selected_context = ('selected_context' in data)
+            self.pending_messages[mid]["has_selected_context"] = has_selected_context
+            self.pending_messages[mid]["selected_context"] = data.get('selected_context') if has_selected_context else None
+            self.pending_messages[mid]["selected_summaries"] = data.get('selected_summaries', [])
+            self.pending_messages[mid]["last_renamed_chat"] = last_renamed_chat
 
             print("SEND PAYLOAD:", {"provider": provider, "model": model, "mid": mid})
             response_data = {"success": True, "message_id": mid, "current_chat_file": self.chat_manager.current_chat_file}
             # Include the renamed chat file if applicable
-            if hasattr(self, 'last_renamed_chat') and self.last_renamed_chat:
-                response_data["filename"] = self.last_renamed_chat
-                # Reset the flag
-                self.last_renamed_chat = None
+            if last_renamed_chat:
+                response_data["filename"] = last_renamed_chat
             return jsonify(response_data)
 
         @app.route('/api/chat/context-check', methods=['POST'])
@@ -684,6 +688,9 @@ class FlaskChatApp:
         def stream_response(message_id: int):
             def generate():
                 try:
+                    # Pop per-request data first (contains provider settings + context selection)
+                    snap = self.pending_messages.pop(message_id, None)
+
                     # Build API messages
                     if self.incognito_mode:
                         msgs = self.chat_manager.get_messages()
@@ -693,11 +700,13 @@ class FlaskChatApp:
                             yield f"data: {json.dumps({'type':'error','content':'No message found'})}\n\n"
                             return
                     else:
-                        if getattr(self, 'has_selected_context', False):
-                            # Client explicitly provided selection
-                            selected_msgs = self.selected_context or []
-                            selected_sums = getattr(self, 'selected_summaries', [])
+                        # Read context selection from per-request snap (not self)
+                        has_selected = snap.get('has_selected_context', False) if snap else False
+                        selected_msgs = (snap.get('selected_context') or []) if snap else []
+                        selected_sums = (snap.get('selected_summaries') or []) if snap else []
 
+                        if has_selected:
+                            # Client explicitly provided selection
                             if len(selected_msgs) > 0 or len(selected_sums) > 0:
                                 api_messages = self.chat_manager.get_selected_context(
                                     selected_msgs,
@@ -706,7 +715,6 @@ class FlaskChatApp:
                             else:
                                 # Explicit NONE => only the latest user prompt (no history)
                                 msgs = self.chat_manager.get_messages()
-                                # Use the newest user message; if not found, send empty content error
                                 last_user = next((m for m in reversed(msgs) if m.get("role") == "user"), None)
                                 if not last_user:
                                     yield f"data: {json.dumps({'type':'error','content':'No user message found'})}\n\n"
@@ -719,12 +727,6 @@ class FlaskChatApp:
                         # ALWAYS include documents, regardless of selection mode
                         docs = context_documents.build_context_injections()
                         api_messages.extend(docs)
-
-                        # (optional) clear selection flags after use so they don't leak into future sends
-                        self.selected_context = None
-                        self.has_selected_context = False
-
-                    snap = self.pending_messages.pop(message_id, None)
                     if snap is None:
                         provider = self.config.get("provider")
                         model = self.config.get(f"{provider}_model")
@@ -811,6 +813,20 @@ class FlaskChatApp:
                     if not self.temporary_mode and not self.incognito_mode:
                         self.chat_manager.add_message("assistant", full, model)
 
+                        # --- Message compaction check ---
+                        try:
+                            chat_hist = self.chat_manager.current_chat.get("chat_history", [])
+                            if self.compactor.should_compact(chat_hist, provider, model):
+                                compacted, summary = self.compactor.compact_messages(
+                                    chat_hist, provider, model
+                                )
+                                self.chat_manager.current_chat["chat_history"] = compacted
+                                if summary:
+                                    self.chat_manager.current_chat["conversation_summary"] = summary
+                                self.chat_manager.save_current_chat()
+                        except Exception as compact_err:
+                            print(f"Message compaction failed: {compact_err}")
+
                     # --- Auto-title generation after first exchange ---
                     try:
                         chat_hist = self.chat_manager.current_chat.get("chat_history", [])
@@ -880,6 +896,163 @@ class FlaskChatApp:
                     err = f"Error: {e}"
                     yield f"data: {json.dumps({'type':'error','content':err})}\n\n"
             return Response(generate(), mimetype='text/event-stream', headers={'Cache-Control': 'no-cache', 'Connection': 'keep-alive'})
+
+        # ---- Branch database API ----
+        @app.route('/api/branches', methods=['GET'])
+        def branches_list():
+            """List branches with optional filters."""
+            query = request.args.get('query')
+            status = request.args.get('status')
+            branch_type = request.args.get('type')
+            limit = int(request.args.get('limit', 100))
+            offset = int(request.args.get('offset', 0))
+            branches = self.branch_db.search_branches(
+                query=query, status=status, branch_type=branch_type,
+                limit=limit, offset=offset
+            )
+            return jsonify({"success": True, "branches": branches})
+
+        @app.route('/api/branches/<branch_id>', methods=['GET'])
+        def branches_get(branch_id: str):
+            """Get a single branch by ID."""
+            branch = self.branch_db.get_branch(branch_id)
+            if not branch:
+                return jsonify({"success": False, "error": "not_found"}), 404
+            return jsonify({"success": True, "branch": branch})
+
+        @app.route('/api/branches/<branch_id>/tree', methods=['GET'])
+        def branches_tree(branch_id: str):
+            """Get the full branch tree from a root."""
+            branch = self.branch_db.get_branch(branch_id)
+            if not branch:
+                return jsonify({"success": False, "error": "not_found"}), 404
+            root_id = branch.get("root_id") or branch_id
+            tree = self.branch_db.get_tree(root_id)
+            return jsonify({"success": True, "root_id": root_id, "branches": tree})
+
+        # ---- Folder management ----
+        @app.route('/api/folders', methods=['GET'])
+        def get_folders():
+            """Get all folders in tree structure with mappings."""
+            tree = self.folder_manager.get_folder_tree()
+            mappings = self.folder_manager.get_all_mappings()
+            return jsonify({
+                "folders": tree,
+                "chat_folder_map": mappings["chat_folder_map"],
+                "file_folder_map": mappings["file_folder_map"],
+            })
+
+        @app.route('/api/folders', methods=['POST'])
+        def create_folder():
+            """Create a new folder."""
+            data = request.get_json() or {}
+            name = data.get('name', 'New Folder')
+            parent_id = data.get('parent_id')
+            try:
+                folder = self.folder_manager.create_folder(name, parent_id)
+                return jsonify({"success": True, "folder": folder})
+            except ValueError as e:
+                return jsonify({"success": False, "error": str(e)}), 400
+
+        @app.route('/api/folders/<folder_id>', methods=['PUT'])
+        def update_folder(folder_id: str):
+            """Rename or move a folder."""
+            data = request.get_json() or {}
+            try:
+                if 'name' in data:
+                    self.folder_manager.rename_folder(folder_id, data['name'])
+                if 'parent_id' in data:
+                    self.folder_manager.move_folder(folder_id, data.get('parent_id'))
+                if 'order' in data:
+                    self.folder_manager.reorder_folder(folder_id, data['order'])
+                return jsonify({"success": True})
+            except ValueError as e:
+                return jsonify({"success": False, "error": str(e)}), 400
+
+        @app.route('/api/folders/<folder_id>', methods=['DELETE'])
+        def delete_folder(folder_id: str):
+            """Delete a folder."""
+            data = request.get_json() or {}
+            delete_contents = data.get('delete_contents', False)
+            move_to_parent = data.get('move_to_parent', True)
+            result = self.folder_manager.delete_folder(
+                folder_id, delete_contents=delete_contents,
+                move_to_parent=move_to_parent
+            )
+            if result.get("error"):
+                return jsonify({"success": False, "error": result["error"]}), 404
+            return jsonify({"success": True, **result})
+
+        @app.route('/api/folders/<folder_id>/files', methods=['GET'])
+        def get_folder_files(folder_id: str):
+            """List files and chats in a folder."""
+            contents = self.folder_manager.get_folder_contents(folder_id)
+            # Enrich file info
+            files_info = []
+            for fn in contents["files"]:
+                doc = get_document(fn)
+                if doc:
+                    files_info.append(doc)
+                else:
+                    files_info.append({"name": fn, "missing": True})
+            # Enrich chat info
+            chats_info = []
+            for fn in contents["chats"]:
+                path = os.path.join(self.chat_manager.chats_directory, fn)
+                if os.path.exists(path):
+                    try:
+                        with open(path, "r", encoding="utf-8") as f:
+                            chat_data = json.load(f)
+                        title = chat_data.get("title", fn[:-5]) if isinstance(chat_data, dict) else fn[:-5]
+                        hist = chat_data.get("chat_history", []) if isinstance(chat_data, dict) else chat_data
+                        preview = ""
+                        if hist:
+                            first_user = next((m for m in hist if m.get("role") == "user"), None)
+                            if first_user:
+                                preview = first_user.get("content", "")[:100]
+                        chats_info.append({
+                            "filename": fn,
+                            "title": title,
+                            "preview": preview,
+                            "messages": len(hist),
+                        })
+                    except Exception:
+                        chats_info.append({"filename": fn, "title": fn[:-5], "preview": "", "messages": 0})
+                else:
+                    chats_info.append({"filename": fn, "title": fn[:-5], "missing": True})
+            return jsonify({"files": files_info, "chats": chats_info})
+
+        @app.route('/api/folders/<folder_id>/files', methods=['POST'])
+        def assign_file_to_folder(folder_id: str):
+            """Assign a file to a folder."""
+            data = request.get_json() or {}
+            filename = data.get('filename')
+            if not filename:
+                return jsonify({"success": False, "error": "filename required"}), 400
+            ok = self.folder_manager.assign_file_to_folder(filename, folder_id)
+            return jsonify({"success": ok})
+
+        @app.route('/api/folders/<folder_id>/files/<path:filename>', methods=['DELETE'])
+        def remove_file_from_folder(folder_id: str, filename: str):
+            """Remove a file from a folder."""
+            ok = self.folder_manager.remove_file_from_folder(filename)
+            return jsonify({"success": ok})
+
+        @app.route('/api/folders/<folder_id>/chats', methods=['POST'])
+        def assign_chat_to_folder(folder_id: str):
+            """Assign a chat to a folder."""
+            data = request.get_json() or {}
+            filename = data.get('filename')
+            if not filename:
+                return jsonify({"success": False, "error": "filename required"}), 400
+            ok = self.folder_manager.assign_chat_to_folder(filename, folder_id)
+            return jsonify({"success": ok})
+
+        @app.route('/api/folders/<folder_id>/chats/<path:filename>', methods=['DELETE'])
+        def remove_chat_from_folder(folder_id: str, filename: str):
+            """Remove a chat from a folder."""
+            ok = self.folder_manager.remove_chat_from_folder(filename)
+            return jsonify({"success": ok})
 
         # ---- Context documents (binary-safe) ----
         @app.route('/api/context/docs', methods=['GET'])

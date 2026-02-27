@@ -1,0 +1,16 @@
+{
+  "version": "1.0",
+  "folders": [
+    {
+      "id": "d94d8a47-ead3-4897-b231-3884e5647928",
+      "name": "BeeMee",
+      "parent_id": null,
+      "order": 0,
+      "created": "2026-02-27T23:06:09.410346+00:00"
+    }
+  ],
+  "chat_folder_map": {
+    "New_Chat_20260228_070619.json": "d94d8a47-ead3-4897-b231-3884e5647928"
+  },
+  "file_folder_map": {}
+}

@@ -40,6 +40,12 @@
     selectedDocIds: new Set(),
     contextBarOpen: false,
 
+    // folders
+    folders: [],
+    chatFolderMap: {},
+    fileFolderMap: {},
+    expandedFolders: new Set(),
+
     // prompts
     prompts: [],
 
@@ -58,6 +64,7 @@
   const E = {
     // Sidebar
     newChatBtn: $('newChatBtn'),
+    newFolderBtn: $('newFolderBtn'),
     chatHistory: $('chatHistory'),
     
     // Settings menu
@@ -200,7 +207,15 @@
     menuLoadChat: $('loadChatMenuItem'),
     menuRenameChat: $('renameChatMenuItem'),
     menuDuplicateChat: $('duplicateChatMenuItem'),
+    menuMoveToFolder: $('moveToFolderMenuItem'),
+    menuRemoveFromFolder: $('removeFromFolderMenuItem'),
     menuDeleteChat: $('deleteChatMenuItem'),
+
+    folderContextMenu: $('folderContextMenu'),
+    menuRenameFolder: $('renameFolderMenuItem'),
+    menuAddSubfolder: $('addSubfolderMenuItem'),
+    menuDeleteFolder: $('deleteFolderMenuItem'),
+    moveToFolderMenu: $('moveToFolderMenu'),
 
     msgContextMenu: $('messageContextMenu'),
     menuBranchFull: $('branchFullMenuItem'),
@@ -416,93 +431,327 @@
   E.messages.scrollTop = E.messages.scrollHeight;
 }
 
-  function renderHistory() {
-    // Clear the chat history container
-    clearNode(E.chatHistory);
-    
-    // Create a map of chats by filename
-    const chatMap = {};
-    state.history.forEach(chat => {
-      chatMap[chat.filename] = chat;
-    });
-    
-    // Create a children map, where each parent chat_id points to a list of its child chats
-    const childrenMap = {};
-    state.history.forEach(chat => {
-      // Use chat_id as the key for parent-child relationships
-      const parentId = chat.parent_chat_id;
-      if (parentId) {
-        if (!childrenMap[parentId]) {
-          childrenMap[parentId] = [];
-        }
-        childrenMap[parentId].push(chat);
-      }
-    });
-    
-    // Helper function to render a chat node with proper indentation
-    function renderNode(chat, depth) {
-      // Create a div with class chat-item
-      const div = el('div', 'chat-item');
-      
-      // Add side-chat class and depth for branches
-      if (depth > 0) {
-        div.classList.add('side-chat');
-        div.setAttribute('data-depth', depth.toString());
-      }
-      
-      // If this chat is the current one, also add the active class
-      if (chat.filename === state.currentChatFile) {
-        div.classList.add('active');
-      }
-      
-      // Pick the title in this order:
-      let title;
-      if (chat.title) {
-        // Use chat.title if available
-        title = chat.title;
-      } else if (chat.first_message) {
-        // Otherwise, use chat.first_message (first 60 characters)
-        title = chat.first_message.substring(0, 60);
-      } else {
-        // Otherwise, fall back to filename without .json
-        title = chat.filename.replace(/\.json$/, '');
-      }
-      
-      // Add left padding based on depth
-      div.style.paddingLeft = (12 + (depth * 20)) + 'px';
-      
-      // Create title element
-      const titleDiv = el('div', 'chat-item-title');
-      titleDiv.textContent = title;
-      div.appendChild(titleDiv);
-      
-      // Add left-click handler that calls loadChat(chat.filename)
-      div.addEventListener('click', () => loadChat(chat.filename));
-      
-      // Add right-click handler for context menu
-      div.addEventListener('contextmenu', (e) => {
-        e.preventDefault();
-        state.ctxMenuTarget = { type: 'chat', filename: chat.filename };
-        openMenuAt(E.chatContextMenu, e.pageX, e.pageY);
+  // ===== Folder API & UI =====
+
+  async function loadFolders() {
+    try {
+      const res = await fetch('/api/folders');
+      const data = await res.json();
+      state.folders = data.folders || [];
+      state.chatFolderMap = data.chat_folder_map || {};
+      state.fileFolderMap = data.file_folder_map || {};
+    } catch (e) {
+      console.warn('Failed to load folders:', e);
+    }
+  }
+
+  async function createFolder(name, parentId) {
+    try {
+      const res = await fetch('/api/folders', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, parent_id: parentId || null })
       });
-      
-      // Append this chat-item into the sidebar container
-      E.chatHistory.appendChild(div);
-      
-      // If the chat has children, call renderNode(child, depth+1) for each child
-      // Use chat_id to find children instead of filename
-      const chatId = chat.chat_id || chat.filename;
-      if (childrenMap[chatId]) {
-        childrenMap[chatId].forEach(child => {
-          renderNode(child, depth + 1);
-        });
+      const data = await res.json();
+      if (data.success) {
+        await loadFolders();
+        renderHistory();
+        // Start rename inline for the new folder
+        startFolderRename(data.folder.id);
+      }
+      return data;
+    } catch (e) {
+      console.error('Create folder failed:', e);
+    }
+  }
+
+  async function renameFolder(folderId, newName) {
+    try {
+      const res = await fetch(`/api/folders/${folderId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: newName })
+      });
+      const data = await res.json();
+      if (data.success) {
+        await loadFolders();
+        renderHistory();
+      } else if (data.error) {
+        alert(data.error);
+      }
+    } catch (e) {
+      console.error('Rename folder failed:', e);
+    }
+  }
+
+  async function deleteFolder(folderId, deleteContents) {
+    try {
+      const res = await fetch(`/api/folders/${folderId}`, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ delete_contents: deleteContents, move_to_parent: !deleteContents })
+      });
+      const data = await res.json();
+      if (data.success) {
+        state.expandedFolders.delete(folderId);
+        await loadFolders();
+        renderHistory();
+      }
+    } catch (e) {
+      console.error('Delete folder failed:', e);
+    }
+  }
+
+  async function moveChatToFolder(filename, folderId) {
+    // Remove from any current folder first
+    const currentFolder = state.chatFolderMap[filename];
+    if (currentFolder) {
+      await fetch(`/api/folders/${currentFolder}/chats/${encodeURIComponent(filename)}`, { method: 'DELETE' });
+    }
+    if (folderId) {
+      await fetch(`/api/folders/${folderId}/chats`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ filename })
+      });
+    }
+    await loadFolders();
+    renderHistory();
+  }
+
+  function startFolderRename(folderId) {
+    const nameEl = document.querySelector(`[data-folder-id="${folderId}"] .folder-name`);
+    if (!nameEl) return;
+    const currentName = nameEl.textContent;
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.className = 'folder-rename-input';
+    input.value = currentName;
+    nameEl.textContent = '';
+    nameEl.appendChild(input);
+    input.focus();
+    input.select();
+
+    const finish = async () => {
+      const newName = input.value.trim();
+      if (newName && newName !== currentName) {
+        await renameFolder(folderId, newName);
+      } else {
+        nameEl.textContent = currentName;
+      }
+    };
+
+    input.addEventListener('blur', finish);
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); input.blur(); }
+      if (e.key === 'Escape') { input.value = currentName; input.blur(); }
+    });
+  }
+
+  function toggleFolderExpand(folderId) {
+    if (state.expandedFolders.has(folderId)) {
+      state.expandedFolders.delete(folderId);
+    } else {
+      state.expandedFolders.add(folderId);
+    }
+    renderHistory();
+  }
+
+  function showMoveToFolderMenu(x, y, filename) {
+    const menu = E.moveToFolderMenu;
+    menu.innerHTML = '';
+
+    // "Remove from folder" option if already in a folder
+    if (state.chatFolderMap[filename]) {
+      const removeItem = el('div', 'context-menu-item');
+      removeItem.innerHTML = '<span>📤</span><span>Remove from Folder</span>';
+      removeItem.addEventListener('click', () => {
+        moveChatToFolder(filename, null);
+        menu.style.display = 'none';
+      });
+      menu.appendChild(removeItem);
+      const sep = el('div', 'context-menu-separator');
+      menu.appendChild(sep);
+    }
+
+    // Build flat list of all folders
+    const allFolders = [];
+    state.folders.forEach(f => {
+      allFolders.push({ id: f.id, name: f.name, depth: 0 });
+      (f.children || []).forEach(c => {
+        allFolders.push({ id: c.id, name: c.name, depth: 1, parentName: f.name });
+      });
+    });
+
+    if (allFolders.length === 0) {
+      const empty = el('div', 'context-menu-item');
+      empty.innerHTML = '<span>📁</span><span style="color: var(--text-secondary)">No folders yet</span>';
+      menu.appendChild(empty);
+    }
+
+    allFolders.forEach(f => {
+      const item = el('div', 'context-menu-item');
+      const label = f.depth > 0 ? `  ${f.parentName} / ${f.name}` : f.name;
+      item.innerHTML = `<span>📁</span><span>${label}</span>`;
+      item.addEventListener('click', () => {
+        moveChatToFolder(filename, f.id);
+        menu.style.display = 'none';
+      });
+      menu.appendChild(item);
+    });
+
+    openMenuAt(menu, x, y);
+  }
+
+  function renderFolderNode(folder, container, depth) {
+    const isExpanded = state.expandedFolders.has(folder.id);
+
+    // Count contents
+    const chatCount = Object.values(state.chatFolderMap).filter(fid => fid === folder.id).length;
+    const fileCount = Object.values(state.fileFolderMap).filter(fid => fid === folder.id).length;
+    const childCount = (folder.children || []).length;
+    const totalCount = chatCount + fileCount + childCount;
+
+    // Folder header row
+    const div = el('div', 'folder-item' + (depth > 0 ? ' subfolder' : ''));
+    div.setAttribute('data-folder-id', folder.id);
+
+    const chevron = el('span', 'folder-chevron' + (isExpanded ? ' expanded' : ''));
+    chevron.textContent = '\u25B6'; // right-pointing triangle
+    div.appendChild(chevron);
+
+    const icon = el('span', 'folder-icon');
+    icon.textContent = isExpanded ? '\uD83D\uDCC2' : '\uD83D\uDCC1'; // open/closed folder
+    div.appendChild(icon);
+
+    const nameSpan = el('span', 'folder-name');
+    nameSpan.textContent = folder.name;
+    div.appendChild(nameSpan);
+
+    if (totalCount > 0) {
+      const countSpan = el('span', 'folder-count');
+      countSpan.textContent = totalCount;
+      div.appendChild(countSpan);
+    }
+
+    // Click to expand/collapse
+    div.addEventListener('click', (e) => {
+      e.stopPropagation();
+      toggleFolderExpand(folder.id);
+    });
+
+    // Right-click for folder context menu
+    div.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      state.ctxMenuTarget = { type: 'folder', folderId: folder.id, isRoot: depth === 0 };
+      // Hide "Add Subfolder" for subfolders (max depth = 2)
+      E.menuAddSubfolder.style.display = depth === 0 ? '' : 'none';
+      openMenuAt(E.folderContextMenu, e.pageX, e.pageY);
+    });
+
+    container.appendChild(div);
+
+    // Contents container
+    if (isExpanded) {
+      const contents = el('div', 'folder-contents expanded');
+
+      // Render chats in this folder
+      const folderChats = state.history.filter(c => state.chatFolderMap[c.filename] === folder.id);
+      folderChats.forEach(chat => {
+        renderChatNode(chat, contents, 0, true);
+      });
+
+      // Render files in this folder
+      const folderFiles = Object.keys(state.fileFolderMap).filter(fn => state.fileFolderMap[fn] === folder.id);
+      folderFiles.forEach(fn => {
+        const fileDiv = el('div', 'folder-file-item');
+        fileDiv.innerHTML = `<span>\uD83D\uDCC4</span><span>${fn}</span>`;
+        contents.appendChild(fileDiv);
+      });
+
+      // Render subfolders
+      (folder.children || []).forEach(child => {
+        renderFolderNode(child, contents, depth + 1);
+      });
+
+      container.appendChild(contents);
+    }
+  }
+
+  function renderChatNode(chat, container, depth, inFolder) {
+    const div = el('div', 'chat-item');
+
+    if (depth > 0) {
+      div.classList.add('side-chat');
+      div.setAttribute('data-depth', depth.toString());
+    }
+
+    if (chat.filename === state.currentChatFile) {
+      div.classList.add('active');
+    }
+
+    let title = chat.title || chat.first_message?.substring(0, 60) || chat.filename.replace(/\.json$/, '');
+
+    if (!inFolder) {
+      div.style.paddingLeft = (12 + (depth * 20)) + 'px';
+    }
+
+    const titleDiv = el('div', 'chat-item-title');
+    titleDiv.textContent = title;
+    div.appendChild(titleDiv);
+
+    div.addEventListener('click', () => loadChat(chat.filename));
+
+    div.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      state.ctxMenuTarget = { type: 'chat', filename: chat.filename };
+      // Show/hide "Remove from Folder" based on whether chat is in a folder
+      E.menuRemoveFromFolder.style.display = state.chatFolderMap[chat.filename] ? '' : 'none';
+      openMenuAt(E.chatContextMenu, e.pageX, e.pageY);
+    });
+
+    container.appendChild(div);
+
+    // Render children (branches)
+    const chatId = chat.chat_id || chat.filename;
+    const children = state.history.filter(c => c.parent_chat_id === chatId);
+    children.forEach(child => {
+      renderChatNode(child, container, depth + 1, inFolder);
+    });
+  }
+
+  function renderHistory() {
+    clearNode(E.chatHistory);
+
+    // Build set of chats that are in folders
+    const chatsInFolders = new Set(Object.keys(state.chatFolderMap));
+
+    // Build set of child chats (have parent_chat_id)
+    const childChats = new Set();
+    state.history.forEach(chat => {
+      if (chat.parent_chat_id) childChats.add(chat.filename);
+    });
+
+    // Render folders section
+    if (state.folders.length > 0) {
+      state.folders.forEach(folder => {
+        renderFolderNode(folder, E.chatHistory, 0);
+      });
+
+      // Divider between folders and unfiled chats
+      const unfiledChats = state.history.filter(c => !chatsInFolders.has(c.filename) && !c.parent_chat_id);
+      if (unfiledChats.length > 0) {
+        const label = el('div', 'folder-section-label');
+        label.textContent = 'Chats';
+        E.chatHistory.appendChild(label);
       }
     }
-    
-    // Loop through all chats in state.history that have no parent_chat_id and call renderNode(chat, 0)
+
+    // Render unfiled root chats (not in any folder, no parent)
     state.history.forEach(chat => {
-      if (!chat.parent_chat_id) {
-        renderNode(chat, 0);
+      if (!chatsInFolders.has(chat.filename) && !chat.parent_chat_id) {
+        renderChatNode(chat, E.chatHistory, 0, false);
       }
     });
   }
@@ -3235,8 +3484,8 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
   async function init() {
     console.time('TB:init');
     // Close menus when scrolling/resizing
-    window.addEventListener('scroll', () => { E.chatContextMenu.style.display = 'none'; E.msgContextMenu.style.display = 'none'; E.inputContextMenu.style.display = 'none'; });
-    window.addEventListener('resize', () => { E.chatContextMenu.style.display = 'none'; E.msgContextMenu.style.display = 'none'; E.inputContextMenu.style.display = 'none'; });
+    window.addEventListener('scroll', () => { E.chatContextMenu.style.display = 'none'; E.msgContextMenu.style.display = 'none'; E.inputContextMenu.style.display = 'none'; E.folderContextMenu.style.display = 'none'; E.moveToFolderMenu.style.display = 'none'; });
+    window.addEventListener('resize', () => { E.chatContextMenu.style.display = 'none'; E.msgContextMenu.style.display = 'none'; E.inputContextMenu.style.display = 'none'; E.folderContextMenu.style.display = 'none'; E.moveToFolderMenu.style.display = 'none'; });
 
     // Bind UI immediately so app feels responsive
     bindMenus();
@@ -3256,12 +3505,13 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
     console.time('TB:parallelLoad');
 
     // Load all critical data in parallel
-    const [configResult, promptsResult, historyResult, docsResult, messagesResult] = await Promise.allSettled([
+    const [configResult, promptsResult, historyResult, docsResult, messagesResult, foldersResult] = await Promise.allSettled([
       loadConfigAndModels(),
       loadPrompts(),
       loadHistory(),
       loadDocs(),
-      loadMessages()
+      loadMessages(),
+      loadFolders()
     ]);
 
     console.timeEnd('TB:parallelLoad');
@@ -3272,6 +3522,7 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
     if (historyResult.status === 'rejected') console.warn('History load failed:', historyResult.reason);
     if (docsResult.status === 'rejected') console.warn('Docs load failed:', docsResult.reason);
     if (messagesResult.status === 'rejected') console.warn('Messages load failed:', messagesResult.reason);
+    if (foldersResult.status === 'rejected') console.warn('Folders load failed:', foldersResult.reason);
 
     // Initialize sidebar after config is loaded
     if (configResult.status === 'fulfilled') {
@@ -3299,6 +3550,44 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
 
     // Sidebar buttons
     E.newChatBtn.addEventListener('click', newChat);
+    E.newFolderBtn.addEventListener('click', () => createFolder('New Folder'));
+
+    // Folder context menu handlers
+    E.menuRenameFolder.addEventListener('click', () => {
+      E.folderContextMenu.style.display = 'none';
+      if (state.ctxMenuTarget.type === 'folder') {
+        startFolderRename(state.ctxMenuTarget.folderId);
+      }
+    });
+    E.menuAddSubfolder.addEventListener('click', () => {
+      E.folderContextMenu.style.display = 'none';
+      if (state.ctxMenuTarget.type === 'folder') {
+        createFolder('New Subfolder', state.ctxMenuTarget.folderId);
+      }
+    });
+    E.menuDeleteFolder.addEventListener('click', () => {
+      E.folderContextMenu.style.display = 'none';
+      if (state.ctxMenuTarget.type === 'folder') {
+        const fid = state.ctxMenuTarget.folderId;
+        if (confirm('Delete this folder? Contents will be moved to the parent level.')) {
+          deleteFolder(fid, false);
+        }
+      }
+    });
+
+    // Chat context menu: Move to Folder
+    E.menuMoveToFolder.addEventListener('click', (e) => {
+      E.chatContextMenu.style.display = 'none';
+      if (state.ctxMenuTarget.type === 'chat') {
+        showMoveToFolderMenu(e.pageX, e.pageY, state.ctxMenuTarget.filename);
+      }
+    });
+    E.menuRemoveFromFolder.addEventListener('click', () => {
+      E.chatContextMenu.style.display = 'none';
+      if (state.ctxMenuTarget.type === 'chat') {
+        moveChatToFolder(state.ctxMenuTarget.filename, null);
+      }
+    });
 
     // Header "Load/Unload" visible for llamacpp
     const supportsLoadUnload = (p) => (p === 'llamacpp');
