@@ -13,8 +13,10 @@ from typing import List, Dict, Any, Optional
 
 
 class FolderManager:
-    def __init__(self, config_path: str = "folders.json"):
+    def __init__(self, config_path: str = "folders.json",
+                 chats_directory: str = "chats"):
         self.config_path = config_path
+        self.chats_directory = chats_directory
         self.data = self._load()
 
     def _load(self) -> Dict[str, Any]:
@@ -84,8 +86,17 @@ class FolderManager:
             "parent_id": parent_id,
             "order": order,
             "created": self._now_iso(),
+            "prompt_branch_filename": None,
+            "memory_summary": "",
+            "memory_notes": [],
+            "auto_memory": False,
         }
         self.data["folders"].append(folder)
+
+        # Auto-create the prompt branch chat
+        prompt_fn = self._create_prompt_branch(folder["id"], name)
+        folder["prompt_branch_filename"] = prompt_fn
+
         self._save()
         return folder
 
@@ -314,5 +325,139 @@ class FolderManager:
         if not folder:
             return False
         folder["order"] = new_order
+        self._save()
+        return True
+
+    # ---- Prompt branch ----
+
+    def _create_prompt_branch(self, folder_id: str, folder_name: str) -> str:
+        """Create a prompt branch chat file for a folder. Returns the filename."""
+        chat_id = str(uuid.uuid4())
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        fn = f"folder_prompt_{folder_id[:8]}_{ts}.json"
+
+        chat_data = {
+            "chat_id": chat_id,
+            "root_chat_id": chat_id,
+            "parent_chat_id": "",
+            "chat_history": [
+                {
+                    "role": "system",
+                    "content": (
+                        f"You are helping define the system prompt for the folder \"{folder_name}\". "
+                        "Describe the role, knowledge, and behavior the AI should have "
+                        "for all chats in this folder. The last assistant message in this "
+                        "conversation becomes the active system prompt."
+                    ),
+                    "timestamp": datetime.now().strftime("%H:%M"),
+                }
+            ],
+            "conversation_summary": "",
+            "token_count": 0,
+            "title": f"[Prompt] {folder_name}",
+        }
+
+        path = os.path.join(self.chats_directory, fn)
+        os.makedirs(self.chats_directory, exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(chat_data, f, indent=2, ensure_ascii=False)
+
+        # Assign prompt branch to the folder
+        self.data["chat_folder_map"][fn] = folder_id
+        return fn
+
+    def get_folder_system_prompt(self, folder_id: str) -> str:
+        """Read the prompt branch chat file and return the last assistant message."""
+        folder = self._find_folder(folder_id)
+        if not folder:
+            return ""
+        fn = folder.get("prompt_branch_filename")
+        if not fn:
+            return ""
+        path = os.path.join(self.chats_directory, fn)
+        if not os.path.exists(path):
+            return ""
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            history = data.get("chat_history", []) if isinstance(data, dict) else data
+            # Walk backwards to find the last assistant message
+            for msg in reversed(history):
+                if msg.get("role") == "assistant":
+                    return msg.get("content", "")
+        except Exception as e:
+            print(f"Error reading prompt branch {fn}: {e}")
+        return ""
+
+    def is_prompt_branch(self, filename: str) -> bool:
+        """Check if a chat filename is a prompt branch for any folder."""
+        for folder in self.data["folders"]:
+            if folder.get("prompt_branch_filename") == filename:
+                return True
+        return False
+
+    # ---- Folder memory ----
+
+    def get_folder_memory(self, folder_id: str) -> Dict[str, Any]:
+        """Return {summary, notes} for a folder."""
+        folder = self._find_folder(folder_id)
+        if not folder:
+            return {"summary": "", "notes": []}
+        return {
+            "summary": folder.get("memory_summary", ""),
+            "notes": list(folder.get("memory_notes", [])),
+        }
+
+    def update_memory_summary(self, folder_id: str, summary: str) -> bool:
+        """Set the memory_summary for a folder."""
+        folder = self._find_folder(folder_id)
+        if not folder:
+            return False
+        folder["memory_summary"] = summary
+        self._save()
+        return True
+
+    def add_memory_note(self, folder_id: str, text: str,
+                        source: str = "") -> bool:
+        """Append a note to the folder's memory_notes."""
+        folder = self._find_folder(folder_id)
+        if not folder:
+            return False
+        folder.setdefault("memory_notes", []).append({
+            "text": text,
+            "source": source,
+            "created": self._now_iso(),
+        })
+        self._save()
+        return True
+
+    def remove_memory_note(self, folder_id: str, index: int) -> bool:
+        """Remove a memory note by index."""
+        folder = self._find_folder(folder_id)
+        if not folder:
+            return False
+        notes = folder.get("memory_notes", [])
+        if 0 <= index < len(notes):
+            notes.pop(index)
+            self._save()
+            return True
+        return False
+
+    def clear_memory(self, folder_id: str) -> bool:
+        """Reset both summary and notes."""
+        folder = self._find_folder(folder_id)
+        if not folder:
+            return False
+        folder["memory_summary"] = ""
+        folder["memory_notes"] = []
+        self._save()
+        return True
+
+    def set_auto_memory(self, folder_id: str, enabled: bool) -> bool:
+        """Toggle auto-memory extraction."""
+        folder = self._find_folder(folder_id)
+        if not folder:
+            return False
+        folder["auto_memory"] = enabled
         self._save()
         return True

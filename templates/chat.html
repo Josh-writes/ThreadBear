@@ -232,6 +232,62 @@
             text-overflow: ellipsis;
         }
 
+        /* Prompt branch chat item styling */
+        .chat-item.prompt-branch {
+            font-weight: 600;
+            border-left: 3px solid #10a37f;
+            opacity: 0.85;
+        }
+        .chat-item.prompt-branch .chat-item-title::before {
+            content: "🎯 ";
+        }
+
+        /* Folder badge in chat header */
+        .folder-badge {
+            font-size: 11px;
+            padding: 2px 8px;
+            border-radius: 10px;
+            background: rgba(16, 163, 127, 0.12);
+            color: #10a37f;
+            font-weight: 500;
+            white-space: nowrap;
+            cursor: default;
+        }
+        [data-theme="dark"] .folder-badge {
+            background: rgba(16, 163, 127, 0.2);
+        }
+
+        /* Memory note items in viewer */
+        .memory-note-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            gap: 8px;
+            padding: 8px;
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            margin-bottom: 6px;
+            font-size: 13px;
+        }
+        .memory-note-item .note-text {
+            flex: 1;
+            color: var(--text-primary);
+        }
+        .memory-note-item .note-source {
+            font-size: 10px;
+            color: var(--text-secondary);
+            margin-top: 2px;
+        }
+        .memory-note-item .note-delete {
+            background: none;
+            border: none;
+            cursor: pointer;
+            color: #dc2626;
+            font-size: 14px;
+            padding: 0 4px;
+            flex-shrink: 0;
+        }
+
         .folder-contents .folder-contents .folder-file-item {
             padding-left: 52px;
         }
@@ -2182,7 +2238,10 @@
         <div class="main-content">
             <div class="chat-header">
                 <div class="header-left">
-                    <div class="chat-title" id="chatTitle"></div>
+                    <div style="display: flex; align-items: center; gap: 8px;">
+                        <div class="chat-title" id="chatTitle"></div>
+                        <span class="folder-badge" id="folderBadge" style="display: none;"></span>
+                    </div>
                     <div class="header-dropdowns">
                         <select class="header-select" id="headerProviderSelect">
                             <option value="groq">Groq</option>
@@ -2651,6 +2710,41 @@
         </div>
     </div>
 
+    <!-- Memory Viewer Panel -->
+    <div class="settings-panel" id="memoryViewerPanel">
+        <div class="settings-header">
+            <h3 id="memoryViewerTitle">Folder Memory</h3>
+            <button class="control-btn" id="closeMemoryViewerBtn">✕</button>
+        </div>
+        <div class="settings-content">
+            <div class="setting-group">
+                <label class="setting-label">Auto-Memory</label>
+                <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+                    <input type="checkbox" id="autoMemoryToggle">
+                    <span style="font-size: 13px; color: var(--text-secondary);">Auto-extract key facts after each reply</span>
+                </label>
+            </div>
+            <div class="setting-group">
+                <label class="setting-label">Memory Summary</label>
+                <textarea class="setting-input" id="memorySummaryTextarea" rows="6" placeholder="Running summary of folder activity..."></textarea>
+            </div>
+            <div class="setting-group">
+                <div style="display: flex; justify-content: space-between; align-items: center;">
+                    <label class="setting-label" style="margin-bottom: 0;">Memory Notes</label>
+                    <span style="font-size: 11px; color: var(--text-secondary);" id="memoryNotesCount">0 notes</span>
+                </div>
+                <div id="memoryNotesList" style="margin-top: 8px;"></div>
+            </div>
+            <div style="display: flex; gap: 8px; margin-top: 16px;">
+                <button class="control-btn" id="saveMemoryBtn" style="flex: 1;">Save Changes</button>
+                <button class="control-btn" id="updateMemorySummaryBtn" style="flex: 1;">Update Summary</button>
+            </div>
+            <div style="margin-top: 8px;">
+                <button class="control-btn" id="clearMemoryBtn" style="width: 100%; background: transparent; color: #dc2626; border-color: #dc2626;">Clear All Memory</button>
+            </div>
+        </div>
+    </div>
+
     <!-- Add Selection Button (appears on text select) -->
     <button class="add-selection-btn" id="addSelectionBtn">+ Add Selection</button>
 
@@ -2695,6 +2789,19 @@
             <span>Add Subfolder</span>
         </div>
         <div class="context-menu-separator"></div>
+        <div class="context-menu-item" id="updateFolderMemoryMenuItem">
+            <span>🧠</span>
+            <span>Update Memory</span>
+        </div>
+        <div class="context-menu-item" id="viewFolderMemoryMenuItem">
+            <span>📝</span>
+            <span>View/Edit Memory</span>
+        </div>
+        <div class="context-menu-item" id="toggleAutoMemoryMenuItem">
+            <span>⚡</span>
+            <span>Auto-Memory: OFF</span>
+        </div>
+        <div class="context-menu-separator"></div>
         <div class="context-menu-item danger" id="deleteFolderMenuItem">
             <span>🗑️</span>
             <span>Delete Folder</span>
@@ -2729,6 +2836,11 @@
         <div class="context-menu-item" id="copyResponseMenuItem">
             <span>📋</span>
             <span>Copy Response</span>
+        </div>
+        <div class="context-menu-separator"></div>
+        <div class="context-menu-item" id="addToFolderMemoryMenuItem" style="display: none;">
+            <span>🧠</span>
+            <span>Add to Folder Memory</span>
         </div>
         <div class="context-menu-separator"></div>
         <div class="context-menu-item danger" id="deleteResponseMenuItem">

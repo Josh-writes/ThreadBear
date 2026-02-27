@@ -214,6 +214,9 @@
     folderContextMenu: $('folderContextMenu'),
     menuRenameFolder: $('renameFolderMenuItem'),
     menuAddSubfolder: $('addSubfolderMenuItem'),
+    menuUpdateFolderMemory: $('updateFolderMemoryMenuItem'),
+    menuViewFolderMemory: $('viewFolderMemoryMenuItem'),
+    menuToggleAutoMemory: $('toggleAutoMemoryMenuItem'),
     menuDeleteFolder: $('deleteFolderMenuItem'),
     moveToFolderMenu: $('moveToFolderMenu'),
 
@@ -223,7 +226,23 @@
     menuSummarize: $('summarizeResponseMenuItem'),
     menuCopySelected: $('copySelectedMenuItem'),
     menuCopy: $('copyResponseMenuItem'),
+    menuAddToFolderMemory: $('addToFolderMemoryMenuItem'),
     menuDelete: $('deleteResponseMenuItem'),
+
+    // Folder badge
+    folderBadge: $('folderBadge'),
+
+    // Memory viewer panel
+    memoryViewerPanel: $('memoryViewerPanel'),
+    memoryViewerTitle: $('memoryViewerTitle'),
+    closeMemoryViewerBtn: $('closeMemoryViewerBtn'),
+    autoMemoryToggle: $('autoMemoryToggle'),
+    memorySummaryTextarea: $('memorySummaryTextarea'),
+    memoryNotesList: $('memoryNotesList'),
+    memoryNotesCount: $('memoryNotesCount'),
+    saveMemoryBtn: $('saveMemoryBtn'),
+    updateMemorySummaryBtn: $('updateMemorySummaryBtn'),
+    clearMemoryBtn: $('clearMemoryBtn'),
 
     inputContextMenu: $('inputContextMenu'),
     inputCut: $('inputCutMenuItem'),
@@ -255,6 +274,29 @@
     } else {
       E.chatTitle.textContent = state.currentChatFile ? state.currentChatFile.replace(/\.json$/,'') : 'New Chat';
     }
+    // Update folder badge
+    const folderId = state.chatFolderMap[state.currentChatFile];
+    if (folderId) {
+      const folder = findFolderById(folderId);
+      if (folder) {
+        E.folderBadge.textContent = folder.name;
+        E.folderBadge.style.display = '';
+      } else {
+        E.folderBadge.style.display = 'none';
+      }
+    } else {
+      E.folderBadge.style.display = 'none';
+    }
+  }
+
+  function findFolderById(id) {
+    for (const f of state.folders) {
+      if (f.id === id) return f;
+      for (const c of (f.children || [])) {
+        if (c.id === id) return c;
+      }
+    }
+    return null;
   }
 
   function modelMatchesLoaded(selectedModel, loadedModel) {
@@ -402,6 +444,8 @@
       const sel = window.getSelection ? window.getSelection().toString().trim() : '';
       E.menuBranchSelected.style.display = sel ? '' : 'none';
       E.menuCopySelected.style.display = sel ? '' : 'none';
+      // Show "Add to Folder Memory" only when chat is in a folder
+      E.menuAddToFolderMemory.style.display = state.chatFolderMap[state.currentChatFile] ? '' : 'none';
     });
   });
 
@@ -557,6 +601,71 @@
     renderHistory();
   }
 
+  async function openMemoryViewer(folderId) {
+    const folder = findFolderById(folderId);
+    if (!folder) return;
+
+    E.memoryViewerPanel.dataset.folderId = folderId;
+    E.memoryViewerTitle.textContent = `Memory: ${folder.name}`;
+
+    try {
+      const res = await fetch(`/api/folders/${folderId}/context`);
+      const data = await res.json();
+      E.memorySummaryTextarea.value = data.memory_summary || '';
+      E.autoMemoryToggle.checked = !!data.auto_memory;
+      renderMemoryNotes(data.memory_notes || []);
+    } catch (e) {
+      console.error('Failed to load folder context:', e);
+      E.memorySummaryTextarea.value = '';
+      E.autoMemoryToggle.checked = false;
+      renderMemoryNotes([]);
+    }
+
+    openSettingsPanel(E.memoryViewerPanel);
+  }
+
+  function renderMemoryNotes(notes) {
+    clearNode(E.memoryNotesList);
+    E.memoryNotesCount.textContent = notes.length + ' note' + (notes.length !== 1 ? 's' : '');
+
+    if (notes.length === 0) {
+      const empty = el('div');
+      empty.style.cssText = 'color: var(--text-secondary); font-size: 13px; padding: 8px;';
+      empty.textContent = 'No memory notes yet.';
+      E.memoryNotesList.appendChild(empty);
+      return;
+    }
+
+    notes.forEach((note, idx) => {
+      const item = el('div', 'memory-note-item');
+
+      const textDiv = el('div');
+      const noteText = el('div', 'note-text');
+      noteText.textContent = note.text;
+      textDiv.appendChild(noteText);
+      if (note.source) {
+        const src = el('div', 'note-source');
+        src.textContent = note.source;
+        textDiv.appendChild(src);
+      }
+      item.appendChild(textDiv);
+
+      const delBtn = el('button', 'note-delete');
+      delBtn.textContent = '\u2715';
+      delBtn.title = 'Delete note';
+      delBtn.addEventListener('click', async () => {
+        const fid = E.memoryViewerPanel.dataset.folderId;
+        if (!fid) return;
+        await fetch(`/api/folders/${fid}/memory/note/${idx}`, { method: 'DELETE' });
+        // Refresh
+        openMemoryViewer(fid);
+      });
+      item.appendChild(delBtn);
+
+      E.memoryNotesList.appendChild(item);
+    });
+  }
+
   function showMoveToFolderMenu(x, y, filename) {
     const menu = E.moveToFolderMenu;
     menu.innerHTML = '';
@@ -647,6 +756,9 @@
       state.ctxMenuTarget = { type: 'folder', folderId: folder.id, isRoot: depth === 0 };
       // Hide "Add Subfolder" for subfolders (max depth = 2)
       E.menuAddSubfolder.style.display = depth === 0 ? '' : 'none';
+      // Update auto-memory label
+      const autoMem = folder.auto_memory;
+      E.menuToggleAutoMemory.querySelector('span:last-child').textContent = 'Auto-Memory: ' + (autoMem ? 'ON' : 'OFF');
       openMenuAt(E.folderContextMenu, e.pageX, e.pageY);
     });
 
@@ -656,9 +768,18 @@
     if (isExpanded) {
       const contents = el('div', 'folder-contents expanded');
 
-      // Render chats in this folder
+      // Render prompt branch first (if any)
+      const promptFn = folder.prompt_branch_filename;
       const folderChats = state.history.filter(c => state.chatFolderMap[c.filename] === folder.id);
-      folderChats.forEach(chat => {
+      if (promptFn) {
+        const promptChat = folderChats.find(c => c.filename === promptFn);
+        if (promptChat) {
+          renderChatNode(promptChat, contents, 0, true, true);
+        }
+      }
+
+      // Render other chats
+      folderChats.filter(c => c.filename !== promptFn).forEach(chat => {
         renderChatNode(chat, contents, 0, true);
       });
 
@@ -679,8 +800,12 @@
     }
   }
 
-  function renderChatNode(chat, container, depth, inFolder) {
+  function renderChatNode(chat, container, depth, inFolder, isPromptBranch) {
     const div = el('div', 'chat-item');
+
+    if (isPromptBranch) {
+      div.classList.add('prompt-branch');
+    }
 
     if (depth > 0) {
       div.classList.add('side-chat');
@@ -1906,6 +2031,7 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
   const ALL_SETTINGS_PANELS = () => [
     E.settingsPanel, E.promptsSettingsPanel,
     E.systemSettingsPanel, E.openrouterBrowsePanel,
+    E.memoryViewerPanel,
   ];
 
   function openSettingsPanel(panel) {
@@ -3573,6 +3699,127 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
           deleteFolder(fid, false);
         }
       }
+    });
+
+    // Folder context menu: Update Memory
+    E.menuUpdateFolderMemory.addEventListener('click', async () => {
+      E.folderContextMenu.style.display = 'none';
+      if (state.ctxMenuTarget.type === 'folder') {
+        const fid = state.ctxMenuTarget.folderId;
+        E.menuUpdateFolderMemory.querySelector('span:last-child').textContent = 'Updating...';
+        try {
+          const res = await fetch(`/api/folders/${fid}/memory/update`, { method: 'POST' });
+          const data = await res.json();
+          if (data.success) {
+            alert('Folder memory updated.');
+          } else {
+            alert('Error: ' + (data.error || 'Unknown'));
+          }
+        } catch (e) {
+          alert('Failed to update memory: ' + e.message);
+        }
+        E.menuUpdateFolderMemory.querySelector('span:last-child').textContent = 'Update Memory';
+      }
+    });
+
+    // Folder context menu: View/Edit Memory
+    E.menuViewFolderMemory.addEventListener('click', () => {
+      E.folderContextMenu.style.display = 'none';
+      if (state.ctxMenuTarget.type === 'folder') {
+        openMemoryViewer(state.ctxMenuTarget.folderId);
+      }
+    });
+
+    // Folder context menu: Toggle Auto-Memory
+    E.menuToggleAutoMemory.addEventListener('click', async () => {
+      E.folderContextMenu.style.display = 'none';
+      if (state.ctxMenuTarget.type === 'folder') {
+        const fid = state.ctxMenuTarget.folderId;
+        const folder = findFolderById(fid);
+        if (!folder) return;
+        const newVal = !folder.auto_memory;
+        await fetch(`/api/folders/${fid}/memory`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ auto_memory: newVal }),
+        });
+        folder.auto_memory = newVal;
+      }
+    });
+
+    // Message context menu: Add to Folder Memory
+    E.menuAddToFolderMemory.addEventListener('click', async () => {
+      E.msgContextMenu.style.display = 'none';
+      const idx = state.ctxMenuTarget.index;
+      if (typeof idx !== 'number') return;
+      const msg = state.messages[idx];
+      if (!msg) return;
+      const folderId = state.chatFolderMap[state.currentChatFile];
+      if (!folderId) return;
+      try {
+        await fetch(`/api/folders/${folderId}/memory/add`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            text: msg.content.substring(0, 500),
+            source: state.currentChatFile || 'manual',
+          }),
+        });
+        // Brief visual confirmation
+        const badge = E.folderBadge;
+        if (badge && badge.style.display !== 'none') {
+          const orig = badge.textContent;
+          badge.textContent = orig + ' (saved)';
+          setTimeout(() => { badge.textContent = orig; }, 1500);
+        }
+      } catch (e) {
+        console.error('Add to folder memory failed:', e);
+      }
+    });
+
+    // Memory viewer panel
+    E.closeMemoryViewerBtn.addEventListener('click', () => closeAllSettingsPanels());
+
+    E.saveMemoryBtn.addEventListener('click', async () => {
+      const fid = E.memoryViewerPanel.dataset.folderId;
+      if (!fid) return;
+      await fetch(`/api/folders/${fid}/memory`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          memory_summary: E.memorySummaryTextarea.value,
+          auto_memory: E.autoMemoryToggle.checked,
+        }),
+      });
+      const folder = findFolderById(fid);
+      if (folder) folder.auto_memory = E.autoMemoryToggle.checked;
+    });
+
+    E.updateMemorySummaryBtn.addEventListener('click', async () => {
+      const fid = E.memoryViewerPanel.dataset.folderId;
+      if (!fid) return;
+      E.updateMemorySummaryBtn.textContent = 'Updating...';
+      E.updateMemorySummaryBtn.disabled = true;
+      try {
+        const res = await fetch(`/api/folders/${fid}/memory/update`, { method: 'POST' });
+        const data = await res.json();
+        if (data.success) {
+          E.memorySummaryTextarea.value = data.memory_summary || '';
+        }
+      } catch (e) {
+        console.error('Update memory failed:', e);
+      }
+      E.updateMemorySummaryBtn.textContent = 'Update Summary';
+      E.updateMemorySummaryBtn.disabled = false;
+    });
+
+    E.clearMemoryBtn.addEventListener('click', async () => {
+      const fid = E.memoryViewerPanel.dataset.folderId;
+      if (!fid) return;
+      if (!confirm('Clear all folder memory? This cannot be undone.')) return;
+      await fetch(`/api/folders/${fid}/memory/clear`, { method: 'POST' });
+      E.memorySummaryTextarea.value = '';
+      renderMemoryNotes([]);
     });
 
     // Chat context menu: Move to Folder
