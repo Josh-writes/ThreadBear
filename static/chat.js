@@ -440,13 +440,12 @@
       const sel = window.getSelection ? window.getSelection().toString().trim() : '';
       E.menuBranchSelected.style.display = sel ? '' : 'none';
       E.menuCopySelected.style.display = sel ? '' : 'none';
-      // Show "Add to Folder Memory" only when chat is in a folder
+      // Show folder actions only when chat is in a folder
       const inFolder = state.chatFolderMap[state.currentChatFile];
-      E.menuAddToFolderMemory.style.display = inFolder ? '' : 'none';
-      // Show "Save as Folder Prompt" only in prompt branches (assistant messages only)
-      const isPromptBranch = state.currentChatFile && state.currentChatFile.startsWith('folder_prompt_');
       const msgRole = state.messages[index] && state.messages[index].role;
-      E.menuSaveAsFolderPrompt.style.display = (isPromptBranch && msgRole === 'assistant') ? '' : 'none';
+      E.menuAddToFolderMemory.style.display = inFolder ? '' : 'none';
+      // Show "Save as Folder Prompt" for assistant messages when chat is in a folder
+      E.menuSaveAsFolderPrompt.style.display = (inFolder && msgRole === 'assistant') ? '' : 'none';
     });
   });
 
@@ -700,22 +699,99 @@
       empty.style.cssText = 'color: var(--text-secondary); font-size: 13px; padding: 8px;';
       empty.textContent = 'No memory notes yet.';
       E.memoryNotesList.appendChild(empty);
-      return;
     }
 
     notes.forEach((note, idx) => {
       const item = el('div', 'memory-note-item');
 
       const textDiv = el('div');
+      textDiv.style.cssText = 'flex: 1; min-width: 0;';
+
+      // Display text (click to edit)
       const noteText = el('div', 'note-text');
       noteText.textContent = note.text;
+      noteText.title = 'Click to edit';
+      noteText.style.cursor = 'pointer';
       textDiv.appendChild(noteText);
+
+      // Hidden edit textarea
+      const editArea = document.createElement('textarea');
+      editArea.className = 'note-edit-area';
+      editArea.style.cssText = 'display:none; width:100%; min-height:60px; resize:vertical; font-size:13px; padding:4px 6px; border:1px solid var(--border-color); border-radius:4px; background:var(--bg-primary); color:var(--text-primary); font-family:inherit;';
+      editArea.value = note.text;
+      textDiv.appendChild(editArea);
+
+      // Click text to enter edit mode
+      noteText.addEventListener('click', (e) => {
+        e.stopPropagation();
+        noteText.style.display = 'none';
+        editArea.style.display = '';
+        editArea.value = noteText.textContent;
+        editArea.focus();
+      });
+
+      // Save on blur
+      editArea.addEventListener('blur', async () => {
+        const newText = editArea.value.trim();
+        if (newText && newText !== noteText.textContent) {
+          const fid = E.folderContextPanel.dataset.folderId;
+          await fetch(`/api/folders/${fid}/memory/note/${idx}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ text: newText }),
+          });
+          noteText.textContent = newText;
+        }
+        editArea.style.display = 'none';
+        noteText.style.display = '';
+      });
+
+      // Save on Enter (Shift+Enter for newline)
+      editArea.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' && !e.shiftKey) {
+          e.preventDefault();
+          editArea.blur();
+        }
+        if (e.key === 'Escape') {
+          editArea.value = noteText.textContent;
+          editArea.blur();
+        }
+      });
+
       if (note.source) {
         const src = el('div', 'note-source');
         src.textContent = note.source;
         textDiv.appendChild(src);
       }
       item.appendChild(textDiv);
+
+      const btnGroup = el('div');
+      btnGroup.style.cssText = 'display: flex; gap: 4px; flex-shrink: 0;';
+
+      const compactBtn = el('button', 'note-compact');
+      compactBtn.textContent = '\u2702';
+      compactBtn.title = 'Compact (tighten wording, keep all facts)';
+      compactBtn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        const fid = E.folderContextPanel.dataset.folderId;
+        if (!fid) return;
+        compactBtn.textContent = '\u2026';
+        compactBtn.disabled = true;
+        try {
+          const res = await fetch(`/api/folders/${fid}/memory/note/${idx}/compact`, { method: 'POST' });
+          const data = await res.json();
+          if (data.success) {
+            noteText.textContent = data.text;
+          } else {
+            alert('Compact failed: ' + (data.error || 'Unknown'));
+          }
+        } catch (err) {
+          console.error('Compact note failed:', err);
+        }
+        compactBtn.textContent = '\u2702';
+        compactBtn.disabled = false;
+      });
+      btnGroup.appendChild(compactBtn);
 
       const delBtn = el('button', 'note-delete');
       delBtn.textContent = '\u2715';
@@ -724,13 +800,68 @@
         const fid = E.folderContextPanel.dataset.folderId;
         if (!fid) return;
         await fetch(`/api/folders/${fid}/memory/note/${idx}`, { method: 'DELETE' });
-        // Refresh
         openFolderContextSettings(fid);
       });
-      item.appendChild(delBtn);
+      btnGroup.appendChild(delBtn);
+
+      item.appendChild(btnGroup);
 
       E.memoryNotesList.appendChild(item);
     });
+
+    // "Add Note" button
+    const addBtn = el('button', 'control-btn');
+    addBtn.style.cssText = 'width: 100%; margin-top: 8px;';
+    addBtn.textContent = '+ Add Note';
+    addBtn.addEventListener('click', () => {
+      // Replace button with textarea for input
+      const wrapper = el('div');
+      wrapper.style.cssText = 'margin-top: 8px;';
+      const ta = document.createElement('textarea');
+      ta.style.cssText = 'width:100%; min-height:60px; resize:vertical; font-size:13px; padding:6px 8px; border:1px solid var(--border-color); border-radius:4px; background:var(--bg-primary); color:var(--text-primary); font-family:inherit;';
+      ta.placeholder = 'Type or paste a memory note...';
+      wrapper.appendChild(ta);
+
+      const btnRow = el('div');
+      btnRow.style.cssText = 'display:flex; gap:6px; margin-top:6px;';
+      const saveBtn = el('button', 'control-btn');
+      saveBtn.textContent = 'Save';
+      saveBtn.style.flex = '1';
+      const cancelBtn = el('button', 'control-btn');
+      cancelBtn.textContent = 'Cancel';
+      cancelBtn.style.cssText = 'flex:1; background:transparent;';
+      btnRow.appendChild(saveBtn);
+      btnRow.appendChild(cancelBtn);
+      wrapper.appendChild(btnRow);
+
+      addBtn.replaceWith(wrapper);
+      ta.focus();
+
+      saveBtn.addEventListener('click', async () => {
+        const text = ta.value.trim();
+        if (!text) return;
+        const fid = E.folderContextPanel.dataset.folderId;
+        await fetch(`/api/folders/${fid}/memory/add`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text, source: 'manual' }),
+        });
+        openFolderContextSettings(fid);
+      });
+
+      cancelBtn.addEventListener('click', () => {
+        wrapper.replaceWith(addBtn);
+      });
+
+      ta.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' && !e.shiftKey) {
+          e.preventDefault();
+          saveBtn.click();
+        }
+        if (e.key === 'Escape') cancelBtn.click();
+      });
+    });
+    E.memoryNotesList.parentNode.insertBefore(addBtn, E.memoryNotesList.nextSibling);
   }
 
   function showMoveToFolderMenu(x, y, filename) {

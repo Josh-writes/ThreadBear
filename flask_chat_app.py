@@ -1143,6 +1143,96 @@ class FlaskChatApp:
             ok = self.folder_manager.clear_memory(folder_id)
             return jsonify({"success": ok})
 
+        @app.route('/api/folders/<folder_id>/memory/note/<int:index>/compact',
+                    methods=['POST'])
+        def compact_memory_note(folder_id: str, index: int):
+            """Use a fast LLM to compact a memory note."""
+            folder = self.folder_manager._find_folder(folder_id)
+            if not folder:
+                return jsonify({"error": "not_found"}), 404
+            notes = folder.get("memory_notes", [])
+            if index < 0 or index >= len(notes):
+                return jsonify({"error": "invalid index"}), 400
+            original = notes[index]["text"]
+            if len(original) < 40:
+                return jsonify({"success": True, "text": original})
+
+            title_provider = self.config.get("title_provider", "groq")
+            title_model = self.config.get("title_model",
+                                          "llama-3.1-8b-instant")
+            stream_func = {
+                "groq": call_groq_stream,
+                "google": call_google_stream,
+                "mistral": call_mistral_stream,
+                "openrouter": call_openrouter_stream,
+                "llamacpp": call_llamacpp_stream,
+            }.get(title_provider)
+            if not stream_func:
+                return jsonify({"error": "no title provider"}), 500
+
+            compact_prompt = (
+                "Tighten the following text by removing filler words, "
+                "redundant phrases, and unnecessary formatting while "
+                "preserving ALL facts, details, and meaning. Do not "
+                "summarize or omit information — just make it shorter "
+                "without losing content. Output ONLY the tightened "
+                "text, nothing else.\n\n" + original[:1500]
+            )
+
+            cfg = dict(self.config.config)
+            api_key = self.config.get_api_key(title_provider)
+            if api_key:
+                cfg[f"{title_provider}_api_key"] = api_key
+            if title_provider == "llamacpp":
+                detected_url, _ = self._get_llamacpp_connection()
+                cfg["llamacpp_url"] = detected_url
+            cfg.update({
+                "model": title_model,
+                f"{title_provider}_model": title_model,
+                f"{title_provider}_temperature": 0.2,
+                f"{title_provider}_max_tokens": 300,
+                f"{title_provider}_system_prompt": "",
+                "temperature": 0.2,
+                "system_prompt": "",
+                "max_tokens": 300,
+            })
+
+            try:
+                generated = ""
+                for chunk in stream_func(
+                    [{"role": "user", "content": compact_prompt}], cfg
+                ):
+                    generated += chunk
+                compacted = generated.strip()
+                if compacted:
+                    notes[index]["text"] = compacted
+                    self.folder_manager._save()
+                    return jsonify({"success": True, "text": compacted})
+                return jsonify({"success": False,
+                                "error": "empty result"}), 500
+            except Exception as e:
+                return jsonify({"success": False,
+                                "error": str(e)}), 500
+
+        @app.route('/api/folders/<folder_id>/memory/note/<int:index>',
+                    methods=['PUT'])
+        def edit_folder_memory_note(folder_id: str, index: int):
+            """Edit a memory note's text."""
+            folder = self.folder_manager._find_folder(folder_id)
+            if not folder:
+                return jsonify({"error": "not_found"}), 404
+            notes = folder.get("memory_notes", [])
+            if index < 0 or index >= len(notes):
+                return jsonify({"error": "invalid index"}), 400
+            data = request.get_json() or {}
+            text = data.get("text", "").strip()
+            if not text:
+                return jsonify({"success": False,
+                                "error": "text required"}), 400
+            notes[index]["text"] = text
+            self.folder_manager._save()
+            return jsonify({"success": True})
+
         # ---- Context documents (binary-safe) ----
         @app.route('/api/context/docs', methods=['GET'])
         def context_list_route():
