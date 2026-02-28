@@ -87,9 +87,9 @@ class FolderManager:
             "order": order,
             "created": self._now_iso(),
             "prompt_branch_filename": None,
-            "memory_summary": "",
+            "saved_prompts": [],
+            "active_prompt_id": None,
             "memory_notes": [],
-            "auto_memory": False,
         }
         self.data["folders"].append(folder)
 
@@ -366,28 +366,92 @@ class FolderManager:
         self.data["chat_folder_map"][fn] = folder_id
         return fn
 
-    def get_folder_system_prompt(self, folder_id: str) -> str:
-        """Read the prompt branch chat file and return the last assistant message."""
+    # ---- Saved prompts ----
+
+    def save_prompt(self, folder_id: str, name: str,
+                    content: str) -> Optional[Dict[str, Any]]:
+        """Create a saved prompt entry. Returns the prompt dict or None."""
+        folder = self._find_folder(folder_id)
+        if not folder:
+            return None
+        folder.setdefault("saved_prompts", [])
+        prompt = {
+            "id": str(uuid.uuid4()),
+            "name": name,
+            "content": content,
+            "tokens": len(content) // 4,  # rough estimate
+            "created": self._now_iso(),
+        }
+        folder["saved_prompts"].append(prompt)
+        # Auto-activate if it's the first saved prompt
+        if len(folder["saved_prompts"]) == 1:
+            folder["active_prompt_id"] = prompt["id"]
+        self._save()
+        return prompt
+
+    def delete_prompt(self, folder_id: str, prompt_id: str) -> bool:
+        """Remove a saved prompt by ID."""
+        folder = self._find_folder(folder_id)
+        if not folder:
+            return False
+        prompts = folder.get("saved_prompts", [])
+        before = len(prompts)
+        folder["saved_prompts"] = [p for p in prompts if p["id"] != prompt_id]
+        if len(folder["saved_prompts"]) == before:
+            return False
+        # Clear active if deleted
+        if folder.get("active_prompt_id") == prompt_id:
+            folder["active_prompt_id"] = None
+        self._save()
+        return True
+
+    def rename_prompt(self, folder_id: str, prompt_id: str,
+                      new_name: str) -> bool:
+        """Rename a saved prompt."""
+        folder = self._find_folder(folder_id)
+        if not folder:
+            return False
+        for p in folder.get("saved_prompts", []):
+            if p["id"] == prompt_id:
+                p["name"] = new_name
+                self._save()
+                return True
+        return False
+
+    def set_active_prompt(self, folder_id: str,
+                          prompt_id: Optional[str]) -> bool:
+        """Set which saved prompt is active (or None to disable)."""
+        folder = self._find_folder(folder_id)
+        if not folder:
+            return False
+        if prompt_id is not None:
+            # Verify prompt exists
+            if not any(p["id"] == prompt_id
+                       for p in folder.get("saved_prompts", [])):
+                return False
+        folder["active_prompt_id"] = prompt_id
+        self._save()
+        return True
+
+    def get_active_prompt_content(self, folder_id: str) -> str:
+        """Return the content of the active saved prompt, or ''."""
         folder = self._find_folder(folder_id)
         if not folder:
             return ""
-        fn = folder.get("prompt_branch_filename")
-        if not fn:
+        active_id = folder.get("active_prompt_id")
+        if not active_id:
             return ""
-        path = os.path.join(self.chats_directory, fn)
-        if not os.path.exists(path):
-            return ""
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            history = data.get("chat_history", []) if isinstance(data, dict) else data
-            # Walk backwards to find the last assistant message
-            for msg in reversed(history):
-                if msg.get("role") == "assistant":
-                    return msg.get("content", "")
-        except Exception as e:
-            print(f"Error reading prompt branch {fn}: {e}")
+        for p in folder.get("saved_prompts", []):
+            if p["id"] == active_id:
+                return p.get("content", "")
         return ""
+
+    def get_saved_prompts(self, folder_id: str) -> List[Dict[str, Any]]:
+        """Return the list of saved prompts for a folder."""
+        folder = self._find_folder(folder_id)
+        if not folder:
+            return []
+        return list(folder.get("saved_prompts", []))
 
     def is_prompt_branch(self, filename: str) -> bool:
         """Check if a chat filename is a prompt branch for any folder."""
@@ -399,23 +463,13 @@ class FolderManager:
     # ---- Folder memory ----
 
     def get_folder_memory(self, folder_id: str) -> Dict[str, Any]:
-        """Return {summary, notes} for a folder."""
+        """Return {notes} for a folder."""
         folder = self._find_folder(folder_id)
         if not folder:
-            return {"summary": "", "notes": []}
+            return {"notes": []}
         return {
-            "summary": folder.get("memory_summary", ""),
             "notes": list(folder.get("memory_notes", [])),
         }
-
-    def update_memory_summary(self, folder_id: str, summary: str) -> bool:
-        """Set the memory_summary for a folder."""
-        folder = self._find_folder(folder_id)
-        if not folder:
-            return False
-        folder["memory_summary"] = summary
-        self._save()
-        return True
 
     def add_memory_note(self, folder_id: str, text: str,
                         source: str = "") -> bool:
@@ -444,20 +498,10 @@ class FolderManager:
         return False
 
     def clear_memory(self, folder_id: str) -> bool:
-        """Reset both summary and notes."""
+        """Clear all memory notes."""
         folder = self._find_folder(folder_id)
         if not folder:
             return False
-        folder["memory_summary"] = ""
         folder["memory_notes"] = []
-        self._save()
-        return True
-
-    def set_auto_memory(self, folder_id: str, enabled: bool) -> bool:
-        """Toggle auto-memory extraction."""
-        folder = self._find_folder(folder_id)
-        if not folder:
-            return False
-        folder["auto_memory"] = enabled
         self._save()
         return True

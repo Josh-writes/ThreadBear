@@ -288,6 +288,67 @@
             flex-shrink: 0;
         }
 
+        /* Saved prompt items in context settings */
+        .saved-prompt-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px;
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            margin-bottom: 6px;
+            font-size: 13px;
+            cursor: pointer;
+            transition: border-color 0.15s;
+        }
+        .saved-prompt-item:hover {
+            border-color: var(--accent-color, #4f8eff);
+        }
+        .saved-prompt-item.active {
+            border-color: #22c55e;
+            background: rgba(34, 197, 94, 0.08);
+        }
+        .saved-prompt-item input[type="radio"] {
+            flex-shrink: 0;
+            accent-color: #22c55e;
+        }
+        .saved-prompt-item .prompt-name {
+            flex: 1;
+            color: var(--text-primary);
+            font-weight: 500;
+        }
+        .saved-prompt-item .prompt-tokens {
+            font-size: 11px;
+            color: var(--text-secondary);
+            flex-shrink: 0;
+        }
+        .saved-prompt-item .prompt-delete {
+            background: none;
+            border: none;
+            cursor: pointer;
+            color: #dc2626;
+            font-size: 14px;
+            padding: 0 4px;
+            flex-shrink: 0;
+        }
+        .saved-prompt-content {
+            padding: 6px 8px;
+            margin: -2px 0 6px 28px;
+            background: var(--bg-primary);
+            border: 1px solid var(--border-color);
+            border-radius: 4px;
+            font-size: 12px;
+            color: var(--text-secondary);
+            max-height: 120px;
+            overflow-y: auto;
+            white-space: pre-wrap;
+            word-break: break-word;
+            display: none;
+        }
+        .saved-prompt-content.expanded {
+            display: block;
+        }
+
         .folder-contents .folder-contents .folder-file-item {
             padding-left: 52px;
         }
@@ -2710,23 +2771,16 @@
         </div>
     </div>
 
-    <!-- Memory Viewer Panel -->
-    <div class="settings-panel" id="memoryViewerPanel">
+    <!-- Folder Context Settings Panel -->
+    <div class="settings-panel" id="folderContextPanel">
         <div class="settings-header">
-            <h3 id="memoryViewerTitle">Folder Memory</h3>
-            <button class="control-btn" id="closeMemoryViewerBtn">✕</button>
+            <h3 id="folderContextTitle">Context Settings</h3>
+            <button class="control-btn" id="closeFolderContextBtn">✕</button>
         </div>
         <div class="settings-content">
             <div class="setting-group">
-                <label class="setting-label">Auto-Memory</label>
-                <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
-                    <input type="checkbox" id="autoMemoryToggle">
-                    <span style="font-size: 13px; color: var(--text-secondary);">Auto-extract key facts after each reply</span>
-                </label>
-            </div>
-            <div class="setting-group">
-                <label class="setting-label">Memory Summary</label>
-                <textarea class="setting-input" id="memorySummaryTextarea" rows="6" placeholder="Running summary of folder activity..."></textarea>
+                <label class="setting-label">Saved Prompts</label>
+                <div id="savedPromptsList" style="margin-top: 4px;"></div>
             </div>
             <div class="setting-group">
                 <div style="display: flex; justify-content: space-between; align-items: center;">
@@ -2735,11 +2789,7 @@
                 </div>
                 <div id="memoryNotesList" style="margin-top: 8px;"></div>
             </div>
-            <div style="display: flex; gap: 8px; margin-top: 16px;">
-                <button class="control-btn" id="saveMemoryBtn" style="flex: 1;">Save Changes</button>
-                <button class="control-btn" id="updateMemorySummaryBtn" style="flex: 1;">Update Summary</button>
-            </div>
-            <div style="margin-top: 8px;">
+            <div style="margin-top: 16px;">
                 <button class="control-btn" id="clearMemoryBtn" style="width: 100%; background: transparent; color: #dc2626; border-color: #dc2626;">Clear All Memory</button>
             </div>
         </div>
@@ -2789,17 +2839,9 @@
             <span>Add Subfolder</span>
         </div>
         <div class="context-menu-separator"></div>
-        <div class="context-menu-item" id="updateFolderMemoryMenuItem">
-            <span>🧠</span>
-            <span>Update Memory</span>
-        </div>
-        <div class="context-menu-item" id="viewFolderMemoryMenuItem">
+        <div class="context-menu-item" id="folderContextSettingsMenuItem">
             <span>📝</span>
-            <span>View/Edit Memory</span>
-        </div>
-        <div class="context-menu-item" id="toggleAutoMemoryMenuItem">
-            <span>⚡</span>
-            <span>Auto-Memory: OFF</span>
+            <span>Context Settings</span>
         </div>
         <div class="context-menu-separator"></div>
         <div class="context-menu-item danger" id="deleteFolderMenuItem">
@@ -2841,6 +2883,10 @@
         <div class="context-menu-item" id="addToFolderMemoryMenuItem" style="display: none;">
             <span>🧠</span>
             <span>Add to Folder Memory</span>
+        </div>
+        <div class="context-menu-item" id="saveAsFolderPromptMenuItem" style="display: none;">
+            <span>💾</span>
+            <span>Save as Folder Prompt</span>
         </div>
         <div class="context-menu-separator"></div>
         <div class="context-menu-item danger" id="deleteResponseMenuItem">

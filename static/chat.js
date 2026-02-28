@@ -214,9 +214,7 @@
     folderContextMenu: $('folderContextMenu'),
     menuRenameFolder: $('renameFolderMenuItem'),
     menuAddSubfolder: $('addSubfolderMenuItem'),
-    menuUpdateFolderMemory: $('updateFolderMemoryMenuItem'),
-    menuViewFolderMemory: $('viewFolderMemoryMenuItem'),
-    menuToggleAutoMemory: $('toggleAutoMemoryMenuItem'),
+    menuFolderContextSettings: $('folderContextSettingsMenuItem'),
     menuDeleteFolder: $('deleteFolderMenuItem'),
     moveToFolderMenu: $('moveToFolderMenu'),
 
@@ -227,21 +225,19 @@
     menuCopySelected: $('copySelectedMenuItem'),
     menuCopy: $('copyResponseMenuItem'),
     menuAddToFolderMemory: $('addToFolderMemoryMenuItem'),
+    menuSaveAsFolderPrompt: $('saveAsFolderPromptMenuItem'),
     menuDelete: $('deleteResponseMenuItem'),
 
     // Folder badge
     folderBadge: $('folderBadge'),
 
-    // Memory viewer panel
-    memoryViewerPanel: $('memoryViewerPanel'),
-    memoryViewerTitle: $('memoryViewerTitle'),
-    closeMemoryViewerBtn: $('closeMemoryViewerBtn'),
-    autoMemoryToggle: $('autoMemoryToggle'),
-    memorySummaryTextarea: $('memorySummaryTextarea'),
+    // Folder context settings panel
+    folderContextPanel: $('folderContextPanel'),
+    folderContextTitle: $('folderContextTitle'),
+    closeFolderContextBtn: $('closeFolderContextBtn'),
+    savedPromptsList: $('savedPromptsList'),
     memoryNotesList: $('memoryNotesList'),
     memoryNotesCount: $('memoryNotesCount'),
-    saveMemoryBtn: $('saveMemoryBtn'),
-    updateMemorySummaryBtn: $('updateMemorySummaryBtn'),
     clearMemoryBtn: $('clearMemoryBtn'),
 
     inputContextMenu: $('inputContextMenu'),
@@ -445,7 +441,12 @@
       E.menuBranchSelected.style.display = sel ? '' : 'none';
       E.menuCopySelected.style.display = sel ? '' : 'none';
       // Show "Add to Folder Memory" only when chat is in a folder
-      E.menuAddToFolderMemory.style.display = state.chatFolderMap[state.currentChatFile] ? '' : 'none';
+      const inFolder = state.chatFolderMap[state.currentChatFile];
+      E.menuAddToFolderMemory.style.display = inFolder ? '' : 'none';
+      // Show "Save as Folder Prompt" only in prompt branches (assistant messages only)
+      const isPromptBranch = state.currentChatFile && state.currentChatFile.startsWith('folder_prompt_');
+      const msgRole = state.messages[index] && state.messages[index].role;
+      E.menuSaveAsFolderPrompt.style.display = (isPromptBranch && msgRole === 'assistant') ? '' : 'none';
     });
   });
 
@@ -601,27 +602,93 @@
     renderHistory();
   }
 
-  async function openMemoryViewer(folderId) {
+  async function openFolderContextSettings(folderId) {
     const folder = findFolderById(folderId);
     if (!folder) return;
 
-    E.memoryViewerPanel.dataset.folderId = folderId;
-    E.memoryViewerTitle.textContent = `Memory: ${folder.name}`;
+    E.folderContextPanel.dataset.folderId = folderId;
+    E.folderContextTitle.textContent = `Context: ${folder.name}`;
 
     try {
       const res = await fetch(`/api/folders/${folderId}/context`);
       const data = await res.json();
-      E.memorySummaryTextarea.value = data.memory_summary || '';
-      E.autoMemoryToggle.checked = !!data.auto_memory;
+      renderSavedPrompts(data.saved_prompts || [], data.active_prompt_id);
       renderMemoryNotes(data.memory_notes || []);
     } catch (e) {
       console.error('Failed to load folder context:', e);
-      E.memorySummaryTextarea.value = '';
-      E.autoMemoryToggle.checked = false;
+      renderSavedPrompts([], null);
       renderMemoryNotes([]);
     }
 
-    openSettingsPanel(E.memoryViewerPanel);
+    openSettingsPanel(E.folderContextPanel);
+  }
+
+  function renderSavedPrompts(prompts, activeId) {
+    clearNode(E.savedPromptsList);
+
+    if (prompts.length === 0) {
+      const empty = el('div');
+      empty.style.cssText = 'color: var(--text-secondary); font-size: 13px; padding: 8px;';
+      empty.textContent = 'No saved prompts. Use the prompt branch to develop a context prompt, then right-click a message \u2192 "Save as Folder Prompt".';
+      E.savedPromptsList.appendChild(empty);
+      return;
+    }
+
+    prompts.forEach(prompt => {
+      const isActive = prompt.id === activeId;
+      const item = el('div', 'saved-prompt-item' + (isActive ? ' active' : ''));
+
+      const radio = document.createElement('input');
+      radio.type = 'radio';
+      radio.name = 'activePrompt';
+      radio.checked = isActive;
+      radio.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        const fid = E.folderContextPanel.dataset.folderId;
+        // Toggle: if already active, deactivate; else activate
+        const newId = isActive ? null : prompt.id;
+        await fetch(`/api/folders/${fid}/active-prompt`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ prompt_id: newId }),
+        });
+        openFolderContextSettings(fid);
+      });
+      item.appendChild(radio);
+
+      const nameSpan = el('span', 'prompt-name');
+      nameSpan.textContent = prompt.name;
+      nameSpan.title = 'Click to expand/collapse';
+      item.appendChild(nameSpan);
+
+      const tokensSpan = el('span', 'prompt-tokens');
+      tokensSpan.textContent = `~${prompt.tokens} tok`;
+      item.appendChild(tokensSpan);
+
+      const delBtn = el('button', 'prompt-delete');
+      delBtn.textContent = '\u2715';
+      delBtn.title = 'Delete prompt';
+      delBtn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        if (!confirm(`Delete saved prompt "${prompt.name}"?`)) return;
+        const fid = E.folderContextPanel.dataset.folderId;
+        await fetch(`/api/folders/${fid}/prompts/${prompt.id}`, { method: 'DELETE' });
+        openFolderContextSettings(fid);
+      });
+      item.appendChild(delBtn);
+
+      // Content preview (toggle on name click)
+      const contentDiv = el('div', 'saved-prompt-content');
+      contentDiv.textContent = prompt.content;
+
+      nameSpan.addEventListener('click', (e) => {
+        e.stopPropagation();
+        contentDiv.classList.toggle('expanded');
+      });
+
+      E.savedPromptsList.appendChild(item);
+      E.savedPromptsList.appendChild(contentDiv);
+    });
   }
 
   function renderMemoryNotes(notes) {
@@ -654,11 +721,11 @@
       delBtn.textContent = '\u2715';
       delBtn.title = 'Delete note';
       delBtn.addEventListener('click', async () => {
-        const fid = E.memoryViewerPanel.dataset.folderId;
+        const fid = E.folderContextPanel.dataset.folderId;
         if (!fid) return;
         await fetch(`/api/folders/${fid}/memory/note/${idx}`, { method: 'DELETE' });
         // Refresh
-        openMemoryViewer(fid);
+        openFolderContextSettings(fid);
       });
       item.appendChild(delBtn);
 
@@ -756,9 +823,6 @@
       state.ctxMenuTarget = { type: 'folder', folderId: folder.id, isRoot: depth === 0 };
       // Hide "Add Subfolder" for subfolders (max depth = 2)
       E.menuAddSubfolder.style.display = depth === 0 ? '' : 'none';
-      // Update auto-memory label
-      const autoMem = folder.auto_memory;
-      E.menuToggleAutoMemory.querySelector('span:last-child').textContent = 'Auto-Memory: ' + (autoMem ? 'ON' : 'OFF');
       openMenuAt(E.folderContextMenu, e.pageX, e.pageY);
     });
 
@@ -2031,7 +2095,7 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
   const ALL_SETTINGS_PANELS = () => [
     E.settingsPanel, E.promptsSettingsPanel,
     E.systemSettingsPanel, E.openrouterBrowsePanel,
-    E.memoryViewerPanel,
+    E.folderContextPanel,
   ];
 
   function openSettingsPanel(panel) {
@@ -3701,49 +3765,11 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
       }
     });
 
-    // Folder context menu: Update Memory
-    E.menuUpdateFolderMemory.addEventListener('click', async () => {
+    // Folder context menu: Context Settings
+    E.menuFolderContextSettings.addEventListener('click', () => {
       E.folderContextMenu.style.display = 'none';
       if (state.ctxMenuTarget.type === 'folder') {
-        const fid = state.ctxMenuTarget.folderId;
-        E.menuUpdateFolderMemory.querySelector('span:last-child').textContent = 'Updating...';
-        try {
-          const res = await fetch(`/api/folders/${fid}/memory/update`, { method: 'POST' });
-          const data = await res.json();
-          if (data.success) {
-            alert('Folder memory updated.');
-          } else {
-            alert('Error: ' + (data.error || 'Unknown'));
-          }
-        } catch (e) {
-          alert('Failed to update memory: ' + e.message);
-        }
-        E.menuUpdateFolderMemory.querySelector('span:last-child').textContent = 'Update Memory';
-      }
-    });
-
-    // Folder context menu: View/Edit Memory
-    E.menuViewFolderMemory.addEventListener('click', () => {
-      E.folderContextMenu.style.display = 'none';
-      if (state.ctxMenuTarget.type === 'folder') {
-        openMemoryViewer(state.ctxMenuTarget.folderId);
-      }
-    });
-
-    // Folder context menu: Toggle Auto-Memory
-    E.menuToggleAutoMemory.addEventListener('click', async () => {
-      E.folderContextMenu.style.display = 'none';
-      if (state.ctxMenuTarget.type === 'folder') {
-        const fid = state.ctxMenuTarget.folderId;
-        const folder = findFolderById(fid);
-        if (!folder) return;
-        const newVal = !folder.auto_memory;
-        await fetch(`/api/folders/${fid}/memory`, {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ auto_memory: newVal }),
-        });
-        folder.auto_memory = newVal;
+        openFolderContextSettings(state.ctxMenuTarget.folderId);
       }
     });
 
@@ -3777,48 +3803,47 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
       }
     });
 
-    // Memory viewer panel
-    E.closeMemoryViewerBtn.addEventListener('click', () => closeAllSettingsPanels());
-
-    E.saveMemoryBtn.addEventListener('click', async () => {
-      const fid = E.memoryViewerPanel.dataset.folderId;
-      if (!fid) return;
-      await fetch(`/api/folders/${fid}/memory`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          memory_summary: E.memorySummaryTextarea.value,
-          auto_memory: E.autoMemoryToggle.checked,
-        }),
-      });
-      const folder = findFolderById(fid);
-      if (folder) folder.auto_memory = E.autoMemoryToggle.checked;
-    });
-
-    E.updateMemorySummaryBtn.addEventListener('click', async () => {
-      const fid = E.memoryViewerPanel.dataset.folderId;
-      if (!fid) return;
-      E.updateMemorySummaryBtn.textContent = 'Updating...';
-      E.updateMemorySummaryBtn.disabled = true;
+    // Message context menu: Save as Folder Prompt
+    E.menuSaveAsFolderPrompt.addEventListener('click', async () => {
+      E.msgContextMenu.style.display = 'none';
+      const idx = state.ctxMenuTarget.index;
+      if (typeof idx !== 'number') return;
+      const msg = state.messages[idx];
+      if (!msg || msg.role !== 'assistant') return;
+      const folderId = state.chatFolderMap[state.currentChatFile];
+      if (!folderId) return;
+      const name = prompt('Name for this saved prompt (e.g. "Full context", "Compact"):');
+      if (!name || !name.trim()) return;
       try {
-        const res = await fetch(`/api/folders/${fid}/memory/update`, { method: 'POST' });
+        const res = await fetch(`/api/folders/${folderId}/prompts`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: name.trim(), content: msg.content }),
+        });
         const data = await res.json();
         if (data.success) {
-          E.memorySummaryTextarea.value = data.memory_summary || '';
+          const badge = E.folderBadge;
+          if (badge && badge.style.display !== 'none') {
+            const orig = badge.textContent;
+            badge.textContent = orig + ' (prompt saved)';
+            setTimeout(() => { badge.textContent = orig; }, 1500);
+          }
+        } else {
+          alert('Failed to save prompt: ' + (data.error || 'Unknown error'));
         }
       } catch (e) {
-        console.error('Update memory failed:', e);
+        console.error('Save as folder prompt failed:', e);
       }
-      E.updateMemorySummaryBtn.textContent = 'Update Summary';
-      E.updateMemorySummaryBtn.disabled = false;
     });
 
+    // Folder context settings panel
+    E.closeFolderContextBtn.addEventListener('click', () => closeAllSettingsPanels());
+
     E.clearMemoryBtn.addEventListener('click', async () => {
-      const fid = E.memoryViewerPanel.dataset.folderId;
+      const fid = E.folderContextPanel.dataset.folderId;
       if (!fid) return;
-      if (!confirm('Clear all folder memory? This cannot be undone.')) return;
+      if (!confirm('Clear all memory notes? This cannot be undone.')) return;
       await fetch(`/api/folders/${fid}/memory/clear`, { method: 'POST' });
-      E.memorySummaryTextarea.value = '';
       renderMemoryNotes([]);
     });
 

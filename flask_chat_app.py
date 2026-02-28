@@ -835,18 +835,6 @@ class FlaskChatApp:
                         except Exception as compact_err:
                             print(f"Message compaction failed: {compact_err}")
 
-                        # --- Auto-memory extraction ---
-                        try:
-                            mem_file = self.chat_manager.current_chat_file
-                            if mem_file:
-                                mem_folder_id = self.folder_manager.get_chat_folder(mem_file)
-                                if mem_folder_id:
-                                    mem_folder = self.folder_manager._find_folder(mem_folder_id)
-                                    if (mem_folder and mem_folder.get("auto_memory")
-                                            and not self.folder_manager.is_prompt_branch(mem_file)):
-                                        self._auto_extract_memory(mem_folder_id, full)
-                        except Exception as mem_err:
-                            print(f"Auto-memory extraction failed: {mem_err}")
 
                     # --- Auto-title generation after first exchange ---
                     try:
@@ -1079,32 +1067,58 @@ class FlaskChatApp:
 
         @app.route('/api/folders/<folder_id>/context', methods=['GET'])
         def get_folder_context(folder_id: str):
-            """Return the folder's system prompt and memory."""
+            """Return the folder's saved prompts and memory notes."""
             folder = self.folder_manager._find_folder(folder_id)
             if not folder:
                 return jsonify({"error": "not_found"}), 404
-            system_prompt = self.folder_manager.get_folder_system_prompt(folder_id)
-            memory = self.folder_manager.get_folder_memory(folder_id)
             return jsonify({
-                "system_prompt": system_prompt,
-                "memory_summary": memory["summary"],
-                "memory_notes": memory["notes"],
-                "auto_memory": folder.get("auto_memory", False),
+                "active_prompt_id": folder.get("active_prompt_id"),
+                "saved_prompts": folder.get("saved_prompts", []),
+                "memory_notes": folder.get("memory_notes", []),
                 "prompt_branch_filename": folder.get("prompt_branch_filename"),
             })
 
-        @app.route('/api/folders/<folder_id>/memory/update', methods=['POST'])
-        def update_folder_memory(folder_id: str):
-            """Summarize all chats in the folder into memory_summary."""
-            folder = self.folder_manager._find_folder(folder_id)
-            if not folder:
-                return jsonify({"error": "not_found"}), 404
-            try:
-                summary = self._summarize_folder_chats(folder_id)
-                self.folder_manager.update_memory_summary(folder_id, summary)
-                return jsonify({"success": True, "memory_summary": summary})
-            except Exception as e:
-                return jsonify({"success": False, "error": str(e)}), 500
+        @app.route('/api/folders/<folder_id>/prompts', methods=['POST'])
+        def save_folder_prompt(folder_id: str):
+            """Save a new prompt for the folder."""
+            data = request.get_json() or {}
+            name = data.get("name", "").strip()
+            content = data.get("content", "").strip()
+            if not name or not content:
+                return jsonify({"success": False,
+                                "error": "name and content required"}), 400
+            prompt = self.folder_manager.save_prompt(folder_id, name, content)
+            if not prompt:
+                return jsonify({"success": False,
+                                "error": "folder not found"}), 404
+            return jsonify({"success": True, "prompt": prompt})
+
+        @app.route('/api/folders/<folder_id>/prompts/<prompt_id>',
+                    methods=['PUT'])
+        def rename_folder_prompt(folder_id: str, prompt_id: str):
+            """Rename a saved prompt."""
+            data = request.get_json() or {}
+            name = data.get("name", "").strip()
+            if not name:
+                return jsonify({"success": False,
+                                "error": "name required"}), 400
+            ok = self.folder_manager.rename_prompt(folder_id, prompt_id, name)
+            return jsonify({"success": ok})
+
+        @app.route('/api/folders/<folder_id>/prompts/<prompt_id>',
+                    methods=['DELETE'])
+        def delete_folder_prompt(folder_id: str, prompt_id: str):
+            """Delete a saved prompt."""
+            ok = self.folder_manager.delete_prompt(folder_id, prompt_id)
+            return jsonify({"success": ok})
+
+        @app.route('/api/folders/<folder_id>/active-prompt', methods=['PUT'])
+        def set_active_folder_prompt(folder_id: str):
+            """Set which saved prompt is active (null to disable)."""
+            data = request.get_json() or {}
+            prompt_id = data.get("prompt_id")  # None is valid
+            ok = self.folder_manager.set_active_prompt(folder_id, prompt_id)
+            return jsonify({"success": ok})
 
         @app.route('/api/folders/<folder_id>/memory/add', methods=['POST'])
         def add_folder_memory_note(folder_id: str):
@@ -1122,21 +1136,6 @@ class FlaskChatApp:
             """Remove a memory note by index."""
             ok = self.folder_manager.remove_memory_note(folder_id, index)
             return jsonify({"success": ok})
-
-        @app.route('/api/folders/<folder_id>/memory', methods=['PUT'])
-        def edit_folder_memory(folder_id: str):
-            """Edit memory_summary or toggle auto_memory."""
-            data = request.get_json() or {}
-            folder = self.folder_manager._find_folder(folder_id)
-            if not folder:
-                return jsonify({"error": "not_found"}), 404
-            if "memory_summary" in data:
-                self.folder_manager.update_memory_summary(
-                    folder_id, data["memory_summary"])
-            if "auto_memory" in data:
-                self.folder_manager.set_auto_memory(
-                    folder_id, bool(data["auto_memory"]))
-            return jsonify({"success": True})
 
         @app.route('/api/folders/<folder_id>/memory/clear', methods=['POST'])
         def clear_folder_memory(folder_id: str):
@@ -2308,185 +2307,25 @@ class FlaskChatApp:
         """Build system messages for folder context injection."""
         messages = []
 
-        # 1. Folder system prompt from prompt branch
-        sys_prompt = self.folder_manager.get_folder_system_prompt(folder_id)
-        if sys_prompt:
+        # Active folder prompt
+        prompt_content = self.folder_manager.get_active_prompt_content(folder_id)
+        if prompt_content:
             messages.append({
                 "role": "system",
-                "content": f"[Folder System Prompt]\n{sys_prompt}",
+                "content": f"[Folder Context]\n{prompt_content}",
             })
 
-        # 2. Folder memory
+        # Memory notes
         memory = self.folder_manager.get_folder_memory(folder_id)
-        parts = []
-        if memory["summary"]:
-            parts.append(f"Summary:\n{memory['summary']}")
         if memory["notes"]:
-            note_lines = []
-            for n in memory["notes"]:
-                note_lines.append(f"- {n['text']}")
-            parts.append("Key Facts:\n" + "\n".join(note_lines))
-        if parts:
+            lines = [f"- {n['text']}" for n in memory["notes"]]
             messages.append({
                 "role": "system",
-                "content": "[Folder Memory]\n" + "\n\n".join(parts),
+                "content": "[Folder Memory]\n" + "\n".join(lines),
             })
 
         return messages
 
-    def _auto_extract_memory(self, folder_id: str, assistant_reply: str):
-        """Use a fast LLM to extract key facts from an assistant reply."""
-        if not assistant_reply or len(assistant_reply.strip()) < 20:
-            return
-
-        title_provider = self.config.get("title_provider", "groq")
-        title_model = self.config.get("title_model", "llama-3.1-8b-instant")
-
-        stream_func = {
-            "groq": call_groq_stream,
-            "google": call_google_stream,
-            "mistral": call_mistral_stream,
-            "openrouter": call_openrouter_stream,
-            "llamacpp": call_llamacpp_stream,
-        }.get(title_provider)
-        if not stream_func:
-            return
-
-        extract_prompt = (
-            "Extract 1-3 key facts or decisions from the following assistant reply. "
-            "Return ONLY a JSON array of short strings, nothing else. "
-            "If no notable facts, return []. Example: [\"User prefers Python\", \"API uses REST\"]\n\n"
-            f"Reply:\n{assistant_reply[:1500]}"
-        )
-
-        cfg = dict(self.config.config)
-        api_key = self.config.get_api_key(title_provider)
-        if api_key:
-            cfg[f"{title_provider}_api_key"] = api_key
-        if title_provider == "llamacpp":
-            detected_url, _ = self._get_llamacpp_connection()
-            cfg["llamacpp_url"] = detected_url
-        cfg.update({
-            "model": title_model,
-            f"{title_provider}_model": title_model,
-            f"{title_provider}_temperature": 0.2,
-            f"{title_provider}_max_tokens": 200,
-            f"{title_provider}_system_prompt": "",
-            "temperature": 0.2,
-            "system_prompt": "",
-            "max_tokens": 200,
-        })
-
-        generated = ""
-        try:
-            for chunk in stream_func(
-                [{"role": "user", "content": extract_prompt}], cfg
-            ):
-                generated += chunk
-
-            generated = generated.strip()
-            # Try to parse JSON array
-            facts = json.loads(generated)
-            if isinstance(facts, list):
-                source = self.chat_manager.current_chat_file or "auto"
-                for fact in facts[:3]:
-                    if isinstance(fact, str) and fact.strip():
-                        self.folder_manager.add_memory_note(
-                            folder_id, fact.strip(), source)
-        except (json.JSONDecodeError, Exception) as e:
-            print(f"Auto-memory parse error: {e} — raw: {generated[:200]}")
-
-    def _summarize_folder_chats(self, folder_id: str) -> str:
-        """Summarize all chats in a folder into a cohesive memory summary."""
-        contents = self.folder_manager.get_folder_contents(folder_id)
-        prompt_fn = None
-        folder = self.folder_manager._find_folder(folder_id)
-        if folder:
-            prompt_fn = folder.get("prompt_branch_filename")
-
-        summaries = []
-        for fn in contents["chats"]:
-            if fn == prompt_fn:
-                continue  # Skip prompt branch itself
-            path = os.path.join(self.chat_manager.chats_directory, fn)
-            if not os.path.exists(path):
-                continue
-            try:
-                with open(path, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                if isinstance(data, dict):
-                    conv_summary = data.get("conversation_summary", "")
-                    title = data.get("title", fn)
-                    hist = data.get("chat_history", [])
-                else:
-                    conv_summary = ""
-                    title = fn
-                    hist = data
-
-                if conv_summary:
-                    summaries.append(f"Chat \"{title}\": {conv_summary}")
-                elif hist:
-                    # Use first user + first assistant message as a mini summary
-                    first_user = next((m.get("content", "")[:200]
-                                      for m in hist if m.get("role") == "user"), "")
-                    first_asst = next((m.get("content", "")[:200]
-                                      for m in hist if m.get("role") == "assistant"), "")
-                    summaries.append(
-                        f"Chat \"{title}\" ({len(hist)} msgs): "
-                        f"User asked about: {first_user[:100]}... "
-                        f"Key response: {first_asst[:100]}..."
-                    )
-            except Exception as e:
-                print(f"Error reading chat {fn} for folder summary: {e}")
-
-        if not summaries:
-            return ""
-
-        title_provider = self.config.get("title_provider", "groq")
-        title_model = self.config.get("title_model", "llama-3.1-8b-instant")
-
-        stream_func = {
-            "groq": call_groq_stream,
-            "google": call_google_stream,
-            "mistral": call_mistral_stream,
-            "openrouter": call_openrouter_stream,
-            "llamacpp": call_llamacpp_stream,
-        }.get(title_provider)
-        if not stream_func:
-            return "Error: title_provider not configured"
-
-        combined = "\n\n".join(summaries)
-        summarize_prompt = (
-            "Summarize the following chat histories from a project folder into "
-            "a cohesive paragraph. Focus on key topics, decisions, and progress. "
-            "Keep it under 500 words.\n\n" + combined[:4000]
-        )
-
-        cfg = dict(self.config.config)
-        api_key = self.config.get_api_key(title_provider)
-        if api_key:
-            cfg[f"{title_provider}_api_key"] = api_key
-        if title_provider == "llamacpp":
-            detected_url, _ = self._get_llamacpp_connection()
-            cfg["llamacpp_url"] = detected_url
-        cfg.update({
-            "model": title_model,
-            f"{title_provider}_model": title_model,
-            f"{title_provider}_temperature": 0.3,
-            f"{title_provider}_max_tokens": 600,
-            f"{title_provider}_system_prompt": "",
-            "temperature": 0.3,
-            "system_prompt": "",
-            "max_tokens": 600,
-        })
-
-        generated = ""
-        for chunk in stream_func(
-            [{"role": "user", "content": summarize_prompt}], cfg
-        ):
-            generated += chunk
-
-        return generated.strip()
 
     def _ensure_model_loaded(self, model, base, progress_callback=None):
         """Ensure a model is loaded and ready on the llama.cpp server.
