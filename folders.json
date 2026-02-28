@@ -18,10 +18,22 @@
         }
       ],
       "active_prompt_id": "2c22ef0c-8fc6-44a8-9c9a-423c38fba8e9"
+    },
+    {
+      "id": "fcbce3dc-dfaa-4987-b321-9c1bf4605371",
+      "name": "New Folder",
+      "parent_id": null,
+      "order": 1,
+      "created": "2026-02-28T08:10:06.244158+00:00",
+      "prompt_branch_filename": "folder_prompt_fcbce3dc_20260228_161006.json",
+      "saved_prompts": [],
+      "active_prompt_id": null,
+      "memory_notes": []
     }
   ],
   "chat_folder_map": {
-    "New_Chat_20260228_070619.json": "d94d8a47-ead3-4897-b231-3884e5647928"
+    "New_Chat_20260228_070619.json": "d94d8a47-ead3-4897-b231-3884e5647928",
+    "folder_prompt_fcbce3dc_20260228_161006.json": "fcbce3dc-dfaa-4987-b321-9c1bf4605371"
   },
   "file_folder_map": {}
 }
