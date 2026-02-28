@@ -1894,7 +1894,8 @@ async function loadPrompts() {
       return;
     }
     state.currentChatFile = js.current_chat_file || state.currentChatFile;
-    
+    state.streamingMessageId = js.message_id;  // Store for cancel
+
     // Check if the response includes a new filename (auto-renamed chat)
     if (js.filename) {
       state.currentChatFile = js.filename;
@@ -1979,8 +1980,12 @@ async function loadPrompts() {
   }
 
   async function cancelGeneration() {
-    if (!state.streaming) return;
-    await fetch('/api/chat/cancel', { method: 'POST' });
+    if (!state.streaming || !state.streamingMessageId) return;
+    await fetch('/api/chat/cancel', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message_id: state.streamingMessageId })
+    });
     // Force-close the EventSource and reset UI in case the server
     // never sends a complete/error event back
     if (state.streamSource) {

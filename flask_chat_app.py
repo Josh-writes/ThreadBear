@@ -45,6 +45,42 @@ from context_documents import (
     list_documents, save_document, delete_document, get_document,
 )
 
+# =============================================================================
+# Request-context safety: per-request state with thread-safe access
+# =============================================================================
+# These module-level variables replace instance-level state for concurrency safety.
+# Critical for Phase 4 where multiple agent branches run concurrent LLM calls.
+
+_request_contexts: Dict[int, Dict[str, Any]] = {}
+_request_lock = threading.Lock()
+
+
+def _set_request_context(message_id: int, **kwargs):
+    """Store per-request state safely."""
+    with _request_lock:
+        if message_id not in _request_contexts:
+            _request_contexts[message_id] = {}
+        _request_contexts[message_id].update(kwargs)
+
+
+def _get_request_context(message_id: int) -> Dict[str, Any]:
+    """Retrieve per-request state."""
+    with _request_lock:
+        return _request_contexts.get(message_id, {})
+
+
+def _clear_request_context(message_id: int):
+    """Clean up after streaming completes."""
+    with _request_lock:
+        _request_contexts.pop(message_id, None)
+
+
+def _cancel_generation(message_id: int):
+    """Set cancel flag for a specific request."""
+    with _request_lock:
+        if message_id in _request_contexts:
+            _request_contexts[message_id]['cancel_generation'] = True
+
 
 class FlaskChatApp:
     def __init__(self):
@@ -70,7 +106,6 @@ class FlaskChatApp:
         # Migrate existing JSON chats into the branch database
         self.branch_db.migrate_from_json(self.chat_manager.chats_directory)
 
-        self.cancel_generation = False
         self.temporary_mode = False
         self.incognito_mode = False
         self.available_providers = ["groq", "google", "mistral", "openrouter", "llamacpp"]
@@ -593,10 +628,18 @@ class FlaskChatApp:
 
             # Store selected context and rename info in the per-request dict
             has_selected_context = ('selected_context' in data)
-            self.pending_messages[mid]["has_selected_context"] = has_selected_context
-            self.pending_messages[mid]["selected_context"] = data.get('selected_context') if has_selected_context else None
-            self.pending_messages[mid]["selected_summaries"] = data.get('selected_summaries', [])
-            self.pending_messages[mid]["last_renamed_chat"] = last_renamed_chat
+            _set_request_context(mid,
+                has_selected_context=has_selected_context,
+                selected_context=data.get('selected_context') if has_selected_context else None,
+                selected_summaries=data.get('selected_summaries', []),
+                last_renamed_chat=last_renamed_chat,
+                provider=provider,
+                model=model,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                system_prompt=system_prompt,
+                cancel_generation=False
+            )
 
             print("SEND PAYLOAD:", {"provider": provider, "model": model, "mid": mid})
             response_data = {"success": True, "message_id": mid, "current_chat_file": self.chat_manager.current_chat_file}
@@ -688,8 +731,8 @@ class FlaskChatApp:
         def stream_response(message_id: int):
             def generate():
                 try:
-                    # Pop per-request data first (contains provider settings + context selection)
-                    snap = self.pending_messages.pop(message_id, None)
+                    # Get per-request data (contains provider settings + context selection)
+                    snap = _get_request_context(message_id)
 
                     # Build API messages
                     if self.incognito_mode:
@@ -701,9 +744,9 @@ class FlaskChatApp:
                             return
                     else:
                         # Read context selection from per-request snap (not self)
-                        has_selected = snap.get('has_selected_context', False) if snap else False
-                        selected_msgs = (snap.get('selected_context') or []) if snap else []
-                        selected_sums = (snap.get('selected_summaries') or []) if snap else []
+                        has_selected = snap.get('has_selected_context', False)
+                        selected_msgs = snap.get('selected_context') or []
+                        selected_sums = snap.get('selected_summaries') or []
 
                         if has_selected:
                             # Client explicitly provided selection
@@ -735,7 +778,9 @@ class FlaskChatApp:
                         if folder_id and not self.folder_manager.is_prompt_branch(current_file):
                             folder_ctx = self._build_folder_context(folder_id)
                             api_messages = folder_ctx + api_messages
-                    if snap is None:
+
+                    # Extract provider/model from snap (use config as fallback if snap is empty)
+                    if not snap:
                         provider = self.config.get("provider")
                         model = self.config.get(f"{provider}_model")
                         ms = self.config.get_model_settings(provider, model)
@@ -744,15 +789,27 @@ class FlaskChatApp:
                         max_tokens = self.config.get(f"{provider}_max_tokens", 4096)
                         max_tokens = ms.get("max_tokens", max_tokens)
                         system_prompt = self.config.get(f"{provider}_system_prompt", "")
-                        # if the last request set system_prompt=="" (global 'None'), prefer model-specific
                         if not system_prompt and ms.get("system_prompt"):
                             system_prompt = ms["system_prompt"]
                     else:
-                        provider = snap['provider']
-                        model = snap['model']
-                        temperature = snap['temperature']
-                        max_tokens = snap['max_tokens']
-                        system_prompt = snap['system_prompt']
+                        provider = snap.get('provider', self.config.get("provider"))
+                        model = snap.get('model', self.config.get(f"{provider}_model"))
+                        temperature = snap.get('temperature', self.config.get(f"{provider}_temperature", 0.7))
+                        max_tokens = snap.get('max_tokens', self.config.get(f"{provider}_max_tokens", 4096))
+                        system_prompt = snap.get('system_prompt', self.config.get(f"{provider}_system_prompt", ""))
+
+                    # === MESSAGE COMPACTION (before LLM call) ===
+                    # Compact api_messages if approaching context window limit
+                    try:
+                        context_window = self.config.get_context_window(provider, model)
+                        if self.compactor.should_compact(api_messages, provider, model):
+                            compacted, summary = self.compactor.compact_messages(
+                                api_messages, provider, model
+                            )
+                            api_messages = compacted
+                            print(f"[Compaction] Applied before LLM call: {len(api_messages)} messages, {summary[:50] if summary else 'no summary'}...")
+                    except Exception as compact_err:
+                        print(f"Pre-LLM compaction failed (non-blocking): {compact_err}")
 
                     stream_func = {
                         "groq": call_groq_stream,
@@ -767,7 +824,9 @@ class FlaskChatApp:
 
                     # Send model info first
                     yield f"data: {json.dumps({'type':'model','content':model})}\n\n"
-                    self.cancel_generation = False
+
+                    # Get per-request cancel flag from snap
+                    snap['cancel_generation'] = False
 
                     # Build merged config to pass to API clients
                     merged_cfg = dict(self.config.config)
@@ -808,7 +867,7 @@ class FlaskChatApp:
                     if provider == "llamacpp":
                         self._last_inference_time = time.time()
                     for chunk in stream_func(api_messages, merged_cfg):
-                        if self.cancel_generation:
+                        if snap.get('cancel_generation', False):
                             yield f"data: {json.dumps({'type':'error','content':'Generation cancelled'})}\n\n"
                             return
                         full += chunk
@@ -820,21 +879,6 @@ class FlaskChatApp:
 
                     if not self.temporary_mode and not self.incognito_mode:
                         self.chat_manager.add_message("assistant", full, model)
-
-                        # --- Message compaction check ---
-                        try:
-                            chat_hist = self.chat_manager.current_chat.get("chat_history", [])
-                            if self.compactor.should_compact(chat_hist, provider, model):
-                                compacted, summary = self.compactor.compact_messages(
-                                    chat_hist, provider, model
-                                )
-                                self.chat_manager.current_chat["chat_history"] = compacted
-                                if summary:
-                                    self.chat_manager.current_chat["conversation_summary"] = summary
-                                self.chat_manager.save_current_chat()
-                        except Exception as compact_err:
-                            print(f"Message compaction failed: {compact_err}")
-
 
                     # --- Auto-title generation after first exchange ---
                     try:
@@ -904,6 +948,9 @@ class FlaskChatApp:
                 except Exception as e:
                     err = f"Error: {e}"
                     yield f"data: {json.dumps({'type':'error','content':err})}\n\n"
+                finally:
+                    # Clean up per-request context after streaming completes
+                    _clear_request_context(message_id)
             return Response(generate(), mimetype='text/event-stream', headers={'Cache-Control': 'no-cache', 'Connection': 'keep-alive'})
 
         # ---- Branch database API ----
@@ -2222,7 +2269,10 @@ class FlaskChatApp:
         # --- Chat: cancel generation (used by the red Cancel button) ---
         @app.route('/api/chat/cancel', methods=['POST'])
         def cancel_route():
-            self.cancel_generation = True
+            data = request.get_json() or {}
+            message_id = data.get('message_id')
+            if message_id:
+                _cancel_generation(message_id)
             return jsonify({"success": True})
 
         # --- System Prompts Management ---
