@@ -10,6 +10,7 @@ import time
 import json
 from datetime import datetime, timezone
 from typing import Dict, Any, Optional
+from pathlib import Path
 
 from .loop_detector import LoopDetector
 from .completion_detector import detect_completion
@@ -24,12 +25,13 @@ class AgentExecutionEngine:
     """
 
     def __init__(self, branch_id: str, branch_manager, tool_registry,
-                 config, api_clients):
+                 config, api_clients, artifact_manager=None):
         self.branch_id = branch_id
         self.branch_manager = branch_manager
         self.tool_registry = tool_registry
         self.config = config
         self.api_clients = api_clients
+        self.artifact_manager = artifact_manager
 
         self.event_queue = queue.Queue()  # SSE endpoint reads from this
         self.running = False
@@ -95,22 +97,36 @@ class AgentExecutionEngine:
     def _run_loop(self, goal: str):
         """
         Main agent loop.
-        
+
         Each iteration:
         1. Check pause/stop flags
-        2. Build messages (system prompt + history + todo/plan context)
-        3. Compact if approaching context limit
-        4. Call LLM with tools
-        5. Execute any tool calls
-        6. Check for completion
-        7. Check for loops
-        8. Save state periodically
+        2. Check dependencies (for depends_on edges)
+        3. Build messages (system prompt + history + todo/plan context + artifacts)
+        4. Compact if approaching context limit
+        5. Call LLM with tools
+        6. Execute any tool calls
+        7. Check for completion
+        8. Check for loops
+        9. Save state periodically
         """
         try:
             branch = self.branch_manager.db.get_branch(self.branch_id)
             if not branch:
                 self.emit('error', 'Branch not found')
                 return
+
+            # Check dependencies before starting
+            ready, reason = self._check_dependencies()
+            if not ready:
+                self.emit('status', 'waiting')
+                self.emit('content', f'Dependency not met: {reason}')
+                # Poll until ready or stopped
+                while not ready and self.running:
+                    time.sleep(5)
+                    ready, reason = self._check_dependencies()
+                if not self.running:
+                    return
+                self.emit('status', 'running')
 
             self.messages = self._build_initial_messages(goal, branch)
             self.emit('status', 'running')
@@ -125,8 +141,9 @@ class AgentExecutionEngine:
                 self.iteration += 1
                 self.emit('iteration', self.iteration)
 
-                # Inject todo/plan context into system messages
+                # Inject todo/plan context and artifacts into system messages
                 context_messages = self._inject_context(self.messages)
+                context_messages = self._inject_artifacts(context_messages)
 
                 # Compact if needed
                 context_window = self._get_context_window()
@@ -323,7 +340,7 @@ class AgentExecutionEngine:
         branch = self.branch_manager.db.get_branch(self.branch_id)
         if not branch:
             return
-        
+
         meta = json.loads(branch.get('metadata', '{}')) if branch.get('metadata') else {}
         meta['agent_state'] = {
             'messages': self.messages[-100:],  # Keep last 100 messages for resume
@@ -332,3 +349,62 @@ class AgentExecutionEngine:
             'last_saved': datetime.now(timezone.utc).isoformat()
         }
         self.branch_manager.db.upsert_branch(self.branch_id, metadata=meta)
+
+    def _check_dependencies(self) -> tuple:
+        """
+        Check if all depends_on branches are complete (merged or archived).
+        Returns (ready: bool, reason: str).
+        """
+        deps = self.branch_manager.db.get_edges(
+            self.branch_id, direction='outgoing', edge_type='depends_on'
+        )
+        for dep in deps:
+            target = self.branch_manager.db.get_branch(dep.get('to_branch_id'))
+            if not target:
+                continue
+            if target.get('status') not in ('merged', 'archived'):
+                return False, f"Waiting for '{target.get('name')}' to complete (currently {target.get('status')})"
+        return True, ''
+
+    def _inject_artifacts(self, messages: list) -> list:
+        """
+        Inject artifacts from connected branches into system messages.
+        Artifacts are injected after the initial system message.
+        """
+        if not self.artifact_manager:
+            return messages
+
+        artifacts = self.artifact_manager.list_branch_artifacts(
+            self.branch_id, include_incoming=True
+        )
+        incoming = artifacts.get('incoming', [])
+        if not incoming:
+            return messages
+
+        context_parts = ["\n\n## AVAILABLE ARTIFACTS FROM OTHER BRANCHES:"]
+        for a in incoming:
+            name = a.get('name', a.get('id', 'Unknown'))
+            atype = a.get('type', 'unknown')
+            producer = a.get('producer_branch_id', 'unknown')[:8]
+            context_parts.append(f"\n### [{atype}] {name} (artifact_id: {a['id']}, from: {producer})")
+
+            try:
+                content = Path(a['path']).read_text(encoding='utf-8')
+                if len(content) > 2000:
+                    context_parts.append(content[:2000])
+                    context_parts.append("\n... (truncated — use read_artifact tool for full content)")
+                else:
+                    context_parts.append(content)
+            except Exception:
+                context_parts.append(f"(Could not read — use read_artifact tool with id: {a['id']})")
+
+        injection = '\n'.join(context_parts)
+
+        injected = list(messages)
+        # Insert after the first system message
+        if injected and injected[0].get('role') == 'system':
+            injected.insert(1, {'role': 'system', 'content': injection})
+        else:
+            injected.insert(0, {'role': 'system', 'content': injection})
+
+        return injected

@@ -2,7 +2,7 @@
 ThreadBear Document Context Module
 
 Handles document ingestion, text extraction, token estimation, and context injection.
-Supports .txt, .md, .pdf, .docx files with pluggable readers.
+Uses reader registry for extensible format support.
 Uses SQLite for metadata storage via document_db.
 """
 from __future__ import annotations
@@ -19,22 +19,8 @@ from typing import List, Dict, Any, Optional, NamedTuple
 from api_clients import estimate_tokens
 from document_db import document_db
 
-# Optional imports with fallback
-try:
-    import PyPDF2
-    PDF_AVAILABLE = True
-except ImportError:
-    try:
-        import pypdf as PyPDF2
-        PDF_AVAILABLE = True
-    except ImportError:
-        PDF_AVAILABLE = False
-
-try:
-    from docx import Document as DocxDocument
-    DOCX_AVAILABLE = True
-except ImportError:
-    DOCX_AVAILABLE = False
+# Reader registry
+from readers import reader_registry
 
 
 class DocumentSegment(NamedTuple):
@@ -45,123 +31,33 @@ class DocumentSegment(NamedTuple):
     tokens: int
 
 
-class DocumentReader:
-    def extract_text(self, file_path: str) -> str:
-        raise NotImplementedError
-
-    def extract_segments(self, text: str, file_path: str | None = None) -> List[DocumentSegment]:
-        paragraphs = text.split('\n\n')
-        segments: List[DocumentSegment] = []
-        current_pos = 0
-        for i, para in enumerate(paragraphs):
-            para_text = para.strip()
-            if not para_text:
-                current_pos += len(para) + 2
-                continue
-            tokens = estimate_tokens(para_text)
-            segments.append(DocumentSegment(
-                id=f"para_{i+1}",
-                label=f"Paragraph {i+1}",
-                start=current_pos,
-                end=current_pos + len(para),
-                tokens=tokens
-            ))
-            current_pos += len(para) + 2
-        return segments
-
-
-class TxtReader(DocumentReader):
-    def extract_text(self, file_path: str) -> str:
-        with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
-            return f.read()
-
-
-class MarkdownReader(DocumentReader):
-    def extract_text(self, file_path: str) -> str:
-        with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
-            return f.read()
-
-
-class PdfReader(DocumentReader):
-    def extract_text(self, file_path: str) -> str:
-        if not PDF_AVAILABLE:
-            raise RuntimeError("PDF support not available. Install PyPDF2 or pypdf: pip install PyPDF2")
-        text = ""
-        with open(file_path, 'rb') as f:
-            reader = PyPDF2.PdfReader(f)
-            for i, page in enumerate(reader.pages):
-                try:
-                    page_text = page.extract_text() or ""
-                except Exception:
-                    page_text = ""
-                if page_text.strip():
-                    text += f"\n\n--- Page {i+1} ---\n\n" + page_text
-        return text.strip()
-
-    def extract_segments(self, text: str, file_path: str | None = None) -> List[DocumentSegment]:
-        segments: List[DocumentSegment] = []
-        if not text:
-            return segments
-        pages = text.split('\n\n--- Page ')
-        current_pos = 0
-        for idx, page_chunk in enumerate(pages):
-            chunk = page_chunk.strip()
-            if not chunk:
-                continue
-            # Remove our header line if present
-            if chunk.startswith(str(idx)) or chunk.startswith('Page '):
-                lines = chunk.split('\n')
-                if len(lines) > 2 and '---' in lines[0]:
-                    chunk = '\n'.join(lines[2:])
-            tokens = estimate_tokens(chunk)
-            page_no = idx + 1
-            segments.append(DocumentSegment(
-                id=f"page_{page_no}",
-                label=f"Page {page_no}",
-                start=current_pos,
-                end=current_pos + len(chunk),
-                tokens=tokens,
-            ))
-            current_pos += len(chunk) + 4
-        return segments
-
-
-class DocxReader(DocumentReader):
-    def extract_text(self, file_path: str) -> str:
-        if not DOCX_AVAILABLE:
-            raise RuntimeError("DOCX support not available. Install python-docx: pip install python-docx")
-        doc = DocxDocument(file_path)
-        parts = [p.text.strip() for p in doc.paragraphs if p.text and p.text.strip()]
-        return '\n\n'.join(parts)
-
-
 class ContextDocuments:
     def __init__(self, documents_dir: str = "documents"):
         self.documents_dir = Path(documents_dir)
         self.documents_dir.mkdir(exist_ok=True)
-
-        self.readers: Dict[str, DocumentReader] = {
-            'text/plain': TxtReader(),
-            'text/markdown': MarkdownReader(),
-            'application/pdf': PdfReader(),
-            'application/vnd.openxmlformats-officedocument.wordprocessingml.document': DocxReader(),
-        }
-        self.extension_readers: Dict[str, DocumentReader] = {
-            '.txt': TxtReader(),
-            '.md': MarkdownReader(),
-            '.markdown': MarkdownReader(),
-            '.pdf': PdfReader(),
-            '.docx': DocxReader(),
-        }
+        
+        # Auto-discover readers
+        reader_registry.auto_discover()
+        
         self._loaded_docs: Dict[str, Dict[str, Any]] = {}
 
-    def _reader_for(self, file_path: Path) -> DocumentReader:
-        mime, _ = mimetypes.guess_type(str(file_path))
-        reader = (self.readers.get(mime)
-                  or self.extension_readers.get(file_path.suffix.lower()))
-        if not reader:
-            raise ValueError(f"Unsupported file type: {mime or file_path.suffix}")
-        return reader
+    def _reader_for(self, file_path: Path):
+        """Get reader class for file extension."""
+        ext = file_path.suffix.lower()
+        reader_class = reader_registry.get_reader(ext)
+        if not reader_class:
+            supported = reader_registry.supported_extensions()
+            entry = supported.get(ext)
+            if entry and not entry['available']:
+                missing = ', '.join(entry['missing_deps'])
+                raise ValueError(
+                    f"File type {ext} requires: pip install {missing}"
+                )
+            raise ValueError(
+                f"Unsupported file type: {ext}. "
+                f"Supported: {', '.join(k for k, v in supported.items() if v['available'])}"
+            )
+        return reader_class()
 
     def ingest_document(self, file_path: str, original_name: str | None = None) -> Dict[str, Any]:
         p = Path(file_path)

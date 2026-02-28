@@ -873,6 +873,403 @@
             font-style: italic;
         }
 
+        /* ===== Artifact Panel (Phase 5) ===== */
+        .artifact-panel {
+            background: var(--bg-primary);
+            border-bottom: 1px solid var(--border-color);
+            padding: 12px 16px;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+
+        .artifact-panel-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .artifact-title {
+            font-size: 14px;
+            font-weight: 600;
+            color: var(--text-primary);
+        }
+
+        .artifact-count {
+            font-size: 12px;
+            color: var(--text-secondary);
+        }
+
+        .artifact-section {
+            border-top: 1px solid var(--border-color);
+            padding-top: 8px;
+        }
+
+        .artifact-section-title {
+            font-size: 11px;
+            font-weight: 600;
+            color: var(--text-secondary);
+            text-transform: uppercase;
+            letter-spacing: 0.3px;
+            margin-bottom: 8px;
+        }
+
+        .artifact-list {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            max-height: 120px;
+            overflow-y: auto;
+        }
+
+        .artifact-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 6px 8px;
+            background: var(--bg-secondary);
+            border-radius: 4px;
+            font-size: 12px;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+
+        .artifact-item:hover {
+            background: var(--bg-primary);
+        }
+
+        .artifact-type-icon {
+            font-size: 14px;
+            font-weight: 600;
+            color: var(--text-secondary);
+            width: 28px;
+            text-align: center;
+        }
+
+        .artifact-type-icon.doc { color: #2196f3; }
+        .artifact-type-icon.code { color: #9c27b0; }
+        .artifact-type-icon.image { color: #ff9800; }
+        .artifact-type-icon.data { color: #4caf50; }
+        .artifact-type-icon.summary { color: #00bcd4; }
+
+        .artifact-name {
+            flex: 1;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .artifact-from {
+            font-size: 10px;
+            color: var(--text-secondary);
+        }
+
+        .artifact-send-btn {
+            padding: 2px 8px;
+            font-size: 10px;
+            background: transparent;
+            border: 1px solid var(--border-color);
+            border-radius: 4px;
+            color: var(--text-secondary);
+            cursor: pointer;
+        }
+
+        .artifact-send-btn:hover {
+            border-color: #2196f3;
+            color: #2196f3;
+        }
+
+        /* Artifact Send Modal */
+        .artifact-send-modal {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.5);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 1000;
+        }
+
+        .artifact-send-modal .modal-content {
+            background: var(--bg-primary);
+            border-radius: 8px;
+            padding: 16px;
+            min-width: 300px;
+            max-width: 400px;
+        }
+
+        .artifact-send-modal .modal-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 12px;
+            font-weight: 600;
+        }
+
+        .artifact-send-modal .modal-close {
+            background: none;
+            border: none;
+            font-size: 20px;
+            cursor: pointer;
+            color: var(--text-secondary);
+        }
+
+        .artifact-send-modal .modal-body {
+            margin-bottom: 16px;
+        }
+
+        .artifact-send-modal .modal-body label {
+            display: block;
+            font-size: 12px;
+            font-weight: 600;
+            color: var(--text-secondary);
+            margin-bottom: 8px;
+            text-transform: uppercase;
+        }
+
+        .artifact-send-modal .modal-body select {
+            width: 100%;
+            padding: 8px;
+            border: 1px solid var(--border-color);
+            border-radius: 4px;
+            background: var(--bg-secondary);
+            color: var(--text-primary);
+            font-size: 13px;
+        }
+
+        .artifact-send-modal .modal-footer {
+            display: flex;
+            gap: 8px;
+            justify-content: flex-end;
+        }
+
+        .artifact-send-modal .btn-cancel,
+        .artifact-send-modal .btn-confirm {
+            padding: 6px 12px;
+            border-radius: 4px;
+            font-size: 12px;
+            cursor: pointer;
+            border: 1px solid var(--border-color);
+            background: transparent;
+            color: var(--text-secondary);
+        }
+
+        .artifact-send-modal .btn-confirm {
+            border-color: #2196f3;
+            color: #2196f3;
+        }
+
+        .artifact-send-modal .btn-confirm:hover {
+            background: #e3f2fd;
+        }
+
+        /* ===== View Switcher (Phase 6) ===== */
+        .view-tabs {
+            display: flex;
+            gap: 4px;
+            padding: 8px 16px;
+            border-bottom: 1px solid var(--border-color);
+            background: var(--bg-secondary);
+        }
+
+        .view-tab {
+            padding: 6px 16px;
+            border: none;
+            background: transparent;
+            cursor: pointer;
+            border-radius: 6px 6px 0 0;
+            font-size: 13px;
+            color: var(--text-secondary);
+            transition: all 0.2s;
+        }
+
+        .view-tab:hover {
+            background: var(--bg-primary);
+        }
+
+        .view-tab.active {
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            font-weight: 600;
+        }
+
+        .view-container {
+            min-height: 200px;
+            max-height: 60vh;
+            overflow: auto;
+            border-bottom: 1px solid var(--border-color);
+            background: var(--bg-primary);
+        }
+
+        .view-container .error {
+            padding: 20px;
+            text-align: center;
+            color: var(--error-color, #f44336);
+        }
+
+        /* Tree View */
+        .tree-controls {
+            display: flex;
+            gap: 12px;
+            padding: 8px 16px;
+            border-bottom: 1px solid var(--border-color);
+            background: var(--bg-secondary);
+            flex-wrap: wrap;
+        }
+
+        .tree-filter, .graph-filter {
+            padding: 4px 8px;
+            border: 1px solid var(--border-color);
+            border-radius: 4px;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            font-size: 12px;
+        }
+
+        .tree-toggle, .graph-toggle {
+            font-size: 12px;
+            color: var(--text-secondary);
+            display: flex;
+            align-items: center;
+            gap: 4px;
+        }
+
+        .tree-view {
+            padding: 16px;
+        }
+
+        .tree-node {
+            padding: 6px 0 6px 16px;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .tree-node.status-merged { opacity: 0.6; }
+        .tree-node.status-archived { opacity: 0.4; }
+
+        .tree-children.collapsed { display: none; }
+
+        .tree-toggle {
+            cursor: pointer;
+            width: 16px;
+            font-size: 10px;
+            color: var(--text-secondary);
+        }
+
+        .tree-icon {
+            font-size: 14px;
+        }
+
+        .tree-name {
+            cursor: pointer;
+            color: var(--text-primary);
+        }
+
+        .tree-name:hover {
+            text-decoration: underline;
+        }
+
+        .tree-status {
+            font-size: 10px;
+        }
+
+        .tree-artifacts {
+            font-size: 10px;
+            color: var(--text-secondary);
+        }
+
+        .tree-edges {
+            font-size: 10px;
+            color: var(--text-secondary);
+            padding-left: 32px;
+            margin-top: 2px;
+        }
+
+        .tree-edge-indicator {
+            padding: 1px 4px;
+            border-radius: 3px;
+            display: inline-block;
+            margin-right: 4px;
+        }
+
+        .edge-depends_on { background: #fff3cd; color: #856404; }
+        .edge-artifact_flow { background: #e3f2fd; color: #1976d2; }
+        .edge-merged_into { background: #e8f5e9; color: #388e3c; }
+        .edge-references { background: #f5f5f5; color: #666; }
+
+        /* Graph View */
+        .graph-controls {
+            display: flex;
+            gap: 12px;
+            padding: 8px 16px;
+            border-bottom: 1px solid var(--border-color);
+            background: var(--bg-secondary);
+            flex-wrap: wrap;
+        }
+
+        .graph-btn {
+            padding: 4px 12px;
+            border: 1px solid var(--border-color);
+            border-radius: 4px;
+            background: transparent;
+            color: var(--text-secondary);
+            cursor: pointer;
+            font-size: 12px;
+        }
+
+        .graph-btn:hover {
+            background: var(--bg-primary);
+        }
+
+        .graph-svg {
+            background: var(--bg-primary);
+        }
+
+        .graph-node:hover rect {
+            stroke-width: 3;
+        }
+
+        .graph-edge {
+            pointer-events: none;
+        }
+
+        .graph-edge.highlighted {
+            stroke-width: 3 !important;
+        }
+
+        /* Timeline View */
+        .timeline-svg {
+            background: var(--bg-primary);
+        }
+
+        .time-label {
+            font-size: 11px;
+            fill: var(--text-secondary);
+        }
+
+        .lane-label {
+            font-size: 12px;
+            fill: var(--text-primary);
+        }
+
+        .lane-label.depth-1 {
+            font-size: 11px;
+            fill: var(--text-secondary);
+        }
+
+        .timeline-event:hover {
+            r: 6;
+            cursor: pointer;
+        }
+
+        .artifact-flow-arrow {
+            pointer-events: none;
+        }
+
         .sidebar-footer {
             padding: 16px;
             border-top: 1px solid var(--sidebar-border);
@@ -2878,6 +3275,12 @@
 
         <!-- Main Content -->
         <div class="main-content">
+            <!-- View Switcher Tabs (Phase 6) -->
+            <div id="viewTabBar" class="view-tabs"></div>
+            
+            <!-- View Container (Phase 6) -->
+            <div id="viewContainer" class="view-container"></div>
+
             <div class="chat-header">
                 <div class="header-left">
                     <div style="display: flex; align-items: center; gap: 8px;">
@@ -2992,6 +3395,45 @@
                 </div>
             </div>
 
+            <!-- Artifact Panel (Phase 5) -->
+            <div class="artifact-panel" id="artifactPanel" style="display: none;">
+                <div class="artifact-panel-header">
+                    <span class="artifact-title">📦 Artifacts</span>
+                    <span class="artifact-count" id="artifactCount">0 artifacts</span>
+                </div>
+                
+                <!-- Produced Artifacts -->
+                <div class="artifact-section">
+                    <div class="artifact-section-title">Produced by this branch</div>
+                    <div class="artifact-list" id="artifactProducedList"></div>
+                </div>
+                
+                <!-- Received Artifacts -->
+                <div class="artifact-section">
+                    <div class="artifact-section-title">Received from other branches</div>
+                    <div class="artifact-list" id="artifactIncomingList"></div>
+                </div>
+                
+                <!-- Send Artifact Modal -->
+                <div class="artifact-send-modal" id="artifactSendModal" style="display: none;">
+                    <div class="modal-content">
+                        <div class="modal-header">
+                            <span>Send Artifact to Branch</span>
+                            <button class="modal-close" id="artifactModalClose">&times;</button>
+                        </div>
+                        <div class="modal-body">
+                            <input type="hidden" id="artifactSendId" />
+                            <label>Target Branch:</label>
+                            <select id="artifactTargetBranch"></select>
+                        </div>
+                        <div class="modal-footer">
+                            <button class="btn-cancel" id="artifactSendCancel">Cancel</button>
+                            <button class="btn-confirm" id="artifactSendConfirm">Send</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
             <!-- Context Selection Controls -->
             <div class="context-controls" id="contextControls" style="display: none;">
                 <div class="context-info">
@@ -3006,8 +3448,14 @@
                     <button class="context-action-btn summarize-btn" id="summarizeSelectedBtn">Summarize Selected</button>
                     <button class="context-action-btn summarize-btn" id="summarizeAllBtn">Summarize Conversation</button>
                     <button class="context-action-btn" id="addDocumentBtn">📎 Add Document</button>
-                    <input type="file" id="documentUpload" accept=".txt,.md,.markdown,.pdf,.docx" style="display: none;">
+                    <input type="file" id="documentUpload" accept=".txt,.md,.markdown,.pdf,.docx,.csv,.tsv,.py,.js,.ts,.html,.css,.json,.yaml,.yml,.toml,.cpp,.c,.h,.java,.rs,.go,.sh,.sql,.xml,.rb,.php,.xlsx,.xls,.pptx,.epub" style="display: none;">
                     
+                    <!-- URL Ingestion (Phase 7) -->
+                    <div class="url-ingestion-input" style="display: flex; gap: 4px; margin-top: 8px;">
+                        <input type="url" id="urlIngestInput" placeholder="Ingest web page URL..." style="flex: 1; padding: 6px 8px; border: 1px solid var(--border-color); border-radius: 4px; background: var(--bg-primary); color: var(--text-primary); font-size: 12px;" />
+                        <button class="context-action-btn" id="urlIngestBtn" style="padding: 6px 12px; white-space: nowrap;">🌐 Ingest URL</button>
+                    </div>
+
                     <!-- Progress and attachment elements from work doc 1.2 -->
                     <div id="uploadProgress" style="display:none">
                         <div id="uploadProgressFill" style="height:4px;width:0;background:#10a37f;"></div>
@@ -3628,5 +4076,11 @@
 
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 	<script src="/static/chat.js?v={{ version }}"></script>
+    
+    <!-- View Modules (Phase 6) -->
+    <script src="/static/views/view_switcher.js?v={{ version }}"></script>
+    <script src="/static/views/tree_view.js?v={{ version }}"></script>
+    <script src="/static/views/timeline_view.js?v={{ version }}"></script>
+    <script src="/static/views/graph_view.js?v={{ version }}"></script>
 </body>
 </html>

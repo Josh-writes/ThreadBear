@@ -177,6 +177,18 @@
     agentPlanList: $('agentPlanList'),
     agentActivityLog: $('agentActivityLog'),
 
+    // Artifact panel (Phase 5)
+    artifactPanel: $('artifactPanel'),
+    artifactCount: $('artifactCount'),
+    artifactProducedList: $('artifactProducedList'),
+    artifactIncomingList: $('artifactIncomingList'),
+    artifactSendModal: $('artifactSendModal'),
+    artifactModalClose: $('artifactModalClose'),
+    artifactSendId: $('artifactSendId'),
+    artifactTargetBranch: $('artifactTargetBranch'),
+    artifactSendCancel: $('artifactSendCancel'),
+    artifactSendConfirm: $('artifactSendConfirm'),
+
     // Model Settings panel (right drawer)
     settingsPanel: $('settingsPanel'),
     closeSettingsBtn: $('closeSettingsBtn'),
@@ -981,6 +993,142 @@
       }
     } catch (e) {
       console.error('Resume agent failed:', e);
+    }
+  }
+
+  // ===== Artifact Functions (Phase 5) =====
+
+  function loadArtifacts(branchId) {
+    fetch(`/api/branches/${branchId}/artifacts`)
+      .then(r => r.json())
+      .then(data => {
+        if (data.success) {
+          renderArtifacts(data.produced || [], data.incoming || []);
+        }
+      })
+      .catch(e => console.warn('Failed to load artifacts:', e));
+  }
+
+  function renderArtifacts(produced, incoming) {
+    const typeIcons = {
+      'document': '[doc]',
+      'code': '[code]',
+      'image': '[img]',
+      'data': '[data]',
+      'summary': '[sum]'
+    };
+
+    // Render produced
+    if (!produced || produced.length === 0) {
+      E.artifactProducedList.innerHTML = '<div class="artifact-item"><span class="artifact-name">No artifacts produced yet</span></div>';
+    } else {
+      E.artifactProducedList.innerHTML = produced.map(a => {
+        const icon = typeIcons[a.type] || '[?]';
+        return `<div class="artifact-item" onclick="viewArtifact('${a.id}')">
+          <span class="artifact-type-icon ${a.type}">${icon}</span>
+          <span class="artifact-name">${a.name || a.id}</span>
+          <button class="artifact-send-btn" onclick="event.stopPropagation(); openSendArtifact('${a.id}')">Send</button>
+        </div>`;
+      }).join('');
+    }
+
+    // Render incoming
+    if (!incoming || incoming.length === 0) {
+      E.artifactIncomingList.innerHTML = '<div class="artifact-item"><span class="artifact-name">No incoming artifacts</span></div>';
+    } else {
+      E.artifactIncomingList.innerHTML = incoming.map(a => {
+        const icon = typeIcons[a.type] || '[?]';
+        const fromBranch = a.producer_branch_id ? a.producer_branch_id.substring(0, 8) : 'unknown';
+        return `<div class="artifact-item" onclick="viewArtifact('${a.id}')">
+          <span class="artifact-type-icon ${a.type}">${icon}</span>
+          <span class="artifact-name">${a.name || a.id}</span>
+          <span class="artifact-from">(from ${fromBranch})</span>
+        </div>`;
+      }).join('');
+    }
+
+    // Update count
+    const total = (produced ? produced.length : 0) + (incoming ? incoming.length : 0);
+    E.artifactCount.textContent = `${total} artifact${total !== 1 ? 's' : ''}`;
+  }
+
+  function openSendArtifact(artifactId) {
+    E.artifactSendId.value = artifactId;
+    
+    // Load branches for dropdown
+    fetch('/api/branches')
+      .then(r => r.json())
+      .then(data => {
+        if (data.success) {
+          const branches = data.branches || [];
+          E.artifactTargetBranch.innerHTML = branches
+            .filter(b => b.id !== state.currentBranchId)
+            .map(b => `<option value="${b.id}">${b.title || b.name || b.id.substring(0, 8)}</option>`)
+            .join('');
+        }
+      });
+    
+    E.artifactSendModal.style.display = 'flex';
+  }
+
+  function closeSendArtifact() {
+    E.artifactSendModal.style.display = 'none';
+    E.artifactSendId.value = '';
+  }
+
+  function sendArtifact() {
+    const artifactId = E.artifactSendId.value;
+    const toBranchId = E.artifactTargetBranch.value;
+    
+    if (!artifactId || !toBranchId || !state.currentBranchId) {
+      alert('Missing required information');
+      return;
+    }
+    
+    fetch(`/api/artifacts/${artifactId}/flow`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        from_branch_id: state.currentBranchId,
+        to_branch_id: toBranchId
+      })
+    })
+    .then(r => r.json())
+    .then(data => {
+      if (data.success) {
+        closeSendArtifact();
+        loadArtifacts(state.currentBranchId);
+        alert('Artifact sent successfully');
+      } else {
+        alert('Failed to send artifact: ' + (data.error || 'Unknown error'));
+      }
+    })
+    .catch(e => alert('Failed to send artifact: ' + e));
+  }
+
+  function viewArtifact(artifactId) {
+    fetch(`/api/artifacts/${artifactId}`)
+      .then(r => r.json())
+      .then(data => {
+        if (data.success && data.artifact) {
+          const a = data.artifact;
+          const content = a.content || '[No content]';
+          const info = `Type: ${a.type}\nName: ${a.name || a.id}\nCreated: ${a.created_at || 'unknown'}\nProducer: ${a.producer_branch_id || 'unknown'}\n\n--- Content ---\n\n${content}`;
+          alert(info);
+        } else {
+          alert('Failed to load artifact');
+        }
+      })
+      .catch(e => alert('Failed to load artifact: ' + e));
+  }
+
+  function checkArtifactApplicable() {
+    // Show artifact panel for all branch types
+    if (state.currentBranchId) {
+      E.artifactPanel.style.display = 'flex';
+      loadArtifacts(state.currentBranchId);
+    } else {
+      E.artifactPanel.style.display = 'none';
     }
   }
 
@@ -2273,6 +2421,9 @@ async function loadPrompts() {
     
     // Check if agent panel should be shown (work_order branches only)
     checkAgentApplicable();
+    
+    // Check if artifact panel should be shown (all branches)
+    checkArtifactApplicable();
   }
 
   async function updateBranchDetailPanel(filename) {
@@ -3093,6 +3244,18 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
         stopAgent(state.currentBranchId);
       }
     });
+
+    // Artifact panel bindings (Phase 5)
+    E.artifactModalClose.addEventListener('click', closeSendArtifact);
+    E.artifactSendCancel.addEventListener('click', closeSendArtifact);
+    E.artifactSendConfirm.addEventListener('click', sendArtifact);
+    
+    // Close modal when clicking outside
+    E.artifactSendModal.addEventListener('click', (e) => {
+      if (e.target === E.artifactSendModal) {
+        closeSendArtifact();
+      }
+    });
   }
 
   // ====== Settings bindings ======
@@ -3810,6 +3973,41 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
     E.documentUpload.addEventListener('change', async () => {
       if (!E.documentUpload.files || !E.documentUpload.files.length) return;
       await uploadDocument(E.documentUpload.files[0]);
+    });
+
+    // URL Ingestion (Phase 7)
+    E.urlIngestBtn.addEventListener('click', async () => {
+      const url = E.urlIngestInput.value.trim();
+      if (!url) {
+        alert('Please enter a URL');
+        return;
+      }
+      
+      E.urlIngestBtn.disabled = true;
+      E.urlIngestBtn.textContent = 'Ingesting...';
+      
+      try {
+        const res = await fetch('/api/context/url', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url })
+        });
+        const data = await res.json();
+        
+        if (data.success) {
+          alert(`Successfully ingested: ${data.document.name}`);
+          E.urlIngestInput.value = '';
+          await loadDocs();
+          await updateContextTokenSummary();
+        } else {
+          alert('Failed to ingest URL: ' + (data.error || 'Unknown error'));
+        }
+      } catch (e) {
+        alert('Failed to ingest URL: ' + e);
+      } finally {
+        E.urlIngestBtn.disabled = false;
+        E.urlIngestBtn.textContent = '🌐 Ingest URL';
+      }
     });
 
     // Selection helpers (operate on MESSAGES, not documents)

@@ -39,8 +39,10 @@ from branch_db import BranchDatabase
 from branch_manager import BranchManager
 from folder_manager import FolderManager
 from tools import tool_registry, ToolSafetyManager
-from tools.agent_tools import set_managers
+from tools.agent_tools import set_managers as set_agent_managers
+from tools.artifact_tools import set_managers as set_artifact_managers
 from agent import AgentExecutionEngine, TodoManager, PlanManager
+from artifact_manager import ArtifactManager
 from api_clients import (
     call_groq_stream, call_google_stream,
     call_mistral_stream, call_openrouter_stream, call_llamacpp_stream,
@@ -48,6 +50,7 @@ from api_clients import (
 from context_documents import (
     list_documents, save_document, delete_document, get_document,
 )
+from readers import reader_registry
 
 # =============================================================================
 # Request-context safety: per-request state with thread-safe access
@@ -1305,20 +1308,24 @@ class FlaskChatApp:
                 return jsonify({"success": False, "error": "Agent can only run on work_order branches"}), 400
             
             try:
-                # Initialize todo/plan managers for this branch
+                # Initialize managers for this branch
                 todo_mgr = TodoManager(branch_id, self.branch_manager)
                 plan_mgr = PlanManager(branch_id, self.branch_manager)
-                set_managers(todo_mgr, plan_mgr)
+                artifact_mgr = ArtifactManager(self.branch_db)
                 
+                # Set managers for tools
+                set_agent_managers(todo_mgr, plan_mgr)
+                set_artifact_managers(artifact_mgr, self.branch_manager)
+
                 engine = AgentExecutionEngine(
                     branch_id, self.branch_manager, tool_registry,
-                    self.config, self
+                    self.config, self, artifact_mgr
                 )
                 with _agents_lock:
                     if branch_id in _active_agents and _active_agents[branch_id].running:
                         return jsonify({"success": False, "error": "Agent already running"}), 409
                     _active_agents[branch_id] = engine
-                
+
                 engine.start(goal)
                 return jsonify({"success": True, "branch_id": branch_id})
             except ValueError as e:
@@ -1413,6 +1420,197 @@ class FlaskChatApp:
             if not plan:
                 return jsonify({"success": True, "plan": None})
             return jsonify({"success": True, "plan": plan, "next_step": plan_mgr.get_next_step()})
+
+        # ---- Artifact Management API (Phase 5) ----
+
+        @app.route('/api/artifacts', methods=['POST'])
+        def create_artifact_api():
+            """Create an artifact."""
+            data = request.get_json() or {}
+            branch_id = data.get('branch_id')
+            artifact_type = data.get('type')
+            content = data.get('content')
+            name = data.get('name')
+            tags = data.get('tags', [])
+
+            if not all([branch_id, artifact_type, content]):
+                return jsonify({"success": False, "error": "branch_id, type, and content required"}), 400
+
+            try:
+                artifact_mgr = ArtifactManager(self.branch_db)
+                artifact = artifact_mgr.create_artifact(branch_id, artifact_type, content, name, tags)
+                return jsonify({"success": True, "artifact": artifact})
+            except ValueError as e:
+                return jsonify({"success": False, "error": str(e)}), 400
+
+        @app.route('/api/artifacts/<artifact_id>', methods=['GET'])
+        def get_artifact_api(artifact_id: str):
+            """Get artifact with content."""
+            artifact_mgr = ArtifactManager(self.branch_db)
+            artifact = artifact_mgr.get_artifact(artifact_id)
+            if not artifact:
+                return jsonify({"success": False, "error": "Artifact not found"}), 404
+            return jsonify({"success": True, "artifact": artifact})
+
+        @app.route('/api/branches/<branch_id>/artifacts', methods=['GET'])
+        def list_branch_artifacts(branch_id: str):
+            """List artifacts for a branch (produced + incoming)."""
+            artifact_mgr = ArtifactManager(self.branch_db)
+            artifacts = artifact_mgr.list_branch_artifacts(branch_id, include_incoming=True)
+            return jsonify({"success": True, **artifacts})
+
+        @app.route('/api/artifacts/<artifact_id>/flow', methods=['POST'])
+        def flow_artifact_api(artifact_id: str):
+            """Flow an artifact to another branch."""
+            data = request.get_json() or {}
+            from_branch_id = data.get('from_branch_id')
+            to_branch_id = data.get('to_branch_id')
+
+            if not all([from_branch_id, to_branch_id]):
+                return jsonify({"success": False, "error": "from_branch_id and to_branch_id required"}), 400
+
+            try:
+                artifact_mgr = ArtifactManager(self.branch_db)
+                success = artifact_mgr.flow_artifact(artifact_id, from_branch_id, to_branch_id)
+                return jsonify({"success": success})
+            except ValueError as e:
+                return jsonify({"success": False, "error": str(e)}), 400
+
+        @app.route('/api/artifacts/search', methods=['GET'])
+        def search_artifacts_api():
+            """Search artifacts."""
+            query = request.args.get('q')
+            artifact_type = request.args.get('type')
+            tags = request.args.getlist('tags')
+
+            artifact_mgr = ArtifactManager(self.branch_db)
+            artifacts = artifact_mgr.search_artifacts(query, artifact_type, tags if tags else None)
+            return jsonify({"success": True, "artifacts": artifacts})
+
+        # ---- Visualization API (Phase 6) ----
+
+        @app.route('/api/graph', methods=['GET'])
+        def get_graph():
+            """Get full graph data for visualization."""
+            branches = self.branch_db.list_branches()
+            
+            # Get artifact counts per branch
+            conn = self.branch_db._get_connection()
+            try:
+                artifact_counts = {
+                    r['producer_branch_id']: r['count'] 
+                    for r in conn.execute(
+                        "SELECT producer_branch_id, COUNT(*) as count "
+                        "FROM artifacts GROUP BY producer_branch_id"
+                    ).fetchall()
+                }
+            finally:
+                conn.close()
+
+            nodes = []
+            for b in branches:
+                nodes.append({
+                    'id': b['id'],
+                    'name': b.get('title', 'Untitled'),
+                    'type': b.get('type', 'chat'),
+                    'status': b.get('status', 'active'),
+                    'parent_id': b.get('parent_id'),
+                    'artifact_count': artifact_counts.get(b['id'], 0),
+                    'message_count': b.get('message_count', 0),
+                    'created_at': b.get('created_at', ''),
+                    'updated_at': b.get('updated_at', '')
+                })
+
+            edges = []
+            for b in branches:
+                branch_edges = self.branch_db.get_edges(b['id'], direction='both')
+                for e in branch_edges:
+                    edges.append({
+                        'id': e.get('id'),
+                        'from_branch': e.get('from_branch'),
+                        'to_branch': e.get('to_branch'),
+                        'type': e.get('type'),
+                        'payload': e.get('payload')
+                    })
+
+            # Deduplicate edges
+            seen = set()
+            unique_edges = []
+            for e in edges:
+                key = (e['from_branch'], e['to_branch'], e['type'])
+                if key not in seen:
+                    seen.add(key)
+                    unique_edges.append(e)
+
+            return jsonify({"success": True, "nodes": nodes, "edges": unique_edges})
+
+        @app.route('/api/timeline', methods=['GET'])
+        def get_timeline():
+            """Get timeline events for date-based visualization."""
+            branches = self.branch_db.list_branches()
+            events = []
+
+            # Branch creation events
+            for b in branches:
+                events.append({
+                    'type': 'created',
+                    'branch_id': b['id'],
+                    'branch_name': b.get('title', 'Untitled'),
+                    'timestamp': b.get('created_at', '')
+                })
+
+                # Status change events from metadata
+                meta = json.loads(b.get('metadata', '{}')) if b.get('metadata') else {}
+                status_history = meta.get('status_history', [])
+                for sh in status_history:
+                    events.append({
+                        'type': 'status_change',
+                        'branch_id': b['id'],
+                        'branch_name': b.get('title', 'Untitled'),
+                        'from': sh.get('from'),
+                        'to': sh.get('to'),
+                        'timestamp': sh.get('timestamp', '')
+                    })
+
+            # Artifact creation events
+            conn = self.branch_db._get_connection()
+            try:
+                artifacts = conn.execute(
+                    "SELECT id, producer_branch_id, name, type, created_at FROM artifacts"
+                ).fetchall()
+                for a in artifacts:
+                    events.append({
+                        'type': 'artifact_created',
+                        'branch_id': a['producer_branch_id'],
+                        'artifact_id': a['id'],
+                        'artifact_name': a['name'],
+                        'artifact_type': a['type'],
+                        'timestamp': a['created_at']
+                    })
+
+                # Merge events from edges
+                merges = conn.execute(
+                    "SELECT from_branch, to_branch, payload, created_at FROM edges WHERE type = 'merged_into'"
+                ).fetchall()
+                for m in merges:
+                    payload = json.loads(m['payload']) if m['payload'] else {}
+                    events.append({
+                        'type': 'merged',
+                        'source_id': m['from_branch'],
+                        'target_id': m['to_branch'],
+                        'timestamp': m['created_at'] or payload.get('merged_at', '')
+                    })
+            finally:
+                conn.close()
+
+            # Sort by timestamp
+            events.sort(key=lambda e: e.get('timestamp', ''))
+
+            return jsonify({
+                "success": True,
+                "branches": branches,
+                "events": events
+            })
 
         # ---- Folder management ----
         @app.route('/api/folders', methods=['GET'])
@@ -1724,6 +1922,51 @@ class FlaskChatApp:
             content = data.get('content') or ''
             ok, meta = save_document(name, content)
             return (jsonify({"success": ok, "document": meta}), 200 if ok else 400)
+
+        # ---- URL Ingestion (Phase 7) ----
+        @app.route('/api/context/url', methods=['POST'])
+        def ingest_url():
+            """Ingest a web URL as a document."""
+            data = request.get_json() or {}
+            url = data.get('url', '').strip()
+            
+            if not url:
+                return jsonify({"success": False, "error": "URL is required"}), 400
+            
+            if not url.startswith(('http://', 'https://')):
+                return jsonify({"success": False, "error": "URL must start with http:// or https://"}), 400
+            
+            try:
+                from readers.url_reader import UrlReader
+                
+                # Extract text from URL
+                text = UrlReader.extract_text(url)
+                if not text or not text.strip():
+                    return jsonify({"success": False, "error": "No text could be extracted from URL"}), 400
+                
+                # Create a filename from URL
+                from urllib.parse import urlparse
+                parsed = urlparse(url)
+                name = f"{parsed.netloc}_{parsed.path.replace('/', '_')[:50]}.txt" or "web_page.txt"
+                
+                # Save as document
+                ok, meta = save_document(name, text.encode('utf-8'))
+                if ok:
+                    # Store the source URL in metadata
+                    meta['source_url'] = url
+                return (jsonify({"success": ok, "document": meta}), 200 if ok else 400)
+                
+            except ImportError as e:
+                return jsonify({"success": False, "error": f"URL ingestion requires: pip install requests beautifulsoup4. {str(e)}"}), 500
+            except Exception as e:
+                return jsonify({"success": False, "error": str(e)}), 500
+
+        # ---- Reader Status (Phase 7) ----
+        @app.route('/api/context/readers', methods=['GET'])
+        def get_readers():
+            """List available readers and supported file extensions."""
+            readers = reader_registry.supported_extensions()
+            return jsonify({"success": True, "readers": readers})
 
         @app.route('/api/context/docs/<name>', methods=['GET'])
         def context_get_route(name: str):
