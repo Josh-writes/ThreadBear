@@ -4,6 +4,7 @@ Flask-based AI Chat Application (stable routes, binary-safe uploads, llama.cpp l
 from __future__ import annotations
 import os
 import json
+import sqlite3
 import subprocess
 import threading
 import time
@@ -1521,19 +1522,19 @@ class FlaskChatApp:
         def get_graph():
             """Get full graph data for visualization."""
             branches = self.branch_db.list_branches()
-            
-            # Get artifact counts per branch
-            conn = self.branch_db._get_connection()
+
+            # Get artifact counts per branch (table may not exist yet)
+            artifact_counts = {}
             try:
-                artifact_counts = {
-                    r['producer_branch_id']: r['count'] 
-                    for r in conn.execute(
+                with self.branch_db._get_connection() as conn:
+                    rows = conn.execute(
                         "SELECT producer_branch_id, COUNT(*) as count "
                         "FROM artifacts GROUP BY producer_branch_id"
                     ).fetchall()
-                }
-            finally:
-                conn.close()
+                    artifact_counts = {r['producer_branch_id']: r['count'] for r in rows}
+            except sqlite3.OperationalError:
+                # artifacts table doesn't exist yet - use empty counts
+                pass
 
             nodes = []
             for b in branches:
