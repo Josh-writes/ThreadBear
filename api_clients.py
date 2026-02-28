@@ -22,6 +22,24 @@ def estimate_tokens(text: str) -> int:
     return len(text) // 4
 
 
+def _repair_json(s: str) -> str:
+    """Fix common JSON issues from streaming: missing closing braces/brackets."""
+    s = s.strip()
+    if not s:
+        return '{}'
+    # Count open/close braces
+    opens = s.count('{') - s.count('}')
+    s += '}' * max(0, opens)
+    # Count open/close brackets
+    opens = s.count('[') - s.count(']')
+    s += ']' * max(0, opens)
+    try:
+        json.loads(s)
+        return s
+    except json.JSONDecodeError:
+        return '{}'
+
+
 # --- Groq ---
 def fetch_groq_catalog(api_key: str) -> List[Dict]:
     """Fetch the model catalog from Groq's API (requires auth)."""
@@ -106,7 +124,12 @@ def call_groq(messages: List[Dict], config: Dict) -> str:
     except Exception as e:
         return f"Groq API error: {str(e)}"
 
-def call_groq_stream(messages: List[Dict], config: Dict) -> Iterator[str]:
+def call_groq_stream(messages: List[Dict], config: Dict,
+                     tools: List[Dict] = None) -> Iterator[Union[str, Dict]]:
+    """
+    Enhanced to handle tool calls in streaming responses.
+    Yields: str for content chunks, dict for tool calls {'type': 'tool_calls', 'tool_calls': [...]}
+    """
     try:
         api_key = os.getenv('GROQ_API_KEY') or config.get('groq_api_key')
         if not api_key or api_key == "your_groq_api_key_here":
@@ -126,7 +149,7 @@ def call_groq_stream(messages: List[Dict], config: Dict) -> Iterator[str]:
         base_url = (config.get("groq_base_url") or "https://api.groq.com/openai/v1").rstrip("/")
         url = f"{base_url}/chat/completions"
         headers = {
-            "Authorization": f"Bearer {api_key}", 
+            "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
             "Accept": "text/event-stream"
         }
@@ -136,11 +159,14 @@ def call_groq_stream(messages: List[Dict], config: Dict) -> Iterator[str]:
             "temperature": config.get("groq_temperature", 0.7),
             "stream": True
         }
+        # Add tools if provided
+        if tools:
+            data['tools'] = tools
+            data['tool_choice'] = 'auto'
         # Optional sampling params (per-model/per-provider)
         if "top_p" in config:
             data["top_p"] = config["top_p"]
         if "top_k" in config:
-            # Some providers ignore top_k; harmless to pass if supported.
             data["top_k"] = config["top_k"]
 
         # Respect requested max_tokens if supplied
@@ -156,6 +182,10 @@ def call_groq_stream(messages: List[Dict], config: Dict) -> Iterator[str]:
         if response.status_code == 404 and "/openai/" in url:
             fallback_url = url.replace("/openai/", "/")
             response = _web_session.post(fallback_url, headers=headers, json=data, stream=True, timeout=60)
+        
+        # Track accumulated tool calls across streaming deltas
+        tool_calls_acc = {}  # index -> {id, function: {name, arguments}}
+        
         if response.status_code == 200:
             for line in response.iter_lines():
                 if not line:
@@ -169,11 +199,33 @@ def call_groq_stream(messages: List[Dict], config: Dict) -> Iterator[str]:
                         chunk = json.loads(payload)
                         if 'choices' in chunk and chunk['choices']:
                             delta = chunk['choices'][0].get('delta', {})
+                            # Content chunks
                             content = delta.get('content', '')
                             if content:
                                 yield content
+                            # Tool call deltas
+                            if delta.get('tool_calls'):
+                                for tc_delta in delta['tool_calls']:
+                                    idx = tc_delta.get('index', 0)
+                                    if idx not in tool_calls_acc:
+                                        tool_calls_acc[idx] = {
+                                            'id': tc_delta.get('id', f'call_{idx}'),
+                                            'type': 'function',
+                                            'function': {'name': '', 'arguments': ''}
+                                        }
+                                    if tc_delta.get('function', {}).get('name'):
+                                        tool_calls_acc[idx]['function']['name'] = tc_delta['function']['name']
+                                    if tc_delta.get('function', {}).get('arguments'):
+                                        tool_calls_acc[idx]['function']['arguments'] += tc_delta['function']['arguments']
+                            # On finish_reason='tool_calls', yield accumulated tool calls
+                            finish = chunk['choices'][0].get('finish_reason')
+                            if finish == 'tool_calls' and tool_calls_acc:
+                                # Auto-repair incomplete JSON arguments
+                                for tc in tool_calls_acc.values():
+                                    tc['function']['arguments'] = _repair_json(tc['function']['arguments'])
+                                yield {'type': 'tool_calls', 'tool_calls': list(tool_calls_acc.values())}
+                                tool_calls_acc = {}
                     except json.JSONDecodeError:
-                        # Ignore non-JSON keepalive lines
                         continue
         else:
             yield f"data: {json.dumps({'type':'error','content':'Error: ' + str(response.status_code) + ' ' + str(response.reason) + ' - ' + str(response.text) + ' (model=' + model_name + ', url=' + url + ')'})}\n\n"

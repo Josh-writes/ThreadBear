@@ -1759,6 +1759,91 @@
             overflow-wrap: break-word;
         }
 
+        /* ===== Tool Chips (Phase 3) ===== */
+        .tool-chip {
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            padding: 4px 10px;
+            margin: 4px 2px;
+            border-radius: 16px;
+            font-size: 0.85em;
+            cursor: pointer;
+            border: 1px solid var(--border-color);
+            background: var(--bg-secondary);
+            transition: border-color 0.2s, opacity 0.3s;
+        }
+
+        .tool-chip.running {
+            border-color: var(--text-secondary);
+            animation: pulse 1.5s infinite;
+        }
+
+        .tool-chip.success {
+            border-color: #4caf50;
+            background: #e8f5e9;
+        }
+
+        .tool-chip.error {
+            border-color: #f44336;
+            background: #ffebee;
+        }
+
+        [data-theme="dark"] .tool-chip.success {
+            border-color: #66bb6a;
+            background: #1b5e20;
+        }
+
+        [data-theme="dark"] .tool-chip.error {
+            border-color: #ef5350;
+            background: #b71c1c;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.6; }
+        }
+
+        .tool-detail {
+            display: block;
+            width: 100%;
+            margin-top: 6px;
+            padding: 8px;
+            background: var(--bg-primary);
+            border-radius: 6px;
+            font-family: 'Consolas', 'Monaco', monospace;
+            font-size: 0.8em;
+            white-space: pre-wrap;
+            max-height: 300px;
+            overflow-y: auto;
+            border: 1px solid var(--border-color);
+        }
+
+        .tool-detail.hidden {
+            display: none;
+        }
+
+        .tool-icon {
+            font-size: 0.9em;
+        }
+
+        .tool-name {
+            font-weight: 600;
+            color: var(--text-primary);
+        }
+
+        .tool-args {
+            color: var(--text-secondary);
+            max-width: 200px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .tool-status-icon {
+            margin-left: 4px;
+        }
+
         /* Timestamp small and muted */
         .message-time {
             font-size: 11px;

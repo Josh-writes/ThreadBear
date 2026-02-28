@@ -38,6 +38,7 @@ from message_compaction import MessageCompactor
 from branch_db import BranchDatabase
 from branch_manager import BranchManager
 from folder_manager import FolderManager
+from tools import tool_registry, ToolSafetyManager
 from api_clients import (
     call_groq_stream, call_google_stream,
     call_mistral_stream, call_openrouter_stream, call_llamacpp_stream,
@@ -854,33 +855,84 @@ class FlaskChatApp:
                     # Auto-load model for llamacpp if not already loaded
                     if provider == "llamacpp":
                         base_url = merged_cfg["llamacpp_url"].rstrip("/")
-                        # Normalize model name (strip .gguf suffix)
                         if model and model.endswith(".gguf") and "/" not in model:
                             model = model.rsplit(".gguf", 1)[0]
-
                         loaded_ok, load_err = self._ensure_model_loaded(model, base_url)
                         if not loaded_ok:
                             yield f"data: {json.dumps({'type':'error','content': f'Auto-load failed: {load_err}'})}\n\n"
                             yield f"data: {json.dumps({'type':'complete'})}\n\n"
                             return
 
-                    full = ""
-                    # Track inference time for idle timeout (llamacpp only)
-                    if provider == "llamacpp":
-                        self._last_inference_time = time.time()
-                    for chunk in stream_func(api_messages, merged_cfg):
-                        if snap.get('cancel_generation', False):
-                            yield f"data: {json.dumps({'type':'error','content':'Generation cancelled'})}\n\n"
-                            return
-                        full += chunk
-                        yield f"data: {json.dumps({'type':'content','content':chunk})}\n\n"
-                        time.sleep(0.005)
-                    # Update inference time after completion too
-                    if provider == "llamacpp":
-                        self._last_inference_time = time.time()
+                    # === TOOL EXECUTION LOOP (Phase 3) ===
+                    tool_config = self.config.get_tool_config(provider)
+                    tools_enabled = tool_config.get('enabled', False)
+                    tool_schemas = tool_registry.get_schemas_for_provider() if tools_enabled else None
+                    safety_mgr = ToolSafetyManager({
+                        'blocked_commands': tool_config.get('blocked_commands', []),
+                        'tool_workspace': tool_config.get('workspace'),
+                    }) if tools_enabled else None
+                    max_iterations = tool_config.get('max_iterations', 5)
+
+                    full_response = ""
+                    for iteration in range(max_iterations):
+                        tool_calls_this_round = []
+                        content_buffer = ""
+
+                        # Call LLM with optional tools
+                        for chunk in stream_func(api_messages, merged_cfg, tools=tool_schemas):
+                            if snap.get('cancel_generation', False):
+                                yield f"data: {json.dumps({'type':'error','content':'Generation cancelled'})}\n\n"
+                                return
+
+                            if isinstance(chunk, dict) and chunk.get('type') == 'tool_calls':
+                                tool_calls_this_round = chunk.get('tool_calls', [])
+                            elif isinstance(chunk, str):
+                                content_buffer += chunk
+                                yield f"data: {json.dumps({'type':'content','content':chunk})}\n\n"
+                                time.sleep(0.005)
+
+                        # Track inference time for idle timeout (llamacpp only)
+                        if provider == "llamacpp":
+                            self._last_inference_time = time.time()
+
+                        if not tool_calls_this_round:
+                            full_response = content_buffer
+                            break  # No tools called — LLM gave final response
+
+                        # Add assistant message with tool calls to history
+                        assistant_msg = {'role': 'assistant', 'content': content_buffer or None}
+                        if tool_calls_this_round:
+                            assistant_msg['tool_calls'] = tool_calls_this_round
+                        api_messages.append(assistant_msg)
+
+                        # Execute each tool call
+                        for tc in tool_calls_this_round:
+                            name = tc.get('function', {}).get('name', '')
+                            try:
+                                args = json.loads(tc.get('function', {}).get('arguments', '{}'))
+                            except json.JSONDecodeError:
+                                args = {}
+
+                            # Yield tool start event
+                            yield f"data: {json.dumps({'type':'tool_start', 'name': name, 'args': args})}\n\n"
+
+                            # Execute with safety check
+                            result = tool_registry.execute_tool(name, args, safety_mgr)
+
+                            # Yield tool end event
+                            yield f"data: {json.dumps({'type':'tool_end', 'name': name, 'result': result})}\n\n"
+
+                            # Add tool result to messages for next LLM call
+                            api_messages.append({
+                                'role': 'tool',
+                                'tool_call_id': tc.get('id', ''),
+                                'content': json.dumps(result)
+                            })
+
+                        # Loop continues — LLM gets tool results and generates next response
 
                     if not self.temporary_mode and not self.incognito_mode:
-                        self.chat_manager.add_message("assistant", full, model)
+                        self.chat_manager.add_message("assistant", full_response, model)
 
                     # --- Auto-title generation after first exchange ---
                     try:
@@ -1169,6 +1221,48 @@ class FlaskChatApp:
             """Delete an edge by ID."""
             # Need to add delete_edge method to BranchDatabase
             # For now, return success
+            return jsonify({"success": True})
+
+        # ---- Tool System API (Phase 3) ----
+
+        @app.route('/api/tools', methods=['GET'])
+        def list_tools():
+            """List all registered tools with schemas and metadata."""
+            tools = tool_registry.list_tools()
+            schemas = tool_registry.get_schemas_for_provider()
+            return jsonify({
+                "success": True,
+                "tools": tools,
+                "schemas": schemas
+            })
+
+        @app.route('/api/config/tools', methods=['GET'])
+        def get_tools_config():
+            """Get tool enablement status for all providers."""
+            providers = self.available_providers
+            config = {}
+            for p in providers:
+                config[p] = self.config.get(f'{p}_tools_enabled', False)
+            config['max_iterations'] = self.config.get('max_tool_iterations', 5)
+            config['timeout'] = self.config.get('tool_execution_timeout', 30)
+            return jsonify({"success": True, "config": config})
+
+        @app.route('/api/config/tools', methods=['POST'])
+        def set_tools_config():
+            """Enable/disable tools for a provider."""
+            data = request.get_json() or {}
+            provider = data.get('provider')
+            enabled = data.get('enabled', False)
+
+            if not provider:
+                return jsonify({"success": False, "error": "provider required"}), 400
+
+            if provider not in self.available_providers:
+                return jsonify({"success": False, "error": f"Unknown provider: {provider}"}), 400
+
+            self.config.set(f'{provider}_tools_enabled', enabled)
+            self.config.save_config()
+
             return jsonify({"success": True})
 
         # ---- Folder management ----

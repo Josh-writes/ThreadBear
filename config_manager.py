@@ -96,6 +96,19 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "title_provider": "groq",
     "title_model": "llama-3.1-8b-instant",
 
+    # Tool system (Phase 3)
+    "tools_enabled": False,                    # Master switch
+    "groq_tools_enabled": False,               # Per-provider
+    "google_tools_enabled": False,
+    "mistral_tools_enabled": False,
+    "openrouter_tools_enabled": False,
+    "llamacpp_tools_enabled": False,
+    "max_tool_iterations": 5,                  # Max tool loops per request
+    "tool_execution_timeout": 30,              # Default per-tool timeout (seconds)
+    "require_tool_confirmation": True,         # Ask user before destructive tools
+    "blocked_commands": ['rm -rf', 'del /f /s', 'format', 'shutdown'],
+    "tool_workspace": None,                    # Restrict file access (None = unrestricted)
+
     # Misc
     "temp_mode_warning": True,
 }
@@ -252,6 +265,17 @@ class ConfigManager:
                 if ctx > 0:
                     return int(ctx)
         return DEFAULT_CONTEXT_WINDOWS.get(provider, 8192)
+
+    def get_tool_config(self, provider: str) -> Dict[str, Any]:
+        """Get tool configuration for a provider."""
+        return {
+            'enabled': self.config.get(f'{provider}_tools_enabled', False),
+            'max_iterations': self.config.get('max_tool_iterations', 5),
+            'timeout': self.config.get('tool_execution_timeout', 30),
+            'require_confirmation': self.config.get('require_tool_confirmation', True),
+            'blocked_commands': self.config.get('blocked_commands', []),
+            'workspace': self.config.get('tool_workspace'),
+        }
 
     def reload_api_keys_from_env(self) -> None:
         """

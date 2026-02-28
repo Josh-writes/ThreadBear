@@ -501,6 +501,59 @@
   E.messages.scrollTop = E.messages.scrollHeight;
 }
 
+  // ===== Tool Chip Rendering (Phase 3) =====
+
+  function appendToolChip(msgIndex, name, args, status) {
+    // Get or create the message bubble
+    const bubble = E.messages.querySelector(`.message.assistant[data-index="${msgIndex}"] .message-bubble`);
+    if (!bubble) return;
+
+    const chip = el('div', 'tool-chip ' + status);
+    chip.dataset.toolName = name;
+    chip.dataset.toolIndex = msgIndex;
+    
+    const argsStr = truncateArgs(args);
+    chip.innerHTML = `
+      <span class="tool-icon">🔧</span>
+      <span class="tool-name">${name}</span>
+      <span class="tool-args">${argsStr}</span>
+      <span class="tool-status-icon">⏳</span>
+    `;
+    
+    chip.onclick = () => toggleToolDetail(chip);
+    bubble.appendChild(chip);
+    bubble.scrollTop = bubble.scrollHeight;
+  }
+
+  function updateToolChip(msgIndex, name, result) {
+    const chip = E.messages.querySelector(`.message.assistant[data-index="${msgIndex}"] .tool-chip[data-tool-name="${name}"].running`);
+    if (!chip) return;
+
+    const success = result && result.success;
+    chip.className = 'tool-chip ' + (success ? 'success' : 'error');
+    chip.querySelector('.tool-status-icon').textContent = success ? '✅' : '❌';
+
+    // Add expandable detail panel
+    const detail = el('div', 'tool-detail hidden');
+    detail.textContent = JSON.stringify(result, null, 2);
+    chip.appendChild(detail);
+  }
+
+  function toggleToolDetail(chip) {
+    const detail = chip.querySelector('.tool-detail');
+    if (detail) detail.classList.toggle('hidden');
+  }
+
+  function truncateArgs(args, maxLen = 40) {
+    try {
+      const str = typeof args === 'string' ? args : JSON.stringify(args);
+      if (str.length > maxLen) return str.substring(0, maxLen) + '...';
+      return str;
+    } catch {
+      return '...';
+    }
+  }
+
   // ===== Folder API & UI =====
 
   async function loadFolders() {
@@ -2255,13 +2308,10 @@ async function loadPrompts() {
         const data = JSON.parse(ev.data);
         if (data.type === 'model') {
           state.messages[idx].model = data.content || '';
-          renderMessages(); // Only re-render once when model name arrives
-          // Re-get the bubble reference after re-rendering
+          renderMessages();
           state.currentStreamingBubble = E.messages.querySelector(`.message.assistant[data-index="${idx}"] .message-bubble`);
         } else if (data.type === 'content') {
-          // Update state
           state.messages[idx].content += data.content || '';
-          // Update ONLY the specific bubble DOM element directly
           if (state.currentStreamingBubble) {
             try {
               state.currentStreamingBubble.innerHTML = marked.parse(state.messages[idx].content);
@@ -2270,6 +2320,12 @@ async function loadPrompts() {
             }
             E.messages.scrollTop = E.messages.scrollHeight;
           }
+        } else if (data.type === 'tool_start') {
+          // Tool execution starting - append tool chip
+          appendToolChip(idx, data.name, data.args, 'running');
+        } else if (data.type === 'tool_end') {
+          // Tool execution complete - update chip
+          updateToolChip(idx, data.name, data.result);
         } else if (data.type === 'title') {
           const ti = state.history.findIndex(c => c.filename === (data.filename || state.currentChatFile));
           if (ti !== -1) state.history[ti].title = data.title;
@@ -2280,15 +2336,15 @@ async function loadPrompts() {
           state.streaming = false;
           hide(E.cancelBtn);
           show(E.sendBtn);
-          state.currentStreamingBubble = null; // Clean up reference
-          renderMessages(); // Final render to ensure everything is correct
+          state.currentStreamingBubble = null;
+          renderMessages();
           afterMessageSettled();
         } else if (data.type === 'error') {
           src.close();
           state.streaming = false;
           hide(E.cancelBtn);
           show(E.sendBtn);
-          state.currentStreamingBubble = null; // Clean up reference
+          state.currentStreamingBubble = null;
           state.messages[idx].content += `\n\n${data.content || 'Error.'}`;
           renderMessages();
         }
