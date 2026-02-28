@@ -51,6 +51,7 @@
 
         /* Sidebar */
         .sidebar {
+            position: relative;
             width: 280px;
             background: var(--bg-sidebar);
             color: var(--text-sidebar);
@@ -89,6 +90,7 @@
             overflow-y: auto;
             padding: 12px 8px;
             background: var(--bg-sidebar);
+            overflow-x: hidden;
         }
 
         /* Main chat items (non-branches) */
@@ -1275,6 +1277,104 @@
             border-top: 1px solid var(--sidebar-border);
         }
 
+        /* ===== Sidebar View Toggles ===== */
+        .sidebar-view-toggles {
+            display: flex;
+            gap: 4px;
+            padding: 8px 12px;
+            border-top: 1px solid var(--sidebar-border);
+            background: var(--bg-sidebar);
+            flex-shrink: 0;
+        }
+
+        .view-toggle-btn {
+            flex: 1;
+            padding: 6px 8px;
+            background: transparent;
+            border: 1px solid var(--sidebar-border);
+            border-radius: 6px;
+            color: var(--text-secondary);
+            cursor: pointer;
+            font-size: 11px;
+            transition: all 0.2s;
+            white-space: nowrap;
+        }
+
+        .view-toggle-btn:hover {
+            background: var(--sidebar-border);
+            color: var(--text-sidebar);
+        }
+
+        .view-toggle-btn.active {
+            background: rgba(16, 163, 127, 0.2);
+            border-color: #10a37f;
+            color: #10a37f;
+        }
+
+        [data-theme="dark"] .view-toggle-btn.active {
+            background: rgba(16, 163, 127, 0.15);
+        }
+
+        /* ===== Sidebar View Panel ===== */
+        .sidebar-view-panel {
+            position: absolute;
+            bottom: 52px;  /* Above the view toggles */
+            left: 0;
+            right: 0;
+            height: 60%;
+            min-height: 200px;
+            background: var(--bg-primary);
+            border-top: 2px solid #10a37f;
+            box-shadow: 0 -4px 12px rgba(0, 0, 0, 0.1);
+            display: none;
+            z-index: 100;
+            overflow: hidden;
+        }
+
+        .sidebar-view-panel.open {
+            display: flex;
+            flex-direction: column;
+        }
+
+        .sidebar-view-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 8px 12px;
+            background: var(--bg-secondary);
+            border-bottom: 1px solid var(--border-color);
+            flex-shrink: 0;
+        }
+
+        .sidebar-view-title {
+            font-size: 13px;
+            font-weight: 600;
+            color: var(--text-primary);
+        }
+
+        .sidebar-view-close {
+            background: transparent;
+            border: none;
+            color: var(--text-secondary);
+            cursor: pointer;
+            font-size: 20px;
+            padding: 0 4px;
+            line-height: 1;
+            transition: color 0.2s;
+        }
+
+        .sidebar-view-close:hover {
+            color: var(--text-primary);
+        }
+
+        .sidebar-view-content {
+            flex: 1;
+            overflow-y: auto;
+            padding: 12px;
+            min-height: 200px;
+        }
+
+        /* Settings dropdown menu */
         .settings-btn {
             width: 100%;
             padding: 8px 12px;
@@ -1292,7 +1392,6 @@
             color: var(--text-sidebar);
         }
 
-        /* Settings dropdown menu */
         .settings-menu-container {
             position: relative;
         }
@@ -3249,7 +3348,31 @@
             <div class="chat-history" id="chatHistory">
                 <!-- Folders and chat history items will be populated here -->
             </div>
-            
+
+            <!-- View Toggle Buttons -->
+            <div class="sidebar-view-toggles" id="sidebarViewToggles">
+                <button class="view-toggle-btn" data-view="tree" title="Tree View">
+                    🌲 Tree
+                </button>
+                <button class="view-toggle-btn" data-view="timeline" title="Timeline View">
+                    📅 Timeline
+                </button>
+                <button class="view-toggle-btn" data-view="graph" title="Graph View">
+                    🕸️ Graph
+                </button>
+            </div>
+
+            <!-- Expandable View Panel -->
+            <div class="sidebar-view-panel" id="sidebarViewPanel">
+                <div class="sidebar-view-header">
+                    <span class="sidebar-view-title" id="sidebarViewTitle">Tree View</span>
+                    <button class="sidebar-view-close" id="sidebarViewCloseBtn" title="Close">×</button>
+                </div>
+                <div class="sidebar-view-content" id="sidebarViewContent">
+                    <!-- View content rendered here -->
+                </div>
+            </div>
+
             <div class="sidebar-footer">
                 <div class="settings-menu-container">
                     <button class="settings-btn" id="settingsMenuBtn">
@@ -3275,12 +3398,6 @@
 
         <!-- Main Content -->
         <div class="main-content">
-            <!-- View Switcher Tabs (Phase 6) -->
-            <div id="viewTabBar" class="view-tabs"></div>
-            
-            <!-- View Container (Phase 6) -->
-            <div id="viewContainer" class="view-container"></div>
-
             <div class="chat-header">
                 <div class="header-left">
                     <div style="display: flex; align-items: center; gap: 8px;">

@@ -96,6 +96,8 @@
 
     // Context controls bar (hidden until toggled)
     contextControls: $('contextControls'),
+    urlIngestInput: $('urlIngestInput'),
+    urlIngestBtn: $('urlIngestBtn'),
     contextTokenCountTop: $('contextTokenCount'),
     modelMaxTokensLabel: $('modelMaxTokensLabel'),
     selectAllBtn: $('selectAllBtn'),
@@ -1790,10 +1792,45 @@
   function renderHistory() {
     clearNode(E.chatHistory);
 
-    // === Render Branch Tree (Phase 2) ===
+    // Build set of chats that are in folders
+    const chatsInFolders = new Set(Object.keys(state.chatFolderMap));
+
+    // Build set of child chats (have parent_chat_id)
+    const childChats = new Set();
+    state.history.forEach(chat => {
+      if (chat.parent_chat_id) childChats.add(chat.filename);
+    });
+
+    // Render folders section FIRST
+    if (state.folders.length > 0) {
+      state.folders.forEach(folder => {
+        renderFolderNode(folder, E.chatHistory, 0);
+      });
+
+      // Divider between folders and unfiled chats
+      const unfiledChats = state.history.filter(c => !chatsInFolders.has(c.filename) && !c.parent_chat_id);
+      if (unfiledChats.length > 0) {
+        const label = el('div', 'folder-section-label');
+        label.textContent = 'Folders';
+        E.chatHistory.appendChild(label);
+      }
+    }
+
+    // Render unfiled root chats (not in any folder, no parent)
+    state.history.forEach(chat => {
+      if (!chatsInFolders.has(chat.filename) && !chat.parent_chat_id) {
+        renderChatNode(chat, E.chatHistory, 0, false);
+      }
+    });
+
+    // === Render Branch Tree (Phase 2) - AFTER folders and chats ===
     if (state.branchTree && state.branchTree.length > 0) {
+      // Divider before branches
+      const divider = el('div', 'sidebar-divider');
+      E.chatHistory.appendChild(divider);
+
       const branchSection = el('div', 'branch-section');
-      
+
       // Section header with "New Domain" button
       const headerRow = el('div', 'branch-section-header');
       const sectionTitle = el('span', 'branch-section-title');
@@ -1815,42 +1852,7 @@
       });
 
       E.chatHistory.appendChild(branchSection);
-
-      // Divider before folders
-      const divider = el('div', 'sidebar-divider');
-      E.chatHistory.appendChild(divider);
     }
-
-    // Build set of chats that are in folders
-    const chatsInFolders = new Set(Object.keys(state.chatFolderMap));
-
-    // Build set of child chats (have parent_chat_id)
-    const childChats = new Set();
-    state.history.forEach(chat => {
-      if (chat.parent_chat_id) childChats.add(chat.filename);
-    });
-
-    // Render folders section
-    if (state.folders.length > 0) {
-      state.folders.forEach(folder => {
-        renderFolderNode(folder, E.chatHistory, 0);
-      });
-
-      // Divider between folders and unfiled chats
-      const unfiledChats = state.history.filter(c => !chatsInFolders.has(c.filename) && !c.parent_chat_id);
-      if (unfiledChats.length > 0) {
-        const label = el('div', 'folder-section-label');
-        label.textContent = 'Folders';
-        E.chatHistory.appendChild(label);
-      }
-    }
-
-    // Render unfiled root chats (not in any folder, no parent)
-    state.history.forEach(chat => {
-      if (!chatsInFolders.has(chat.filename) && !chat.parent_chat_id) {
-        renderChatNode(chat, E.chatHistory, 0, false);
-      }
-    });
   }
 
   function chipForDoc(d) {

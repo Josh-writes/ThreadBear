@@ -1,7 +1,7 @@
 /**
  * View Switcher for ThreadBear
- * 
- * Manages tab switching between Tree, Timeline, and Graph views.
+ *
+ * Manages sidebar-based Tree, Timeline, and Graph views.
  * Each view is a standalone module with render() and destroy() methods.
  */
 
@@ -19,33 +19,59 @@ const ThreadBearViews = {
         this.views.timeline.module = TimelineView;
         this.views.graph.module = GraphView;
 
-        // Restore saved view
-        const saved = localStorage.getItem('threadbear_view') || 'tree';
-        this.switchView(saved);
+        // Setup toggle button listeners
+        this.setupToggleListeners();
 
-        // Build tab bar
-        this.buildTabBar();
-    },
+        // Setup close button
+        const closeBtn = document.getElementById('sidebarViewCloseBtn');
+        if (closeBtn) {
+            closeBtn.onclick = () => this.closePanel();
+        }
 
-    buildTabBar() {
-        const tabBar = document.getElementById('viewTabBar');
-        if (!tabBar) return;
-
-        tabBar.innerHTML = '';
-        for (const [name, view] of Object.entries(this.views)) {
-            const tab = document.createElement('button');
-            tab.className = `view-tab ${name === this.activeView ? 'active' : ''}`;
-            tab.textContent = `${view.icon} ${view.label}`;
-            tab.onclick = () => this.switchView(name);
-            tabBar.appendChild(tab);
+        // Restore saved view if any
+        const saved = localStorage.getItem('threadbear_view');
+        if (saved && this.views[saved]) {
+            this.openPanel(saved);
         }
     },
 
-    switchView(viewName) {
+    setupToggleListeners() {
+        const toggles = document.querySelectorAll('.view-toggle-btn');
+        toggles.forEach(btn => {
+            btn.onclick = () => {
+                const viewName = btn.getAttribute('data-view');
+                if (this.activeView === viewName) {
+                    // Toggle off if already active
+                    this.closePanel();
+                } else {
+                    this.openPanel(viewName);
+                }
+            };
+        });
+    },
+
+    openPanel(viewName) {
         if (!this.views[viewName]) return;
 
-        // Deactivate current view
-        if (this.activeView && this.views[this.activeView].module) {
+        // Update toggle button states
+        document.querySelectorAll('.view-toggle-btn').forEach(btn => {
+            btn.classList.toggle('active', btn.getAttribute('data-view') === viewName);
+        });
+
+        // Update panel title
+        const titleEl = document.getElementById('sidebarViewTitle');
+        if (titleEl) {
+            titleEl.textContent = `${this.views[viewName].icon} ${this.views[viewName].label} View`;
+        }
+
+        // Show panel
+        const panel = document.getElementById('sidebarViewPanel');
+        if (panel) {
+            panel.classList.add('open');
+        }
+
+        // Deactivate current view if different
+        if (this.activeView && this.activeView !== viewName && this.views[this.activeView].module) {
             try {
                 this.views[this.activeView].module.destroy();
             } catch (e) {
@@ -53,18 +79,12 @@ const ThreadBearViews = {
             }
         }
 
-        // Update tab states
-        document.querySelectorAll('.view-tab').forEach(t => t.classList.remove('active'));
-        const tabIndex = Object.keys(this.views).indexOf(viewName);
-        const activeTab = document.querySelectorAll('.view-tab')[tabIndex];
-        if (activeTab) activeTab.classList.add('active');
-
         // Activate new view
         this.activeView = viewName;
         localStorage.setItem('threadbear_view', viewName);
 
         // Clear and render
-        const container = document.getElementById('viewContainer');
+        const container = document.getElementById('sidebarViewContent');
         if (!container) return;
         container.innerHTML = '';
 
@@ -85,9 +105,34 @@ const ThreadBearViews = {
             });
     },
 
+    closePanel() {
+        // Deactivate current view
+        if (this.activeView && this.views[this.activeView].module) {
+            try {
+                this.views[this.activeView].module.destroy();
+            } catch (e) {
+                console.warn('Error destroying view:', e);
+            }
+        }
+
+        // Hide panel
+        const panel = document.getElementById('sidebarViewPanel');
+        if (panel) {
+            panel.classList.remove('open');
+        }
+
+        // Reset toggle buttons
+        document.querySelectorAll('.view-toggle-btn').forEach(btn => {
+            btn.classList.remove('active');
+        });
+
+        this.activeView = null;
+        localStorage.removeItem('threadbear_view');
+    },
+
     // Called from chat.js when a branch is selected
     onBranchSelect(branchId) {
-        // Navigate to that branch's chat
+        // Navigate to that branch chat
         if (typeof loadChat === 'function') {
             // Find the filename for this branch ID
             fetch(`/api/branches/${branchId}`)
@@ -97,6 +142,24 @@ const ThreadBearViews = {
                         loadChat(data.branch.filename);
                     }
                 });
+        }
+    },
+
+    // Refresh current view (call after branch operations)
+    refresh() {
+        if (this.activeView) {
+            const container = document.getElementById('sidebarViewContent');
+            if (container) {
+                container.innerHTML = '';
+                fetch('/api/graph')
+                    .then(r => r.json())
+                    .then(data => {
+                        this.views[this.activeView].module.render(container, data);
+                    })
+                    .catch(e => {
+                        console.error('Failed to refresh view:', e);
+                    });
+            }
         }
     }
 };
