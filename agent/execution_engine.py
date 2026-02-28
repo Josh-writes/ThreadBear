@@ -355,15 +355,16 @@ class AgentExecutionEngine:
         Check if all depends_on branches are complete (merged or archived).
         Returns (ready: bool, reason: str).
         """
-        deps = self.branch_manager.db.get_edges(
-            self.branch_id, direction='outgoing', edge_type='depends_on'
+        all_edges = self.branch_manager.db.get_edges(
+            self.branch_id, direction='from'
         )
+        deps = [e for e in all_edges if e.get('type') == 'depends_on']
         for dep in deps:
-            target = self.branch_manager.db.get_branch(dep.get('to_branch_id'))
+            target = self.branch_manager.db.get_branch(dep.get('to_branch'))
             if not target:
                 continue
             if target.get('status') not in ('merged', 'archived'):
-                return False, f"Waiting for '{target.get('name')}' to complete (currently {target.get('status')})"
+                return False, f"Waiting for '{target.get('title')}' to complete (currently {target.get('status')})"
         return True, ''
 
     def _inject_artifacts(self, messages: list) -> list:

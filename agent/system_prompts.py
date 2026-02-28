@@ -32,7 +32,7 @@ def build_agent_system_prompt(goal: str, branch: dict,
 7. Be concise in your reasoning. Focus on actions, not explanations.
 
 ## BRANCH CONTEXT
-- Branch: {branch.get('name', 'Unknown')} ({branch.get('type', 'chat')})
+- Branch: {branch.get('title', 'Unknown')} ({branch.get('type', 'chat')})
 - Status: {branch.get('status', 'active')}
 """
 

@@ -134,7 +134,7 @@ class ArtifactManager:
             # Flowed to this branch via artifact_flow edges
             incoming_edges = [dict(r) for r in conn.execute("""
                 SELECT e.payload FROM edges e
-                WHERE e.to_branch_id = ? AND e.type = 'artifact_flow'
+                WHERE e.to_branch = ? AND e.type = 'artifact_flow'
             """, [branch_id]).fetchall()]
 
             incoming_ids = set()
@@ -169,7 +169,7 @@ class ArtifactManager:
             # Check for existing artifact_flow edge
             existing = conn.execute("""
                 SELECT * FROM edges
-                WHERE from_branch_id = ? AND to_branch_id = ? AND type = 'artifact_flow'
+                WHERE from_branch = ? AND to_branch = ? AND type = 'artifact_flow'
             """, [from_branch_id, to_branch_id]).fetchone()
 
             if existing:
@@ -182,7 +182,7 @@ class ArtifactManager:
                     conn.commit()
             else:
                 # Create new artifact_flow edge
-                self.db.create_edge(from_branch_id, to_branch_id, 'artifact_flow', {
+                self.db.add_edge(from_branch_id, to_branch_id, 'artifact_flow', {
                     'artifact_ids': [artifact_id]
                 })
 

@@ -274,7 +274,7 @@ def fetch_google_catalog(api_key: str) -> List[Dict]:
         return []
 
 
-def call_google_stream(messages: List[Dict], config: Dict) -> Iterator[str]:
+def call_google_stream(messages: List[Dict], config: Dict, tools=None) -> Iterator[str]:
     """
     True streaming adapter for Google Gemini API using streamGenerateContent endpoint.
     Uses alt=sse to get Server-Sent Events format from Gemini.
@@ -484,7 +484,7 @@ def call_mistral(messages: List[Dict], config: Dict) -> str:
         return f"Mistral API error: {str(e)}"
 
 
-def call_mistral_stream(messages: List[Dict], config: Dict) -> Iterator[str]:
+def call_mistral_stream(messages: List[Dict], config: Dict, tools=None) -> Iterator[str]:
     try:
         from config_manager import ConfigManager
         cfg_manager = ConfigManager()
@@ -754,7 +754,7 @@ def call_llamacpp(messages: List[Dict], config: Dict) -> str:
     except Exception as e:
         return f"llama.cpp API error: {str(e)}"
 
-def call_llamacpp_stream(messages: List[Dict], config: Dict) -> Iterator[str]:
+def call_llamacpp_stream(messages: List[Dict], config: Dict, tools=None) -> Iterator[str]:
     """
     Call llama.cpp server API with streaming response.
     Yields message chunks progressively.
@@ -915,7 +915,7 @@ def call_openrouter(messages: List[Dict], config: Dict) -> str:
         return f"OpenRouter API error: {str(e)}"
 
 
-def call_openrouter_stream(messages: List[Dict], config: Dict) -> Iterator[str]:
+def call_openrouter_stream(messages: List[Dict], config: Dict, tools=None) -> Iterator[str]:
     try:
         from config_manager import ConfigManager
         cfg_manager = ConfigManager()
