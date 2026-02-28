@@ -644,6 +644,235 @@
             color: var(--text-secondary);
         }
 
+        /* ===== Agent Panel (Phase 4) ===== */
+        .agent-panel {
+            background: var(--bg-primary);
+            border-bottom: 1px solid var(--border-color);
+            padding: 12px 16px;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+
+        .agent-panel-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .agent-status-row {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .agent-title {
+            font-size: 14px;
+            font-weight: 600;
+            color: var(--text-primary);
+        }
+
+        .agent-status-indicator {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 12px;
+            color: var(--text-secondary);
+        }
+
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            display: inline-block;
+        }
+
+        .status-dot.running {
+            background: #4caf50;
+            animation: pulse-dot 1.5s infinite;
+        }
+
+        .status-dot.paused {
+            background: #ff9800;
+        }
+
+        .status-dot.stopped {
+            background: #9e9e9e;
+        }
+
+        @keyframes pulse-dot {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.4; }
+        }
+
+        .agent-iteration {
+            font-size: 12px;
+            color: var(--text-secondary);
+            font-family: monospace;
+        }
+
+        .agent-controls {
+            display: flex;
+            gap: 8px;
+        }
+
+        .agent-btn {
+            padding: 6px 12px;
+            font-size: 12px;
+            border-radius: 6px;
+            border: 1px solid var(--border-color);
+            background: transparent;
+            color: var(--text-secondary);
+            cursor: pointer;
+            transition: all 0.2s;
+            display: flex;
+            align-items: center;
+            gap: 4px;
+        }
+
+        .agent-btn:hover {
+            background: var(--bg-secondary);
+            border-color: var(--text-secondary);
+        }
+
+        .agent-start-btn {
+            border-color: #4caf50;
+            color: #4caf50;
+        }
+
+        .agent-start-btn:hover {
+            background: #e8f5e9;
+        }
+
+        .agent-stop-btn {
+            border-color: #f44336;
+            color: #f44336;
+        }
+
+        .agent-stop-btn:hover {
+            background: #ffebee;
+        }
+
+        .agent-goal-input {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .agent-goal-input label {
+            font-size: 12px;
+            font-weight: 600;
+            color: var(--text-secondary);
+            text-transform: uppercase;
+        }
+
+        .agent-goal-input textarea {
+            width: 100%;
+            min-height: 80px;
+            padding: 8px;
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            background: var(--bg-secondary);
+            color: var(--text-primary);
+            font-family: inherit;
+            font-size: 13px;
+            resize: vertical;
+        }
+
+        .agent-goal-actions {
+            display: flex;
+            gap: 8px;
+        }
+
+        .agent-confirm-btn {
+            border-color: #4caf50;
+            color: #4caf50;
+        }
+
+        .agent-cancel-btn {
+            border-color: #9e9e9e;
+            color: #9e9e9e;
+        }
+
+        .agent-todo-section,
+        .agent-plan-section,
+        .agent-activity-section {
+            border-top: 1px solid var(--border-color);
+            padding-top: 12px;
+        }
+
+        .agent-section-title {
+            font-size: 12px;
+            font-weight: 600;
+            color: var(--text-secondary);
+            text-transform: uppercase;
+            letter-spacing: 0.3px;
+            margin-bottom: 8px;
+        }
+
+        .agent-todo-list,
+        .agent-plan-list {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            max-height: 150px;
+            overflow-y: auto;
+        }
+
+        .agent-todo-item,
+        .agent-plan-step {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 4px 8px;
+            background: var(--bg-secondary);
+            border-radius: 4px;
+            font-size: 12px;
+        }
+
+        .agent-todo-status,
+        .agent-plan-status {
+            font-family: monospace;
+            font-size: 11px;
+            width: 28px;
+        }
+
+        .agent-activity-log {
+            max-height: 200px;
+            overflow-y: auto;
+            font-family: 'Consolas', 'Monaco', monospace;
+            font-size: 11px;
+            background: var(--bg-secondary);
+            border-radius: 4px;
+            padding: 8px;
+        }
+
+        .agent-activity-entry {
+            padding: 4px 0;
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        .agent-activity-entry:last-child {
+            border-bottom: none;
+        }
+
+        .agent-activity-tool {
+            color: #2196f3;
+        }
+
+        .agent-activity-success {
+            color: #4caf50;
+        }
+
+        .agent-activity-error {
+            color: #f44336;
+        }
+
+        .agent-activity-content {
+            color: var(--text-secondary);
+            font-style: italic;
+        }
+
         .sidebar-footer {
             padding: 16px;
             border-top: 1px solid var(--sidebar-border);
@@ -2702,6 +2931,64 @@
                 <div class="branch-detail-edges" id="branchDetailEdges" style="display: none;">
                     <span class="branch-edges-label">Connected:</span>
                     <div class="branch-edges-list" id="branchEdgesList"></div>
+                </div>
+            </div>
+
+            <!-- Agent Control Panel (Phase 4) -->
+            <div class="agent-panel" id="agentPanel" style="display: none;">
+                <div class="agent-panel-header">
+                    <div class="agent-status-row">
+                        <span class="agent-title">🤖 Agent Execution</span>
+                        <span class="agent-status-indicator" id="agentStatusIndicator">
+                            <span class="status-dot stopped"></span>
+                            <span class="status-text">Stopped</span>
+                        </span>
+                    </div>
+                    <div class="agent-iteration" id="agentIteration">Iteration: 0 / 100</div>
+                </div>
+                
+                <!-- Agent Controls -->
+                <div class="agent-controls" id="agentControls">
+                    <button class="agent-btn agent-start-btn" id="agentStartBtn">
+                        ▶ Start Agent
+                    </button>
+                    <button class="agent-btn agent-pause-btn" id="agentPauseBtn" style="display: none;">
+                        ⏸ Pause
+                    </button>
+                    <button class="agent-btn agent-resume-btn" id="agentResumeBtn" style="display: none;">
+                        ▶ Resume
+                    </button>
+                    <button class="agent-btn agent-stop-btn" id="agentStopBtn" style="display: none;">
+                        ⏹ Stop
+                    </button>
+                </div>
+                
+                <!-- Goal Input (shown when starting) -->
+                <div class="agent-goal-input" id="agentGoalInput" style="display: none;">
+                    <label>Task Goal:</label>
+                    <textarea id="agentGoalText" placeholder="Describe what you want the agent to accomplish..."></textarea>
+                    <div class="agent-goal-actions">
+                        <button class="agent-btn agent-confirm-btn" id="agentConfirmStart">Start</button>
+                        <button class="agent-btn agent-cancel-btn" id="agentCancelStart">Cancel</button>
+                    </div>
+                </div>
+                
+                <!-- Todo List -->
+                <div class="agent-todo-section" id="agentTodoSection">
+                    <div class="agent-section-title">Todos</div>
+                    <div class="agent-todo-list" id="agentTodoList"></div>
+                </div>
+                
+                <!-- Plan Section -->
+                <div class="agent-plan-section" id="agentPlanSection">
+                    <div class="agent-section-title">Plan</div>
+                    <div class="agent-plan-list" id="agentPlanList"></div>
+                </div>
+                
+                <!-- Activity Log -->
+                <div class="agent-activity-section">
+                    <div class="agent-section-title">Activity Log</div>
+                    <div class="agent-activity-log" id="agentActivityLog"></div>
                 </div>
             </div>
 

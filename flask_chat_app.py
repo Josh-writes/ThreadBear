@@ -39,6 +39,8 @@ from branch_db import BranchDatabase
 from branch_manager import BranchManager
 from folder_manager import FolderManager
 from tools import tool_registry, ToolSafetyManager
+from tools.agent_tools import set_managers
+from agent import AgentExecutionEngine, TodoManager, PlanManager
 from api_clients import (
     call_groq_stream, call_google_stream,
     call_mistral_stream, call_openrouter_stream, call_llamacpp_stream,
@@ -55,6 +57,25 @@ from context_documents import (
 
 _request_contexts: Dict[int, Dict[str, Any]] = {}
 _request_lock = threading.Lock()
+
+# =============================================================================
+# Active Agent State (Phase 4)
+# =============================================================================
+# Module-level dict tracking active agent engines per branch.
+# One agent per branch max. State is ephemeral (lost on restart).
+
+_active_agents: Dict[str, AgentExecutionEngine] = {}
+_agents_lock = threading.Lock()
+
+
+def _get_agent(branch_id: str) -> Optional[AgentExecutionEngine]:
+    """Get agent engine for a branch, or None if not running."""
+    with _agents_lock:
+        agent = _active_agents.get(branch_id)
+        if agent and not agent.running:
+            del _active_agents[branch_id]
+            return None
+        return agent
 
 
 def _set_request_context(message_id: int, **kwargs):
@@ -1264,6 +1285,134 @@ class FlaskChatApp:
             self.config.save_config()
 
             return jsonify({"success": True})
+
+        # ---- Agent Engine API (Phase 4) ----
+
+        @app.route('/api/branches/<branch_id>/agent/start', methods=['POST'])
+        def agent_start(branch_id: str):
+            """Start an agent on a work-order branch."""
+            data = request.get_json() or {}
+            goal = data.get('goal', '')
+            
+            if not goal:
+                return jsonify({"success": False, "error": "goal is required"}), 400
+            
+            # Verify branch exists and is a work_order
+            branch = self.branch_manager.db.get_branch(branch_id)
+            if not branch:
+                return jsonify({"success": False, "error": "Branch not found"}), 404
+            if branch.get('type') != 'work_order':
+                return jsonify({"success": False, "error": "Agent can only run on work_order branches"}), 400
+            
+            try:
+                # Initialize todo/plan managers for this branch
+                todo_mgr = TodoManager(branch_id, self.branch_manager)
+                plan_mgr = PlanManager(branch_id, self.branch_manager)
+                set_managers(todo_mgr, plan_mgr)
+                
+                engine = AgentExecutionEngine(
+                    branch_id, self.branch_manager, tool_registry,
+                    self.config, self
+                )
+                with _agents_lock:
+                    if branch_id in _active_agents and _active_agents[branch_id].running:
+                        return jsonify({"success": False, "error": "Agent already running"}), 409
+                    _active_agents[branch_id] = engine
+                
+                engine.start(goal)
+                return jsonify({"success": True, "branch_id": branch_id})
+            except ValueError as e:
+                return jsonify({"success": False, "error": str(e)}), 409
+
+        @app.route('/api/branches/<branch_id>/agent/stop', methods=['POST'])
+        def agent_stop(branch_id: str):
+            """Stop an active agent."""
+            agent = _get_agent(branch_id)
+            if not agent:
+                return jsonify({"success": False, "error": "No agent running"}), 404
+            agent.stop()
+            return jsonify({"success": True})
+
+        @app.route('/api/branches/<branch_id>/agent/pause', methods=['POST'])
+        def agent_pause(branch_id: str):
+            """Pause an active agent."""
+            agent = _get_agent(branch_id)
+            if not agent:
+                return jsonify({"success": False, "error": "No agent running"}), 404
+            agent.pause()
+            return jsonify({"success": True})
+
+        @app.route('/api/branches/<branch_id>/agent/resume', methods=['POST'])
+        def agent_resume(branch_id: str):
+            """Resume a paused agent."""
+            agent = _get_agent(branch_id)
+            if not agent:
+                return jsonify({"success": False, "error": "No agent running"}), 404
+            agent.resume()
+            return jsonify({"success": True})
+
+        @app.route('/api/branches/<branch_id>/agent/status', methods=['GET'])
+        def agent_status(branch_id: str):
+            """Get agent status."""
+            agent = _get_agent(branch_id)
+            if not agent:
+                return jsonify({
+                    "success": True,
+                    "running": False,
+                    "branch_id": branch_id
+                })
+            
+            branch = self.branch_manager.db.get_branch(branch_id)
+            meta = json.loads(branch.get('metadata', '{}')) if branch.get('metadata') else {}
+            agent_state = meta.get('agent_state', {})
+            
+            return jsonify({
+                "success": True,
+                "running": agent.running,
+                "paused": agent.paused,
+                "iteration": agent.iteration,
+                "max_iterations": agent.max_iterations,
+                "loop_detector": agent.loop_detector.to_dict(),
+                "last_saved": agent_state.get('last_saved')
+            })
+
+        @app.route('/api/branches/<branch_id>/agent/stream', methods=['GET'])
+        def agent_stream(branch_id: str):
+            """SSE stream of agent events."""
+            def generate():
+                agent = _get_agent(branch_id)
+                if not agent:
+                    yield f"data: {json.dumps({'type': 'error', 'content': 'No agent running'})}\n\n"
+                    return
+                
+                while agent.running or not agent.event_queue.empty():
+                    event = agent.get_event(timeout=1.0)
+                    if event:
+                        yield f"data: {json.dumps(event)}\n\n"
+                    else:
+                        # Send heartbeat
+                        yield f"data: {json.dumps({'type': 'heartbeat'})}\n\n"
+                
+                # Final status
+                yield f"data: {json.dumps({'type': 'status', 'data': 'stopped'})}\n\n"
+            
+            return Response(generate(), mimetype='text/event-stream',
+                          headers={'Cache-Control': 'no-cache', 'Connection': 'keep-alive'})
+
+        @app.route('/api/branches/<branch_id>/todos', methods=['GET'])
+        def get_todos(branch_id: str):
+            """Get todo list for a branch."""
+            todo_mgr = TodoManager(branch_id, self.branch_manager)
+            return jsonify({"success": True, **todo_mgr.list_all()})
+
+        @app.route('/api/branches/<branch_id>/plan', methods=['GET'])
+        def get_plan(branch_id: str):
+            """Get plan for a branch."""
+            plan_mgr = PlanManager(branch_id, self.branch_manager)
+            plan = plan_mgr.plan
+            if not plan:
+                return jsonify({"success": True, "plan": None})
+            return jsonify({"success": True, "plan": plan, "next_step": plan_mgr.get_next_step()})
 
         # ---- Folder management ----
         @app.route('/api/folders', methods=['GET'])

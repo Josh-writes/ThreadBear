@@ -50,6 +50,11 @@
     branchTree: [],
     expandedBranches: new Set(),
 
+    // agent (Phase 4)
+    agentSource: null,
+    agentRunning: false,
+    currentBranchId: null,
+
     // prompts
     prompts: [],
 
@@ -154,6 +159,23 @@
     branchDetailGoal: $('branchDetailGoal'),
     branchDetailEdges: $('branchDetailEdges'),
     branchEdgesList: $('branchEdgesList'),
+
+    // Agent panel (Phase 4)
+    agentPanel: $('agentPanel'),
+    agentStatusIndicator: $('agentStatusIndicator'),
+    agentIteration: $('agentIteration'),
+    agentControls: $('agentControls'),
+    agentStartBtn: $('agentStartBtn'),
+    agentPauseBtn: $('agentPauseBtn'),
+    agentResumeBtn: $('agentResumeBtn'),
+    agentStopBtn: $('agentStopBtn'),
+    agentGoalInput: $('agentGoalInput'),
+    agentGoalText: $('agentGoalText'),
+    agentConfirmStart: $('agentConfirmStart'),
+    agentCancelStart: $('agentCancelStart'),
+    agentTodoList: $('agentTodoList'),
+    agentPlanList: $('agentPlanList'),
+    agentActivityLog: $('agentActivityLog'),
 
     // Model Settings panel (right drawer)
     settingsPanel: $('settingsPanel'),
@@ -680,6 +702,285 @@
     } catch (e) {
       console.error('Delete branch failed:', e);
       return { success: false, error: String(e) };
+    }
+  }
+
+  // ===== Agent Functions (Phase 4) =====
+
+  function checkAgentApplicable() {
+    // Show agent panel only for work_order branches
+    const branch = state.branchTree.find(b => b.filename === state.currentChatFile);
+    if (branch && branch.type === 'work_order') {
+      E.agentPanel.style.display = 'flex';
+      state.currentBranchId = branch.id;
+      loadAgentStatus(branch.id);
+      loadAgentTodos(branch.id);
+      loadAgentPlan(branch.id);
+    } else {
+      E.agentPanel.style.display = 'none';
+      state.currentBranchId = null;
+      disconnectAgentStream();
+    }
+  }
+
+  async function loadAgentStatus(branchId) {
+    try {
+      const res = await fetch(`/api/branches/${branchId}/agent/status`);
+      const data = await res.json();
+      if (data.success) {
+        updateAgentStatusDisplay(data);
+        if (data.running && !state.agentRunning) {
+          connectAgentStream(branchId);
+        } else if (!data.running && state.agentRunning) {
+          disconnectAgentStream();
+        }
+      }
+    } catch (e) {
+      console.warn('Failed to load agent status:', e);
+    }
+  }
+
+  function updateAgentStatusDisplay(status) {
+    const dot = E.agentStatusIndicator.querySelector('.status-dot');
+    const text = E.agentStatusIndicator.querySelector('.status-text');
+    
+    dot.className = 'status-dot ' + (status.paused ? 'paused' : status.running ? 'running' : 'stopped');
+    text.textContent = status.paused ? 'Paused' : status.running ? 'Running' : 'Stopped';
+    
+    E.agentIteration.textContent = `Iteration: ${status.iteration || 0} / ${status.max_iterations || 100}`;
+    
+    // Update button visibility
+    if (status.running && !status.paused) {
+      E.agentStartBtn.style.display = 'none';
+      E.agentPauseBtn.style.display = 'flex';
+      E.agentResumeBtn.style.display = 'none';
+      E.agentStopBtn.style.display = 'flex';
+    } else if (status.running && status.paused) {
+      E.agentStartBtn.style.display = 'none';
+      E.agentPauseBtn.style.display = 'none';
+      E.agentResumeBtn.style.display = 'flex';
+      E.agentStopBtn.style.display = 'flex';
+    } else {
+      E.agentStartBtn.style.display = 'flex';
+      E.agentPauseBtn.style.display = 'none';
+      E.agentResumeBtn.style.display = 'none';
+      E.agentStopBtn.style.display = 'none';
+    }
+  }
+
+  async function loadAgentTodos(branchId) {
+    try {
+      const res = await fetch(`/api/branches/${branchId}/todos`);
+      const data = await res.json();
+      if (data.success) {
+        renderAgentTodos(data.todos || []);
+      }
+    } catch (e) {
+      console.warn('Failed to load agent todos:', e);
+    }
+  }
+
+  function renderAgentTodos(todos) {
+    if (!todos || todos.length === 0) {
+      E.agentTodoList.innerHTML = '<div class="agent-todo-item"><span class="agent-todo-status"></span>No todos yet</div>';
+      return;
+    }
+    
+    E.agentTodoList.innerHTML = todos.map(t => {
+      const icon = {
+        'pending': '[  ]',
+        'in_progress': '[>>]',
+        'completed': '[OK]',
+        'blocked': '[!!]'
+      }[t.status] || '[??]';
+      return `<div class="agent-todo-item">
+        <span class="agent-todo-status">${icon}</span>
+        <span>${t.description}</span>
+      </div>`;
+    }).join('');
+  }
+
+  async function loadAgentPlan(branchId) {
+    try {
+      const res = await fetch(`/api/branches/${branchId}/plan`);
+      const data = await res.json();
+      if (data.success && data.plan) {
+        renderAgentPlan(data.plan, data.next_step);
+      } else {
+        E.agentPlanList.innerHTML = '<div class="agent-plan-step">No plan created yet</div>';
+      }
+    } catch (e) {
+      console.warn('Failed to load agent plan:', e);
+    }
+  }
+
+  function renderAgentPlan(plan, nextStep) {
+    if (!plan || !plan.steps) {
+      E.agentPlanList.innerHTML = '<div class="agent-plan-step">No plan</div>';
+      return;
+    }
+    
+    E.agentPlanList.innerHTML = plan.steps.map(s => {
+      const icon = {
+        'pending': '[ ]',
+        'in_progress': '[>>]',
+        'completed': '[OK]',
+        'skipped': '[--]'
+      }[s.status] || '[??]';
+      const marker = nextStep && s.id === nextStep.id ? ' ← NEXT' : '';
+      return `<div class="agent-plan-step">
+        <span class="agent-plan-status">${icon}</span>
+        <span>${s.description}${marker}</span>
+      </div>`;
+    }).join('');
+  }
+
+  function appendAgentActivity(type, data) {
+    const entry = document.createElement('div');
+    entry.className = 'agent-activity-entry';
+    
+    if (type === 'tool_start') {
+      entry.innerHTML = `<span class="agent-activity-tool">🔧 ${data.name}(${JSON.stringify(data.args).substring(0, 50)}...)</span>`;
+    } else if (type === 'tool_end') {
+      const success = data.result && data.result.success;
+      entry.innerHTML = `<span class="agent-activity-${success ? 'success' : 'error'}">${success ? '✅' : '❌'} ${data.name}</span>`;
+    } else if (type === 'content') {
+      const text = typeof data === 'string' ? data.substring(0, 100) : JSON.stringify(data).substring(0, 100);
+      entry.innerHTML = `<span class="agent-activity-content">"${text}..."</span>`;
+    } else if (type === 'iteration') {
+      entry.textContent = `Iteration ${data}`;
+    } else if (type === 'complete') {
+      entry.innerHTML = `<span class="agent-activity-success">✅ Task Complete (${data.reason}, ${data.iterations} iterations)</span>`;
+    } else if (type === 'loop_detected') {
+      entry.innerHTML = `<span class="agent-activity-error">⚠️ Loop Detected: ${data}</span>`;
+    } else if (type === 'error') {
+      entry.innerHTML = `<span class="agent-activity-error">❌ Error: ${data}</span>`;
+    } else {
+      entry.textContent = JSON.stringify(data);
+    }
+    
+    E.agentActivityLog.appendChild(entry);
+    E.agentActivityLog.scrollTop = E.agentActivityLog.scrollHeight;
+  }
+
+  function connectAgentStream(branchId) {
+    if (state.agentSource) {
+      state.agentSource.close();
+    }
+    
+    state.agentSource = new EventSource(`/api/branches/${branchId}/agent/stream`);
+    state.agentRunning = true;
+    
+    state.agentSource.onmessage = (ev) => {
+      try {
+        const data = JSON.parse(ev.data);
+        if (data.type === 'status') {
+          if (data.data === 'stopped') {
+            state.agentRunning = false;
+            loadAgentStatus(branchId);
+          }
+        } else if (data.type === 'iteration') {
+          appendAgentActivity('iteration', data.data);
+        } else if (data.type === 'tool_start') {
+          appendAgentActivity('tool_start', data.data);
+        } else if (data.type === 'tool_end') {
+          appendAgentActivity('tool_end', data.data);
+          loadAgentTodos(branchId);
+          loadAgentPlan(branchId);
+        } else if (data.type === 'content') {
+          appendAgentActivity('content', data.data);
+        } else if (data.type === 'complete') {
+          appendAgentActivity('complete', data.data);
+          state.agentRunning = false;
+          loadAgentStatus(branchId);
+        } else if (data.type === 'loop_detected') {
+          appendAgentActivity('loop_detected', data.data);
+          loadAgentStatus(branchId);
+        } else if (data.type === 'error') {
+          appendAgentActivity('error', data.data);
+        }
+      } catch (e) {
+        console.warn('Agent stream parse error:', e);
+      }
+    };
+    
+    state.agentSource.onerror = () => {
+      state.agentRunning = false;
+      loadAgentStatus(branchId);
+    };
+  }
+
+  function disconnectAgentStream() {
+    if (state.agentSource) {
+      state.agentSource.close();
+      state.agentSource = null;
+    }
+    state.agentRunning = false;
+  }
+
+  async function startAgent(branchId, goal) {
+    try {
+      const res = await fetch(`/api/branches/${branchId}/agent/start`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ goal })
+      });
+      const data = await res.json();
+      if (data.success) {
+        E.agentGoalInput.style.display = 'none';
+        E.agentGoalText.value = '';
+        E.agentActivityLog.innerHTML = '';
+        connectAgentStream(branchId);
+        loadAgentStatus(branchId);
+      } else {
+        alert('Failed to start agent: ' + (data.error || 'Unknown error'));
+      }
+    } catch (e) {
+      console.error('Start agent failed:', e);
+      alert('Failed to start agent: ' + e);
+    }
+  }
+
+  async function stopAgent(branchId) {
+    try {
+      const res = await fetch(`/api/branches/${branchId}/agent/stop`, {
+        method: 'POST'
+      });
+      const data = await res.json();
+      if (data.success) {
+        disconnectAgentStream();
+        loadAgentStatus(branchId);
+      }
+    } catch (e) {
+      console.error('Stop agent failed:', e);
+    }
+  }
+
+  async function pauseAgent(branchId) {
+    try {
+      const res = await fetch(`/api/branches/${branchId}/agent/pause`, {
+        method: 'POST'
+      });
+      const data = await res.json();
+      if (data.success) {
+        loadAgentStatus(branchId);
+      }
+    } catch (e) {
+      console.error('Pause agent failed:', e);
+    }
+  }
+
+  async function resumeAgent(branchId) {
+    try {
+      const res = await fetch(`/api/branches/${branchId}/agent/resume`, {
+        method: 'POST'
+      });
+      const data = await res.json();
+      if (data.success) {
+        loadAgentStatus(branchId);
+      }
+    } catch (e) {
+      console.error('Resume agent failed:', e);
     }
   }
 
@@ -1966,9 +2267,12 @@ async function loadPrompts() {
     renderChatTitle();
     renderHistory();
     renderMessages();
-    
+
     // Update branch detail panel if this chat has a branch record
     await updateBranchDetailPanel(filename);
+    
+    // Check if agent panel should be shown (work_order branches only)
+    checkAgentApplicable();
   }
 
   async function updateBranchDetailPanel(filename) {
@@ -2751,6 +3055,42 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
       if (name) {
         await forkBranch(branch.id, null, name);
         await updateBranchDetailPanel(state.currentChatFile);
+      }
+    });
+
+    // Agent panel buttons (Phase 4)
+    E.agentStartBtn.addEventListener('click', () => {
+      E.agentGoalInput.style.display = 'flex';
+      E.agentGoalText.focus();
+    });
+
+    E.agentConfirmStart.addEventListener('click', () => {
+      const goal = E.agentGoalText.value.trim();
+      if (goal && state.currentBranchId) {
+        startAgent(state.currentBranchId, goal);
+      }
+    });
+
+    E.agentCancelStart.addEventListener('click', () => {
+      E.agentGoalInput.style.display = 'none';
+      E.agentGoalText.value = '';
+    });
+
+    E.agentPauseBtn.addEventListener('click', () => {
+      if (state.currentBranchId) {
+        pauseAgent(state.currentBranchId);
+      }
+    });
+
+    E.agentResumeBtn.addEventListener('click', () => {
+      if (state.currentBranchId) {
+        resumeAgent(state.currentBranchId);
+      }
+    });
+
+    E.agentStopBtn.addEventListener('click', () => {
+      if (state.currentBranchId && confirm('Stop the running agent?')) {
+        stopAgent(state.currentBranchId);
       }
     });
   }
