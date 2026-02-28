@@ -46,6 +46,10 @@
     fileFolderMap: {},
     expandedFolders: new Set(),
 
+    // branches (Phase 2)
+    branchTree: [],
+    expandedBranches: new Set(),
+
     // prompts
     prompts: [],
 
@@ -128,6 +132,28 @@
     overflowTrim: $('overflowTrim'),
     overflowSendAnyway: $('overflowSendAnyway'),
     overflowDismiss: $('overflowDismiss'),
+
+    // Branch context menu (Phase 2)
+    branchContextMenu: $('branchContextMenu'),
+    statusSubMenu: $('statusSubMenu'),
+    branchForkMenuItem: $('branchForkMenuItem'),
+    branchNewWorkOrderMenuItem: $('branchNewWorkOrderMenuItem'),
+    branchStatusMenuItem: $('branchStatusMenuItem'),
+    branchMergeMenuItem: $('branchMergeMenuItem'),
+    branchRenameMenuItem: $('branchRenameMenuItem'),
+    branchArchiveMenuItem: $('branchArchiveMenuItem'),
+
+    // Branch detail panel (Phase 2)
+    branchDetailPanel: $('branchDetailPanel'),
+    branchDetailTypeIcon: $('branchDetailTypeIcon'),
+    branchDetailTypeLabel: $('branchDetailTypeLabel'),
+    branchDetailStatus: $('branchDetailStatus'),
+    branchDetailStatusBtn: $('branchDetailStatusBtn'),
+    branchDetailForkBtn: $('branchDetailForkBtn'),
+    branchDetailGoalContainer: $('branchDetailGoalContainer'),
+    branchDetailGoal: $('branchDetailGoal'),
+    branchDetailEdges: $('branchDetailEdges'),
+    branchEdgesList: $('branchEdgesList'),
 
     // Model Settings panel (right drawer)
     settingsPanel: $('settingsPanel'),
@@ -488,6 +514,122 @@
       console.warn('Failed to load folders:', e);
     }
   }
+
+  // ===== Branch Tree API & UI (Phase 2) =====
+
+  async function loadBranchTree() {
+    try {
+      const res = await fetch('/api/branches');
+      const data = await res.json();
+      if (data.success) {
+        // Build tree structure from flat list
+        state.branchTree = buildBranchTreeFromFlatList(data.branches || []);
+      }
+    } catch (e) {
+      console.warn('Failed to load branch tree:', e);
+    }
+  }
+
+  function buildBranchTreeFromFlatList(branches) {
+    // Build parent->children map
+    const childrenMap = {};
+    const roots = [];
+
+    branches.forEach(b => {
+      const parentId = b.parent_id;
+      if (parentId) {
+        if (!childrenMap[parentId]) childrenMap[parentId] = [];
+        childrenMap[parentId].push(b);
+      } else {
+        roots.push(b);
+      }
+    });
+
+    function buildNode(branch) {
+      const children = childrenMap[branch.id] || [];
+      return {
+        ...branch,
+        children: children.map(buildNode)
+      };
+    }
+
+    return roots.map(buildNode);
+  }
+
+  async function createBranch(type, name, parentId, goal = '') {
+    try {
+      const res = await fetch('/api/branches', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ type, name, parent_id: parentId, goal })
+      });
+      const data = await res.json();
+      if (data.success) {
+        await loadBranchTree();
+        renderHistory();
+      }
+      return data;
+    } catch (e) {
+      console.error('Create branch failed:', e);
+      return { success: false, error: String(e) };
+    }
+  }
+
+  async function forkBranch(sourceId, messageIndex, name) {
+    try {
+      const res = await fetch(`/api/branches/${sourceId}/fork`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message_index: messageIndex, name })
+      });
+      const data = await res.json();
+      if (data.success) {
+        await loadBranchTree();
+        renderHistory();
+      }
+      return data;
+    } catch (e) {
+      console.error('Fork branch failed:', e);
+      return { success: false, error: String(e) };
+    }
+  }
+
+  async function transitionBranchStatus(branchId, newStatus) {
+    try {
+      const res = await fetch(`/api/branches/${branchId}/status`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: newStatus })
+      });
+      const data = await res.json();
+      if (data.success) {
+        await loadBranchTree();
+        renderHistory();
+      }
+      return data;
+    } catch (e) {
+      console.error('Transition status failed:', e);
+      return { success: false, error: String(e) };
+    }
+  }
+
+  async function deleteBranch(branchId) {
+    try {
+      const res = await fetch(`/api/branches/${branchId}`, {
+        method: 'DELETE'
+      });
+      const data = await res.json();
+      if (data.success) {
+        await loadBranchTree();
+        renderHistory();
+      }
+      return data;
+    } catch (e) {
+      console.error('Delete branch failed:', e);
+      return { success: false, error: String(e) };
+    }
+  }
+
 
   async function createFolder(name, parentId) {
     try {
@@ -995,6 +1137,108 @@
     }
   }
 
+  // ===== Branch Tree Rendering (Phase 2) =====
+
+  function renderBranchNode(node, container, depth) {
+    const div = el('div', 'branch-item');
+    
+    // Set depth for indentation
+    div.style.paddingLeft = (8 + (depth * 16)) + 'px';
+    
+    // Status badge
+    const status = node.status || 'active';
+    const statusClass = `status-${status}`;
+    
+    // Icon based on type
+    let icon = '💬';
+    if (node.type === 'domain') icon = '📁';
+    else if (node.type === 'work_order') icon = '📋';
+    
+    // Build content row
+    const contentRow = el('div', 'branch-content-row');
+    
+    // Expand/collapse toggle for nodes with children
+    const hasChildren = node.children && node.children.length > 0;
+    if (hasChildren) {
+      const toggle = el('span', 'branch-toggle');
+      toggle.textContent = state.expandedBranches.has(node.id) ? '▼' : '▶';
+      toggle.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (state.expandedBranches.has(node.id)) {
+          state.expandedBranches.delete(node.id);
+        } else {
+          state.expandedBranches.add(node.id);
+        }
+        renderHistory();
+      });
+      contentRow.appendChild(toggle);
+    } else {
+      const spacer = el('span', 'branch-spacer');
+      spacer.style.width = '16px';
+      spacer.style.display = 'inline-block';
+      contentRow.appendChild(spacer);
+    }
+    
+    // Icon
+    const iconSpan = el('span', 'branch-icon');
+    iconSpan.textContent = icon;
+    contentRow.appendChild(iconSpan);
+    
+    // Name
+    const nameSpan = el('span', 'branch-name');
+    nameSpan.textContent = node.name || node.title || 'Untitled';
+    nameSpan.addEventListener('click', () => {
+      // Load the branch's chat if it has one
+      if (node.filename) {
+        loadChat(node.filename);
+      }
+    });
+    contentRow.appendChild(nameSpan);
+    
+    // Status badge
+    const statusBadge = el('span', `branch-status status-${status}`);
+    statusBadge.textContent = status;
+    statusBadge.title = `Status: ${status}`;
+    contentRow.appendChild(statusBadge);
+    
+    div.appendChild(contentRow);
+    
+    // Context menu
+    div.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      state.ctxMenuTarget = { type: 'branch', branch: node };
+      openBranchContextMenu(e, node);
+    });
+    
+    container.appendChild(div);
+    
+    // Render children if expanded
+    if (hasChildren && state.expandedBranches.has(node.id)) {
+      node.children.forEach(child => {
+        renderBranchNode(child, container, depth + 1);
+      });
+    }
+  }
+
+  function openBranchContextMenu(e, node) {
+    // Store target branch
+    state.ctxMenuTarget = { type: 'branch', branch: node };
+    
+    // Hide status submenu initially
+    E.statusSubMenu.style.display = 'none';
+    
+    // Show/hide menu items based on branch type
+    const isDomain = node.type === 'domain';
+    const isWorkOrder = node.type === 'work_order';
+    const isChat = node.type === 'chat';
+    
+    // Work Order option only for domains
+    E.branchNewWorkOrderMenuItem.style.display = isDomain ? '' : 'none';
+    
+    // Show menu
+    openMenuAt(E.branchContextMenu, e.pageX, e.pageY);
+  }
+
   function renderChatNode(chat, container, depth, inFolder, isPromptBranch) {
     const div = el('div', 'chat-item');
 
@@ -1044,6 +1288,37 @@
   function renderHistory() {
     clearNode(E.chatHistory);
 
+    // === Render Branch Tree (Phase 2) ===
+    if (state.branchTree && state.branchTree.length > 0) {
+      const branchSection = el('div', 'branch-section');
+      
+      // Section header with "New Domain" button
+      const headerRow = el('div', 'branch-section-header');
+      const sectionTitle = el('span', 'branch-section-title');
+      sectionTitle.textContent = 'Branches';
+      const newDomainBtn = el('button', 'control-btn branch-new-btn');
+      newDomainBtn.textContent = '+ Domain';
+      newDomainBtn.title = 'Create new domain branch';
+      newDomainBtn.addEventListener('click', () => {
+        const name = prompt('Domain name:');
+        if (name) createBranch('domain', name, null, '');
+      });
+      headerRow.appendChild(sectionTitle);
+      headerRow.appendChild(newDomainBtn);
+      branchSection.appendChild(headerRow);
+
+      // Render tree
+      state.branchTree.forEach(node => {
+        renderBranchNode(node, branchSection, 0);
+      });
+
+      E.chatHistory.appendChild(branchSection);
+
+      // Divider before folders
+      const divider = el('div', 'sidebar-divider');
+      E.chatHistory.appendChild(divider);
+    }
+
     // Build set of chats that are in folders
     const chatsInFolders = new Set(Object.keys(state.chatFolderMap));
 
@@ -1063,7 +1338,7 @@
       const unfiledChats = state.history.filter(c => !chatsInFolders.has(c.filename) && !c.parent_chat_id);
       if (unfiledChats.length > 0) {
         const label = el('div', 'folder-section-label');
-        label.textContent = 'Chats';
+        label.textContent = 'Folders';
         E.chatHistory.appendChild(label);
       }
     }
@@ -1638,6 +1913,55 @@ async function loadPrompts() {
     renderChatTitle();
     renderHistory();
     renderMessages();
+    
+    // Update branch detail panel if this chat has a branch record
+    await updateBranchDetailPanel(filename);
+  }
+
+  async function updateBranchDetailPanel(filename) {
+    // Try to find branch record for this chat
+    const res = await fetch('/api/branches');
+    const data = await res.json();
+    if (!data.success) return;
+    
+    const branches = data.branches || [];
+    const branch = branches.find(b => b.filename === filename);
+    
+    if (!branch) {
+      E.branchDetailPanel.style.display = 'none';
+      return;
+    }
+    
+    // Show panel
+    E.branchDetailPanel.style.display = 'flex';
+    
+    // Update type icon and label
+    const typeIcons = { 'domain': '📁', 'work_order': '📋', 'chat': '💬' };
+    E.branchDetailTypeIcon.textContent = typeIcons[branch.type] || '💬';
+    E.branchDetailTypeLabel.textContent = branch.type.replace('_', ' ');
+    
+    // Update status
+    E.branchDetailStatus.textContent = branch.status || 'active';
+    E.branchDetailStatus.className = 'branch-status-badge status-' + (branch.status || 'active');
+    
+    // Update goal (for work orders)
+    const meta = branch.metadata ? (typeof branch.metadata === 'string' ? JSON.parse(branch.metadata) : branch.metadata) : {};
+    if (meta.goal && branch.type === 'work_order') {
+      E.branchDetailGoal.textContent = meta.goal;
+      E.branchDetailGoalContainer.style.display = 'flex';
+    } else {
+      E.branchDetailGoalContainer.style.display = 'none';
+    }
+    
+    // Update edges
+    if (branch.edges && branch.edges.length > 0) {
+      E.branchEdgesList.innerHTML = branch.edges.map(e => 
+        `<span class="branch-edge-chip">${e.type}: ${e.to_branch || e.from_branch}</span>`
+      ).join('');
+      E.branchDetailEdges.style.display = 'flex';
+    } else {
+      E.branchDetailEdges.style.display = 'none';
+    }
   }
 
   async function renameChat(filename) {
@@ -2223,6 +2547,155 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
       const i = state.ctxMenuTarget.index;
       E.msgContextMenu.style.display = 'none';
       if (typeof i === 'number') branchFromMessage(i);
+    });
+
+    // Branch context menu (Phase 2)
+    E.branchForkMenuItem.addEventListener('click', async () => {
+      const branch = state.ctxMenuTarget.branch;
+      E.branchContextMenu.style.display = 'none';
+      if (branch) {
+        const name = prompt('Fork branch name:');
+        if (name) {
+          await forkBranch(branch.id, null, name);
+        }
+      }
+    });
+
+    E.branchNewWorkOrderMenuItem.addEventListener('click', async () => {
+      const branch = state.ctxMenuTarget.branch;
+      E.branchContextMenu.style.display = 'none';
+      if (branch && branch.type === 'domain') {
+        const name = prompt('Work Order name:');
+        if (name) {
+          const goal = prompt('Work Order goal:') || '';
+          await createBranch('work_order', name, branch.id, goal);
+        }
+      }
+    });
+
+    E.branchStatusMenuItem.addEventListener('click', (e) => {
+      const branch = state.ctxMenuTarget.branch;
+      // Position status submenu next to the status menu item
+      const rect = E.branchStatusMenuItem.getBoundingClientRect();
+      E.statusSubMenu.style.display = 'block';
+      E.statusSubMenu.style.left = (rect.right + 4) + 'px';
+      E.statusSubMenu.style.top = rect.top + 'px';
+      
+      // Handle status selection
+      const statusItems = E.statusSubMenu.querySelectorAll('.context-menu-item');
+      statusItems.forEach(item => {
+        item.onclick = async (ev) => {
+          ev.stopPropagation();
+          const newStatus = item.getAttribute('data-status');
+          if (branch && newStatus) {
+            await transitionBranchStatus(branch.id, newStatus);
+          }
+          E.statusSubMenu.style.display = 'none';
+          E.branchContextMenu.style.display = 'none';
+        };
+      });
+    });
+
+    E.branchMergeMenuItem.addEventListener('click', async () => {
+      const branch = state.ctxMenuTarget.branch;
+      E.branchContextMenu.style.display = 'none';
+      if (branch) {
+        // Get list of branches to merge into
+        const res = await fetch('/api/branches');
+        const data = await res.json();
+        if (data.success) {
+          const branches = data.branches || [];
+          const options = branches
+            .filter(b => b.id !== branch.id)
+            .map(b => `${b.id}|${b.title || b.name || 'Untitled'}`)
+            .join('\n');
+          const selected = prompt(`Merge "${branch.name || branch.title}" into:\n(Enter branch ID|name from list below)\n\n${options}`);
+          if (selected) {
+            const [targetId, targetName] = selected.split('|');
+            if (targetId) {
+              const notes = prompt('Approval notes (optional):') || '';
+              const res = await fetch(`/api/branches/${branch.id}/merge`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ target_id: targetId, notes })
+              });
+              const result = await res.json();
+              if (!result.success) {
+                alert('Merge failed: ' + (result.error || 'Unknown error'));
+              }
+            }
+          }
+        }
+      }
+    });
+
+    E.branchRenameMenuItem.addEventListener('click', () => {
+      const branch = state.ctxMenuTarget.branch;
+      E.branchContextMenu.style.display = 'none';
+      if (branch) {
+        const newName = prompt('Rename branch:', branch.name || branch.title);
+        if (newName) {
+          fetch(`/api/branches/${branch.id}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: newName })
+          }).then(r => r.json()).then(data => {
+            if (data.success) {
+              loadBranchTree();
+              renderHistory();
+            }
+          });
+        }
+      }
+    });
+
+    E.branchArchiveMenuItem.addEventListener('click', async () => {
+      const branch = state.ctxMenuTarget.branch;
+      E.branchContextMenu.style.display = 'none';
+      if (branch) {
+        if (confirm(`Archive branch "${branch.name || branch.title}"?`)) {
+          await deleteBranch(branch.id);
+        }
+      }
+    });
+
+    // Branch detail panel buttons
+    E.branchDetailStatusBtn.addEventListener('click', async () => {
+      // Get current branch from panel
+      const res = await fetch('/api/branches');
+      const data = await res.json();
+      if (!data.success) return;
+      
+      const branches = data.branches || [];
+      const branch = branches.find(b => b.filename === state.currentChatFile);
+      if (!branch) return;
+      
+      // Show status options
+      const statuses = ['active', 'review', 'merged', 'archived'];
+      const current = branch.status || 'active';
+      const options = statuses.map(s => `${s}${s === current ? ' (current)' : ''}`).join('\n');
+      const newStatus = prompt(`Set status:\n${options}`, current);
+      if (newStatus && statuses.includes(newStatus)) {
+        await transitionBranchStatus(branch.id, newStatus);
+        await updateBranchDetailPanel(state.currentChatFile);
+      }
+    });
+
+    E.branchDetailForkBtn.addEventListener('click', async () => {
+      // Get current branch from panel
+      const res = await fetch('/api/branches');
+      const data = await res.json();
+      if (!data.success) return;
+      
+      const branches = data.branches || [];
+      const branch = branches.find(b => b.filename === state.currentChatFile);
+      if (!branch) return;
+      
+      const name = prompt('Fork branch name:');
+      if (name) {
+        await forkBranch(branch.id, null, name);
+        await updateBranchDetailPanel(state.currentChatFile);
+      }
     });
   }
 
@@ -3810,8 +4283,8 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
   async function init() {
     console.time('TB:init');
     // Close menus when scrolling/resizing
-    window.addEventListener('scroll', () => { E.chatContextMenu.style.display = 'none'; E.msgContextMenu.style.display = 'none'; E.inputContextMenu.style.display = 'none'; E.folderContextMenu.style.display = 'none'; E.moveToFolderMenu.style.display = 'none'; });
-    window.addEventListener('resize', () => { E.chatContextMenu.style.display = 'none'; E.msgContextMenu.style.display = 'none'; E.inputContextMenu.style.display = 'none'; E.folderContextMenu.style.display = 'none'; E.moveToFolderMenu.style.display = 'none'; });
+    window.addEventListener('scroll', () => { E.chatContextMenu.style.display = 'none'; E.msgContextMenu.style.display = 'none'; E.inputContextMenu.style.display = 'none'; E.folderContextMenu.style.display = 'none'; E.moveToFolderMenu.style.display = 'none'; E.branchContextMenu.style.display = 'none'; E.statusSubMenu.style.display = 'none'; });
+    window.addEventListener('resize', () => { E.chatContextMenu.style.display = 'none'; E.msgContextMenu.style.display = 'none'; E.inputContextMenu.style.display = 'none'; E.folderContextMenu.style.display = 'none'; E.moveToFolderMenu.style.display = 'none'; E.branchContextMenu.style.display = 'none'; E.statusSubMenu.style.display = 'none'; });
 
     // Bind UI immediately so app feels responsive
     bindMenus();
@@ -3831,13 +4304,14 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
     console.time('TB:parallelLoad');
 
     // Load all critical data in parallel
-    const [configResult, promptsResult, historyResult, docsResult, messagesResult, foldersResult] = await Promise.allSettled([
+    const [configResult, promptsResult, historyResult, docsResult, messagesResult, foldersResult, branchTreeResult] = await Promise.allSettled([
       loadConfigAndModels(),
       loadPrompts(),
       loadHistory(),
       loadDocs(),
       loadMessages(),
-      loadFolders()
+      loadFolders(),
+      loadBranchTree()
     ]);
 
     console.timeEnd('TB:parallelLoad');

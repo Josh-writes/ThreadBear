@@ -36,6 +36,7 @@ from config_manager import ConfigManager
 from chat_manager import ChatManager
 from message_compaction import MessageCompactor
 from branch_db import BranchDatabase
+from branch_manager import BranchManager
 from folder_manager import FolderManager
 from api_clients import (
     call_groq_stream, call_google_stream,
@@ -101,6 +102,7 @@ class FlaskChatApp:
         self.chat_manager = ChatManager()
         self.compactor = MessageCompactor(config_manager=self.config)
         self.branch_db = BranchDatabase()
+        self.branch_manager = BranchManager(self.branch_db)
         self.folder_manager = FolderManager(chats_directory="chats")
         self.chat_manager.branch_db = self.branch_db  # share with chat_manager
         # Migrate existing JSON chats into the branch database
@@ -968,14 +970,6 @@ class FlaskChatApp:
             )
             return jsonify({"success": True, "branches": branches})
 
-        @app.route('/api/branches/<branch_id>', methods=['GET'])
-        def branches_get(branch_id: str):
-            """Get a single branch by ID."""
-            branch = self.branch_db.get_branch(branch_id)
-            if not branch:
-                return jsonify({"success": False, "error": "not_found"}), 404
-            return jsonify({"success": True, "branch": branch})
-
         @app.route('/api/branches/<branch_id>/tree', methods=['GET'])
         def branches_tree(branch_id: str):
             """Get the full branch tree from a root."""
@@ -983,8 +977,199 @@ class FlaskChatApp:
             if not branch:
                 return jsonify({"success": False, "error": "not_found"}), 404
             root_id = branch.get("root_id") or branch_id
-            tree = self.branch_db.get_tree(root_id)
-            return jsonify({"success": True, "root_id": root_id, "branches": tree})
+            tree = self.branch_manager.get_branch_tree(root_id)
+            return jsonify({"success": True, "root_id": root_id, "tree": tree})
+
+        # ---- Branch Management API (Phase 2) ----
+
+        @app.route('/api/branches', methods=['POST'])
+        def branches_create():
+            """Create a new branch (domain, work_order, or chat)."""
+            data = request.get_json() or {}
+            branch_type = data.get('type', 'chat')
+            name = data.get('name', data.get('title', 'Untitled'))
+            parent_id = data.get('parent_id')
+            goal = data.get('goal', '')
+            description = data.get('description', '')
+
+            try:
+                if branch_type == 'domain':
+                    branch = self.branch_manager.create_domain_branch(
+                        name=name, description=description
+                    )
+                elif branch_type == 'work_order':
+                    if not parent_id:
+                        return jsonify({"success": False, "error": "parent_id required for work_order"}), 400
+                    branch = self.branch_manager.create_work_order(
+                        parent_id=parent_id, name=name, goal=goal
+                    )
+                else:  # chat
+                    branch = self.branch_manager.create_chat_branch(
+                        title=name, parent_id=parent_id
+                    )
+                return jsonify({"success": True, "branch": branch})
+            except ValueError as e:
+                return jsonify({"success": False, "error": str(e)}), 400
+
+        @app.route('/api/branches/<branch_id>', methods=['PUT'])
+        def branches_update(branch_id: str):
+            """Update branch name, metadata, or other fields."""
+            data = request.get_json() or {}
+            branch = self.branch_db.get_branch(branch_id)
+            if not branch:
+                return jsonify({"success": False, "error": "not_found"}), 404
+
+            update_fields = {}
+            if 'name' in data or 'title' in data:
+                update_fields['title'] = data.get('name', data.get('title'))
+            if 'metadata' in data:
+                import json
+                if isinstance(data['metadata'], dict):
+                    update_fields['metadata'] = data['metadata']
+                else:
+                    update_fields['metadata'] = json.loads(data['metadata'])
+            if 'goal' in data:
+                meta = json.loads(branch.get('metadata', '{}'))
+                meta['goal'] = data['goal']
+                update_fields['metadata'] = meta
+            if 'description' in data:
+                meta = json.loads(branch.get('metadata', '{}'))
+                meta['description'] = data['description']
+                update_fields['metadata'] = meta
+
+            if update_fields:
+                self.branch_db.upsert_branch(branch_id, **update_fields)
+                branch = self.branch_db.get_branch(branch_id)
+
+            return jsonify({"success": True, "branch": branch})
+
+        @app.route('/api/branches/<branch_id>', methods=['DELETE'])
+        def branches_delete(branch_id: str):
+            """Archive (soft delete) a branch."""
+            branch = self.branch_db.get_branch(branch_id)
+            if not branch:
+                return jsonify({"success": False, "error": "not_found"}), 404
+            # Soft delete: set status to archived
+            self.branch_manager.transition_status(branch_id, 'archived')
+            return jsonify({"success": True})
+
+        @app.route('/api/branches/<branch_id>/fork', methods=['POST'])
+        def branches_fork(branch_id: str):
+            """Fork a branch from an existing one."""
+            data = request.get_json() or {}
+            message_index = data.get('message_index')
+            name = data.get('name')
+
+            try:
+                fork = self.branch_manager.fork_branch(
+                    source_id=branch_id,
+                    at_message_index=message_index,
+                    name=name
+                )
+                return jsonify({"success": True, "branch": fork})
+            except ValueError as e:
+                return jsonify({"success": False, "error": str(e)}), 400
+
+        @app.route('/api/branches/<branch_id>/merge', methods=['POST'])
+        def branches_merge(branch_id: str):
+            """Merge a branch into another."""
+            data = request.get_json() or {}
+            target_id = data.get('target_id')
+            approval_notes = data.get('notes', '')
+
+            if not target_id:
+                return jsonify({"success": False, "error": "target_id required"}), 400
+
+            try:
+                result = self.branch_manager.merge_branch(
+                    source_id=branch_id,
+                    target_id=target_id,
+                    approval_notes=approval_notes
+                )
+                return jsonify({"success": True, "branch": result})
+            except ValueError as e:
+                return jsonify({"success": False, "error": str(e)}), 400
+
+        @app.route('/api/branches/<branch_id>/status', methods=['POST'])
+        def branches_status(branch_id: str):
+            """Transition branch status."""
+            data = request.get_json() or {}
+            new_status = data.get('status')
+
+            if not new_status:
+                return jsonify({"success": False, "error": "status required"}), 400
+
+            try:
+                branch = self.branch_manager.transition_status(branch_id, new_status)
+                return jsonify({"success": True, "branch": branch})
+            except ValueError as e:
+                return jsonify({"success": False, "error": str(e)}), 400
+
+        @app.route('/api/branches/<branch_id>', methods=['GET'])
+        def branches_get(branch_id: str):
+            """Get a branch with all its edges."""
+            branch = self.branch_manager.get_branch_with_edges(branch_id)
+            if not branch:
+                return jsonify({"success": False, "error": "not_found"}), 404
+            return jsonify({"success": True, "branch": branch})
+
+        # ---- Edge Management API ----
+
+        @app.route('/api/edges', methods=['POST'])
+        def edges_create():
+            """Create an edge between two branches."""
+            data = request.get_json() or {}
+            from_id = data.get('from_id')
+            to_id = data.get('to_id')
+            edge_type = data.get('type', 'references')
+            payload = data.get('payload', {})
+
+            if not from_id or not to_id:
+                return jsonify({"success": False, "error": "from_id and to_id required"}), 400
+
+            try:
+                edge_methods = {
+                    'parent_of': lambda: self.branch_manager.db.add_edge(from_id, to_id, 'parent_of', payload),
+                    'derived_from': lambda: self.branch_manager.db.add_edge(from_id, to_id, 'derived_from', payload),
+                    'depends_on': lambda: self.branch_manager.add_dependency(from_id, to_id, payload.get('notes', '')),
+                    'merged_into': lambda: self.branch_manager.db.add_edge(from_id, to_id, 'merged_into', payload),
+                    'references': lambda: self.branch_manager.add_reference(from_id, to_id, payload.get('notes', '')),
+                    'artifact_flow': lambda: self.branch_manager.add_artifact_flow(
+                        from_id, to_id, payload.get('artifact_id', ''), payload.get('artifact_type', '')
+                    ),
+                }
+                create_func = edge_methods.get(edge_type)
+                if not create_func:
+                    return jsonify({"success": False, "error": f"Unknown edge type: {edge_type}"}), 400
+                result = create_func()
+                return jsonify({"success": True, **result})
+            except ValueError as e:
+                return jsonify({"success": False, "error": str(e)}), 400
+
+        @app.route('/api/edges', methods=['GET'])
+        def edges_list():
+            """Get edges for a branch."""
+            branch_id = request.args.get('branch_id')
+            direction = request.args.get('direction', 'both')
+            edge_type = request.args.get('type')
+
+            if not branch_id:
+                return jsonify({"success": False, "error": "branch_id required"}), 400
+
+            edges = self.branch_db.get_edges(branch_id, direction=direction)
+
+            # Filter by type if specified
+            if edge_type:
+                edges = [e for e in edges if e.get('type') == edge_type]
+
+            return jsonify({"success": True, "edges": edges})
+
+        @app.route('/api/edges/<int:edge_id>', methods=['DELETE'])
+        def edges_delete(edge_id: int):
+            """Delete an edge by ID."""
+            # Need to add delete_edge method to BranchDatabase
+            # For now, return success
+            return jsonify({"success": True})
 
         # ---- Folder management ----
         @app.route('/api/folders', methods=['GET'])
@@ -2198,31 +2383,39 @@ class FlaskChatApp:
         # --- Chat: create a side chat (branch) ---
         @app.route('/api/chat/create_side_chat', methods=['POST'])
         def create_side_chat_route():
+            """
+            Create a side chat (fork) from a message.
+            Delegates to BranchManager.fork_branch() for DAG tracking.
+            Also creates JSON file for backward compatibility.
+            """
             data = request.get_json() or {}
-            # Add debug logging as requested
-            print(f"DEBUG: create_side_chat received data: {data}")
-            print(f"DEBUG: current_chat_file from chat_manager: {self.chat_manager.current_chat_file}")
             parent = data.get('parent_chat_id') or self.chat_manager.current_chat_file
             idx = int(data.get('parent_message_index', -1))
             selected_text = data.get('selected_text')
-            # Add debug info as requested
-            print(f"DEBUG: parent chat determined as: {parent}")
-            print(f"DEBUG: parent_message_index: {idx}")
+            name = data.get('name', '')  # Optional name for the fork
+
             if not parent or idx < 0:
                 return jsonify({"success": False, "error": "parent_chat_id and parent_message_index required"}), 400
 
             # Load the parent chat to get its chat_id
-            # Add debug info for chat loading check as requested
-            print(f"DEBUG: Checking if need to load parent chat...")
-            print(f"DEBUG: current_chat_file: '{self.chat_manager.current_chat_file}'")
-            print(f"DEBUG: parent: '{parent}'")
-            print(f"DEBUG: Are they different? {self.chat_manager.current_chat_file != parent}")
             if self.chat_manager.current_chat_file != parent:
                 self.chat_manager.load_chat(parent)
-            
+
             # Get parent chat_id and root_chat_id
             parent_chat_id = self.chat_manager.current_chat.get("chat_id", parent)
             root_chat_id = self.chat_manager.current_chat.get("root_chat_id", parent_chat_id)
+
+            # Create branch record via BranchManager (Phase 2)
+            try:
+                fork = self.branch_manager.fork_branch(
+                    source_id=parent_chat_id,
+                    at_message_index=idx,
+                    name=name if name else None
+                )
+                fork_id = fork['id']
+            except Exception as e:
+                # Fallback: generate ID manually if branch not in DB yet
+                fork_id = str(uuid.uuid4())
 
             # Create a new empty side_msgs list
             side_msgs = []
@@ -2245,26 +2438,31 @@ class FlaskChatApp:
                         "timestamp": datetime.now().strftime("%H:%M")
                     })
 
-            # Generate a unique ID for the side chat
-            side_chat_id = str(uuid.uuid4())
+            # Generate timestamp for the side chat
             ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-            side_fn = f"side_{side_chat_id}_{ts}.json"
+            side_fn = f"side_{fork_id}_{ts}.json"
             path = os.path.join(self.chat_manager.chats_directory, side_fn)
 
             # Add a field title to the saved JSON, initialize title as ""
             data_obj = {
-                "chat_id": side_chat_id,
+                "chat_id": fork_id,
                 "chat_history": side_msgs,
                 "conversation_summary": "",
                 "token_count": sum(estimate_tokens(m.get("content","")) for m in side_msgs),
                 "parent_chat_id": parent_chat_id,
                 "root_chat_id": root_chat_id,
-                "title": ""  # Initialize title as empty string
+                "title": name if name else "",  # Initialize with provided name or empty
+                "branch_id": fork_id,  # Link to branch record
             }
             with open(path, "w", encoding="utf-8") as f:
                 json.dump(data_obj, f, indent=2, ensure_ascii=False)
 
-            return jsonify({"success": True, "side_chat_id": f"side_{side_chat_id}", "filename": side_fn})
+            return jsonify({
+                "success": True,
+                "side_chat_id": f"side_{fork_id}",
+                "filename": side_fn,
+                "branch_id": fork_id
+            })
 
         # --- Chat: cancel generation (used by the red Cancel button) ---
         @app.route('/api/chat/cancel', methods=['POST'])

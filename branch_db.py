@@ -62,11 +62,25 @@ class BranchDatabase:
                     model TEXT,
                     provider TEXT,
                     filename TEXT,
+                    context_pack_id TEXT,
+                    policy TEXT,
                     metadata TEXT,
                     FOREIGN KEY (parent_id) REFERENCES branches(id)
                         ON DELETE SET NULL
                 )
             """)
+
+            # Add missing columns for Phase 2 (policy, context_pack_id)
+            # SQLite doesn't support ADD COLUMN IF NOT EXISTS, so we check first
+            try:
+                cursor.execute("ALTER TABLE branches ADD COLUMN context_pack_id TEXT")
+            except sqlite3.OperationalError:
+                pass  # Column already exists
+
+            try:
+                cursor.execute("ALTER TABLE branches ADD COLUMN policy TEXT")
+            except sqlite3.OperationalError:
+                pass  # Column already exists
 
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS edges (
@@ -110,21 +124,26 @@ class BranchDatabase:
                 "ON edges(to_branch)"
             )
 
-    def upsert_branch(self, branch_id: str, **kwargs) -> None:
+    def upsert_branch(self, branch_id: str, **kwargs) -> Dict[str, Any]:
         """Insert or update a branch record.
 
         Accepted kwargs: title, type, parent_id, root_id, status,
         created_at, updated_at, token_count, message_count, model,
-        provider, filename, metadata (dict will be JSON-encoded).
+        provider, filename, context_pack_id, policy, metadata
+        (dict will be JSON-encoded).
+
+        Returns the branch dict.
         """
         if not branch_id:
-            return
+            return {}
 
         now = datetime.now().isoformat()
 
-        # JSON-encode metadata if it's a dict
+        # JSON-encode metadata and policy if they're dicts
         if "metadata" in kwargs and isinstance(kwargs["metadata"], dict):
             kwargs["metadata"] = json.dumps(kwargs["metadata"])
+        if "policy" in kwargs and isinstance(kwargs["policy"], dict):
+            kwargs["policy"] = json.dumps(kwargs["policy"])
 
         with self._get_connection() as conn:
             cursor = conn.cursor()
@@ -164,6 +183,8 @@ class BranchDatabase:
                     values
                 )
 
+        return self.get_branch(branch_id) or {}
+
     def get_branch(self, branch_id: str) -> Optional[Dict[str, Any]]:
         """Get a single branch by ID."""
         with self._get_connection() as conn:
@@ -202,6 +223,29 @@ class BranchDatabase:
                 "ORDER BY created_at",
                 (root_id,)
             ).fetchall()
+            return [self._row_to_dict(r) for r in rows]
+
+    def list_branches(self, type: Optional[str] = None, status: Optional[str] = None,
+                      parent_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        """List branches with optional filters."""
+        conditions = []
+        params: List[Any] = []
+
+        if type:
+            conditions.append("type = ?")
+            params.append(type)
+        if status:
+            conditions.append("status = ?")
+            params.append(status)
+        if parent_id is not None:
+            conditions.append("parent_id = ?")
+            params.append(parent_id)
+
+        where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+
+        with self._get_connection() as conn:
+            query_str = f"SELECT * FROM branches {where} ORDER BY created_at"
+            rows = conn.execute(query_str, params).fetchall()
             return [self._row_to_dict(r) for r in rows]
 
     def search_branches(self, query: Optional[str] = None,
