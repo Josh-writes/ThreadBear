@@ -7,6 +7,7 @@ import json
 import time
 import requests
 from typing import List, Dict, Iterator, Union
+from error_classifier import LLMApiError
 
 # Local (no proxy) -> use for llama.cpp localhost calls
 _local_session = requests.Session()
@@ -186,53 +187,53 @@ def call_groq_stream(messages: List[Dict], config: Dict,
         # Track accumulated tool calls across streaming deltas
         tool_calls_acc = {}  # index -> {id, function: {name, arguments}}
         
-        if response.status_code == 200:
-            for line in response.iter_lines():
-                if not line:
+        if response.status_code != 200:
+            raise LLMApiError(response.status_code, response.text, "groq")
+
+        for line in response.iter_lines():
+            if not line:
+                continue
+            line = line.decode('utf-8', errors='ignore')
+            if line.startswith('data: '):
+                payload = line[6:]
+                if payload.strip() == '[DONE]':
+                    break
+                try:
+                    chunk = json.loads(payload)
+                    if 'choices' in chunk and chunk['choices']:
+                        delta = chunk['choices'][0].get('delta', {})
+                        # Content chunks
+                        content = delta.get('content', '')
+                        if content:
+                            yield content
+                        # Tool call deltas
+                        if delta.get('tool_calls'):
+                            for tc_delta in delta['tool_calls']:
+                                idx = tc_delta.get('index', 0)
+                                if idx not in tool_calls_acc:
+                                    tool_calls_acc[idx] = {
+                                        'id': tc_delta.get('id', f'call_{idx}'),
+                                        'type': 'function',
+                                        'function': {'name': '', 'arguments': ''}
+                                    }
+                                if tc_delta.get('function', {}).get('name'):
+                                    tool_calls_acc[idx]['function']['name'] = tc_delta['function']['name']
+                                if tc_delta.get('function', {}).get('arguments'):
+                                    tool_calls_acc[idx]['function']['arguments'] += tc_delta['function']['arguments']
+                        # On finish_reason='tool_calls', yield accumulated tool calls
+                        finish = chunk['choices'][0].get('finish_reason')
+                        if finish == 'tool_calls' and tool_calls_acc:
+                            # Auto-repair incomplete JSON arguments
+                            for tc in tool_calls_acc.values():
+                                tc['function']['arguments'] = _repair_json(tc['function']['arguments'])
+                            yield {'type': 'tool_calls', 'tool_calls': list(tool_calls_acc.values())}
+                            tool_calls_acc = {}
+                except json.JSONDecodeError:
                     continue
-                line = line.decode('utf-8', errors='ignore')
-                if line.startswith('data: '):
-                    payload = line[6:]
-                    if payload.strip() == '[DONE]':
-                        break
-                    try:
-                        chunk = json.loads(payload)
-                        if 'choices' in chunk and chunk['choices']:
-                            delta = chunk['choices'][0].get('delta', {})
-                            # Content chunks
-                            content = delta.get('content', '')
-                            if content:
-                                yield content
-                            # Tool call deltas
-                            if delta.get('tool_calls'):
-                                for tc_delta in delta['tool_calls']:
-                                    idx = tc_delta.get('index', 0)
-                                    if idx not in tool_calls_acc:
-                                        tool_calls_acc[idx] = {
-                                            'id': tc_delta.get('id', f'call_{idx}'),
-                                            'type': 'function',
-                                            'function': {'name': '', 'arguments': ''}
-                                        }
-                                    if tc_delta.get('function', {}).get('name'):
-                                        tool_calls_acc[idx]['function']['name'] = tc_delta['function']['name']
-                                    if tc_delta.get('function', {}).get('arguments'):
-                                        tool_calls_acc[idx]['function']['arguments'] += tc_delta['function']['arguments']
-                            # On finish_reason='tool_calls', yield accumulated tool calls
-                            finish = chunk['choices'][0].get('finish_reason')
-                            if finish == 'tool_calls' and tool_calls_acc:
-                                # Auto-repair incomplete JSON arguments
-                                for tc in tool_calls_acc.values():
-                                    tc['function']['arguments'] = _repair_json(tc['function']['arguments'])
-                                yield {'type': 'tool_calls', 'tool_calls': list(tool_calls_acc.values())}
-                                tool_calls_acc = {}
-                    except json.JSONDecodeError:
-                        continue
-        else:
-            yield f"data: {json.dumps({'type':'error','content':'Error: ' + str(response.status_code) + ' ' + str(response.reason) + ' - ' + str(response.text) + ' (model=' + model_name + ', url=' + url + ')'})}\n\n"
-            yield f"data: {json.dumps({'type':'complete'})}\n\n"
+    except LLMApiError:
+        raise
     except Exception as e:
-        yield f"data: {json.dumps({'type':'error','content':'Groq streaming error: ' + str(e)})}\n\n"
-        yield f"data: {json.dumps({'type':'complete'})}\n\n"
+        raise LLMApiError(0, str(e), "groq") from e
 
 
 # --- Google (Gemini) ---
@@ -321,31 +322,32 @@ def call_google_stream(messages: List[Dict], config: Dict, tools=None) -> Iterat
 
         response = _web_session.post(url, headers=headers, json=payload, params=params, stream=True, timeout=60)
 
-        if response.status_code == 200:
-            for line in response.iter_lines():
-                if not line:
+        if response.status_code != 200:
+            raise LLMApiError(response.status_code, response.text or response.reason, "google")
+
+        for line in response.iter_lines():
+            if not line:
+                continue
+            line = line.decode('utf-8', errors='ignore')
+            if line.startswith('data: '):
+                payload_str = line[6:].strip()
+                if not payload_str or payload_str == '[DONE]':
                     continue
-                line = line.decode('utf-8', errors='ignore')
-                if line.startswith('data: '):
-                    payload_str = line[6:].strip()
-                    if not payload_str or payload_str == '[DONE]':
-                        continue
-                    try:
-                        chunk_data = json.loads(payload_str)
-                        if 'candidates' in chunk_data and chunk_data['candidates']:
-                            candidate = chunk_data['candidates'][0]
-                            if 'content' in candidate:
-                                parts = candidate['content'].get('parts', [])
-                                for part in parts:
-                                    if 'text' in part and part['text']:
-                                        yield part['text']
-                    except json.JSONDecodeError:
-                        continue
-        else:
-            error_text = response.text[:500] if response.text else response.reason
-            yield f"Error: Google API {response.status_code} — {error_text}"
+                try:
+                    chunk_data = json.loads(payload_str)
+                    if 'candidates' in chunk_data and chunk_data['candidates']:
+                        candidate = chunk_data['candidates'][0]
+                        if 'content' in candidate:
+                            parts = candidate['content'].get('parts', [])
+                            for part in parts:
+                                if 'text' in part and part['text']:
+                                    yield part['text']
+                except json.JSONDecodeError:
+                    continue
+    except LLMApiError:
+        raise
     except Exception as e:
-        yield f"Error: Google streaming error: {e}"
+        raise LLMApiError(0, str(e), "google") from e
 
 def call_google(messages: List[Dict], config: Dict) -> str:
     try:
@@ -526,29 +528,29 @@ def call_mistral_stream(messages: List[Dict], config: Dict, tools=None) -> Itera
 
         response = _web_session.post("https://api.mistral.ai/v1/chat/completions",
                                  headers=headers, json=data, stream=True, timeout=60)
-        if response.status_code == 200:
-            for line in response.iter_lines():
-                if line:
-                    line = line.decode('utf-8')
-                    if line.startswith('data: '):
-                        line = line[6:]
-                        if line.strip() == '[DONE]':
-                            break
-                        try:
-                            chunk = json.loads(line)
-                            if 'choices' in chunk and chunk['choices']:
-                                delta = chunk['choices'][0].get('delta', {})
-                                content = delta.get('content', '')
-                                if content:
-                                    yield content
-                        except json.JSONDecodeError:
-                            continue
-        else:
-            yield f"data: {json.dumps({'type':'error','content':'Error: ' + str(response.status_code) + ' ' + str(response.reason) + ' - ' + str(response.text)})}\n\n"
-            yield f"data: {json.dumps({'type':'complete'})}\n\n"
+        if response.status_code != 200:
+            raise LLMApiError(response.status_code, response.text, "mistral")
+
+        for line in response.iter_lines():
+            if line:
+                line = line.decode('utf-8')
+                if line.startswith('data: '):
+                    line = line[6:]
+                    if line.strip() == '[DONE]':
+                        break
+                    try:
+                        chunk = json.loads(line)
+                        if 'choices' in chunk and chunk['choices']:
+                            delta = chunk['choices'][0].get('delta', {})
+                            content = delta.get('content', '')
+                            if content:
+                                yield content
+                    except json.JSONDecodeError:
+                        continue
+    except LLMApiError:
+        raise
     except Exception as e:
-        yield f"data: {json.dumps({'type':'error','content':'Mistral streaming error: ' + str(e)})}\n\n"
-        yield f"data: {json.dumps({'type':'complete'})}\n\n"
+        raise LLMApiError(0, str(e), "mistral") from e
 
 
 # --- llama.cpp (remote server) ---
@@ -802,30 +804,30 @@ def call_llamacpp_stream(messages: List[Dict], config: Dict, tools=None) -> Iter
         # Use longer timeout for inference (3090 can take time on large contexts)
         response = _web_session.post(url, headers=headers, json=data, stream=True, timeout=300)
 
-        if response.status_code == 200:
-            for line in response.iter_lines():
-                if not line:
+        if response.status_code != 200:
+            raise LLMApiError(response.status_code, response.text, "llamacpp")
+
+        for line in response.iter_lines():
+            if not line:
+                continue
+            line = line.decode('utf-8', errors='ignore')
+            if line.startswith('data: '):
+                payload = line[6:]
+                if payload.strip() == '[DONE]':
+                    break
+                try:
+                    chunk = json.loads(payload)
+                    if 'choices' in chunk and chunk['choices']:
+                        delta = chunk['choices'][0].get('delta', {})
+                        content = delta.get('content', '')
+                        if content:
+                            yield content
+                except json.JSONDecodeError:
                     continue
-                line = line.decode('utf-8', errors='ignore')
-                if line.startswith('data: '):
-                    payload = line[6:]
-                    if payload.strip() == '[DONE]':
-                        break
-                    try:
-                        chunk = json.loads(payload)
-                        if 'choices' in chunk and chunk['choices']:
-                            delta = chunk['choices'][0].get('delta', {})
-                            content = delta.get('content', '')
-                            if content:
-                                yield content
-                    except json.JSONDecodeError:
-                        continue
-        else:
-            yield f"data: {json.dumps({'type':'error','content':'Error: ' + str(response.status_code) + ' ' + str(response.reason) + ' - ' + str(response.text)})}\n\n"
-            yield f"data: {json.dumps({'type':'complete'})}\n\n"
+    except LLMApiError:
+        raise
     except Exception as e:
-        yield f"data: {json.dumps({'type':'error','content':'llama.cpp streaming error: ' + str(e)})}\n\n"
-        yield f"data: {json.dumps({'type':'complete'})}\n\n"
+        raise LLMApiError(0, str(e), "llamacpp") from e
 
 
 # --- OpenRouter ---
@@ -962,27 +964,27 @@ def call_openrouter_stream(messages: List[Dict], config: Dict, tools=None) -> It
 
         response = _web_session.post("https://openrouter.ai/api/v1/chat/completions",
                                  headers=headers, json=data, stream=True, timeout=(15, 120))
-        if response.status_code == 200:
-            for line in response.iter_lines(decode_unicode=False):
-                if line:
-                    line = line.decode('utf-8')
-                    if line.startswith('data: '):
-                        line = line[6:]
-                        if line.strip() == '[DONE]':
-                            break
-                        try:
-                            chunk = json.loads(line)
-                            if 'choices' in chunk and chunk['choices']:
-                                delta = chunk['choices'][0].get('delta', {})
-                                content = delta.get('content', '')
-                                if content:
-                                    yield content
-                        except json.JSONDecodeError:
-                            continue
-        else:
-            yield f"data: {json.dumps({'type':'error','content':'Error: ' + str(response.status_code) + ' ' + str(response.reason) + ' - ' + str(response.text)})}\n\n"
-            yield f"data: {json.dumps({'type':'complete'})}\n\n"
+        if response.status_code != 200:
+            raise LLMApiError(response.status_code, response.text, "openrouter")
+
+        for line in response.iter_lines(decode_unicode=False):
+            if line:
+                line = line.decode('utf-8')
+                if line.startswith('data: '):
+                    line = line[6:]
+                    if line.strip() == '[DONE]':
+                        break
+                    try:
+                        chunk = json.loads(line)
+                        if 'choices' in chunk and chunk['choices']:
+                            delta = chunk['choices'][0].get('delta', {})
+                            content = delta.get('content', '')
+                            if content:
+                                yield content
+                    except json.JSONDecodeError:
+                        continue
+    except LLMApiError:
+        raise
     except Exception as e:
-        yield f"data: {json.dumps({'type':'error','content':'OpenRouter streaming error: ' + str(e)})}\n\n"
-        yield f"data: {json.dumps({'type':'complete'})}\n\n"
+        raise LLMApiError(0, str(e), "openrouter") from e
 

@@ -18,6 +18,7 @@ from typing import List, Dict, Any, Optional, NamedTuple
 # Local utilities
 from api_clients import estimate_tokens
 from document_db import document_db
+from content_security import wrap_external_content, truncate_head_tail
 
 # Reader registry
 from readers import reader_registry
@@ -285,6 +286,8 @@ class ContextDocuments:
                 continue
             meta, text = doc['metadata'], doc['text']
             name = meta.get('name', did)
+            # Truncate large documents before wrapping
+            text = truncate_head_tail(text, 20000, source_name=name)
             if selected_spans and did in selected_spans:
                 hmap = {h['id']: h for h in meta.get('highlights', [])}
                 for hid in selected_spans[did]:
@@ -292,10 +295,12 @@ class ContextDocuments:
                         h = hmap[hid]
                         snippet = text[h['start']:h['end']].strip()
                         if snippet:
-                            msgs.append({"role": "system", "content": f"[Document: {name} - {h['label']}]\n\n{snippet}"})
+                            wrapped = wrap_external_content(snippet, f"{name} - {h['label']}")
+                            msgs.append({"role": "system", "content": wrapped})
             else:
                 if text.strip():
-                    msgs.append({"role": "system", "content": f"[Document: {name}]\n\n{text.strip()}"})
+                    wrapped = wrap_external_content(text.strip(), name)
+                    msgs.append({"role": "system", "content": wrapped})
         return msgs
 
     def get_context_token_count(self) -> Dict[str, int]:

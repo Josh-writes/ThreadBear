@@ -51,6 +51,8 @@ from context_documents import (
     list_documents, save_document, delete_document, get_document,
 )
 from readers import reader_registry
+from error_classifier import LLMApiError, classify_error, friendly_message, ErrorClass
+from content_security import wrap_external_content, truncate_head_tail
 
 # =============================================================================
 # Request-context safety: per-request state with thread-safe access
@@ -768,6 +770,7 @@ class FlaskChatApp:
                             api_messages = [{"role": "user", "content": msgs[-1]["content"]}]
                         else:
                             yield f"data: {json.dumps({'type':'error','content':'No message found'})}\n\n"
+                            yield f"data: {json.dumps({'type':'complete'})}\n\n"
                             return
                     else:
                         # Read context selection from per-request snap (not self)
@@ -788,6 +791,7 @@ class FlaskChatApp:
                                 last_user = next((m for m in reversed(msgs) if m.get("role") == "user"), None)
                                 if not last_user:
                                     yield f"data: {json.dumps({'type':'error','content':'No user message found'})}\n\n"
+                                    yield f"data: {json.dumps({'type':'complete'})}\n\n"
                                     return
                                 api_messages = [{"role": "user", "content": last_user.get("content", "")}]
                         else:
@@ -898,22 +902,40 @@ class FlaskChatApp:
                     max_iterations = tool_config.get('max_iterations', 5)
 
                     full_response = ""
+                    max_overflow_retries = 2
                     for iteration in range(max_iterations):
                         tool_calls_this_round = []
                         content_buffer = ""
 
-                        # Call LLM with optional tools
-                        for chunk in stream_func(api_messages, merged_cfg, tools=tool_schemas):
-                            if snap.get('cancel_generation', False):
-                                yield f"data: {json.dumps({'type':'error','content':'Generation cancelled'})}\n\n"
-                                return
+                        # Call LLM with overflow retry
+                        for overflow_attempt in range(max_overflow_retries + 1):
+                            try:
+                                tool_calls_this_round = []
+                                content_buffer = ""
+                                for chunk in stream_func(api_messages, merged_cfg, tools=tool_schemas):
+                                    if snap.get('cancel_generation', False):
+                                        yield f"data: {json.dumps({'type':'error','content':'Generation cancelled'})}\n\n"
+                                        return
 
-                            if isinstance(chunk, dict) and chunk.get('type') == 'tool_calls':
-                                tool_calls_this_round = chunk.get('tool_calls', [])
-                            elif isinstance(chunk, str):
-                                content_buffer += chunk
-                                yield f"data: {json.dumps({'type':'content','content':chunk})}\n\n"
-                                time.sleep(0.005)
+                                    if isinstance(chunk, dict) and chunk.get('type') == 'tool_calls':
+                                        tool_calls_this_round = chunk.get('tool_calls', [])
+                                    elif isinstance(chunk, str):
+                                        content_buffer += chunk
+                                        yield f"data: {json.dumps({'type':'content','content':chunk})}\n\n"
+                                        time.sleep(0.005)
+                                break  # success — exit retry loop
+                            except LLMApiError as overflow_err:
+                                cls = classify_error(overflow_err.status_code, overflow_err.response_text)
+                                if cls == ErrorClass.CONTEXT_OVERFLOW and overflow_attempt < max_overflow_retries:
+                                    yield f"data: {json.dumps({'type':'status','content':'Context too large, compacting...'})}\n\n"
+                                    compacted, _ = self.compactor.compact_messages(
+                                        api_messages, provider, model, force=True
+                                    )
+                                    api_messages = compacted
+                                    content_buffer = ""
+                                    tool_calls_this_round = []
+                                    continue
+                                raise  # re-raise for outer handler
 
                         # Track inference time for idle timeout (llamacpp only)
                         if provider == "llamacpp":
@@ -1023,9 +1045,15 @@ class FlaskChatApp:
                         print(f"Auto-title generation failed: {title_err}")
 
                     yield f"data: {json.dumps({'type':'complete'})}\n\n"
+                except LLMApiError as api_err:
+                    cls = classify_error(api_err.status_code, api_err.response_text)
+                    msg = friendly_message(cls, api_err.provider, api_err.status_code, api_err.response_text)
+                    yield f"data: {json.dumps({'type':'error','content':msg,'error_class':cls.value})}\n\n"
+                    yield f"data: {json.dumps({'type':'complete'})}\n\n"
                 except Exception as e:
                     err = f"Error: {e}"
                     yield f"data: {json.dumps({'type':'error','content':err})}\n\n"
+                    yield f"data: {json.dumps({'type':'complete'})}\n\n"
                 finally:
                     # Clean up per-request context after streaming completes
                     _clear_request_context(message_id)
@@ -3131,21 +3159,28 @@ class FlaskChatApp:
         """Build system messages for folder context injection."""
         messages = []
 
-        # Active folder prompt
+        # Active folder prompt (not wrapped - user-authored instructions)
         prompt_content = self.folder_manager.get_active_prompt_content(folder_id)
         if prompt_content:
+            # Truncate large folder prompts
+            prompt_content = truncate_head_tail(prompt_content, 10000, source_name="folder prompt")
             messages.append({
                 "role": "system",
                 "content": f"[Folder Context]\n{prompt_content}",
             })
 
-        # Memory notes
+        # Memory notes (wrapped as external content)
         memory = self.folder_manager.get_folder_memory(folder_id)
         if memory["notes"]:
-            lines = [f"- {n['text']}" for n in memory["notes"]]
+            # Truncate each note and wrap as external content
+            wrapped_notes = []
+            for n in memory["notes"]:
+                note_text = truncate_head_tail(n["text"], 2000, source_name="memory note")
+                wrapped = wrap_external_content(note_text, "folder memory")
+                wrapped_notes.append(wrapped)
             messages.append({
                 "role": "system",
-                "content": "[Folder Memory]\n" + "\n".join(lines),
+                "content": "\n".join(wrapped_notes),
             })
 
         return messages

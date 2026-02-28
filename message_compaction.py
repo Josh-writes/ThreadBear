@@ -93,9 +93,16 @@ class MessageCompactor:
 
     def compact_messages(self, messages: List[Dict[str, Any]],
                          provider: Optional[str] = None,
-                         model: Optional[str] = None
+                         model: Optional[str] = None,
+                         force: bool = False
                          ) -> Tuple[List[Dict[str, Any]], str]:
         """Compact messages by removing low-priority older messages.
+
+        Args:
+            messages: List of messages to compact
+            provider: LLM provider name (for context window lookup)
+            model: Model name (for context window lookup)
+            force: If True, bypass should_compact() threshold check
 
         Returns:
             (compacted_messages, summary_of_removed)
@@ -104,8 +111,8 @@ class MessageCompactor:
         threshold = self.get_threshold(provider, model)
         token_count = TokenCounter.count_message_tokens(messages)
 
-        # Not over threshold or too few messages
-        if token_count <= threshold or len(messages) <= self.keep_recent + 5:
+        # Not over threshold or too few messages (unless forced)
+        if not force and (token_count <= threshold or len(messages) <= self.keep_recent + 5):
             return messages, ""
 
         target_tokens = int(threshold * self.ceiling)
@@ -177,7 +184,9 @@ class MessageCompactor:
                 f"[COMPACTION SUMMARY]\n"
                 f"The following summarizes {len(removed)} older messages "
                 f"that were compacted to save context space:\n\n"
-                f"{summary}\n"
+                f"{summary}\n\n"
+                f"IMPORTANT: Preserve all IDs, UUIDs, filenames, and URLs exactly "
+                f"as they appear in the conversation history.\n"
                 f"[END COMPACTION SUMMARY]"
             )
         })
