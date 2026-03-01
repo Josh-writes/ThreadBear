@@ -56,6 +56,17 @@
       ],
       "active_prompt_id": "ba580cfa-6d5a-490f-ad9f-7f8120d9bf18",
       "memory_notes": []
+    },
+    {
+      "id": "802ee850-c9ab-4e44-99a4-5bf6131cfd35",
+      "name": "Read and Recommend",
+      "parent_id": null,
+      "order": 3,
+      "created": "2026-03-01T11:14:47.079055+00:00",
+      "prompt_branch_filename": "folder_prompt_802ee850_20260301_191447.json",
+      "saved_prompts": [],
+      "active_prompt_id": null,
+      "memory_notes": []
     }
   ],
   "chat_folder_map": {
@@ -70,7 +81,9 @@
     "New_Chat_20260301_163207.json": "2c402e25-4f91-47b2-bab1-164e9c861509",
     "Chat_Share_in_Threadbear_20250930_121806.json": "fcbce3dc-dfaa-4987-b321-9c1bf4605371",
     "New_Chat_20260301_164936.json": "2c402e25-4f91-47b2-bab1-164e9c861509",
-    "Paramaters_defined_20260301_164936.json": "fcbce3dc-dfaa-4987-b321-9c1bf4605371"
+    "Paramaters_defined_20260301_164936.json": "fcbce3dc-dfaa-4987-b321-9c1bf4605371",
+    "folder_prompt_802ee850_20260301_191447.json": "802ee850-c9ab-4e44-99a4-5bf6131cfd35",
+    "New_Chat_20260301_191645.json": "802ee850-c9ab-4e44-99a4-5bf6131cfd35"
   },
   "file_folder_map": {}
 }
