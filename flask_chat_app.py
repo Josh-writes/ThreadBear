@@ -817,8 +817,13 @@ class FlaskChatApp:
                         yield f"data: {json.dumps({'type':'error','content':f'Unknown provider: {provider}'})}\n\n"
                         return
 
-                    # Send model info first
-                    yield f"data: {json.dumps({'type':'model','content':model})}\n\n"
+                    # Send model info first (for llamacpp, query the actual loaded model)
+                    display_model = model
+                    if provider == "llamacpp":
+                        live_models, live_current = self._get_llamacpp_live_model()
+                        if live_current:
+                            display_model = live_current
+                    yield f"data: {json.dumps({'type':'model','content':display_model})}\n\n"
 
                     # Get per-request cancel flag from snap
                     snap['cancel_generation'] = False

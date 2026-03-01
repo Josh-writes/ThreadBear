@@ -2782,19 +2782,21 @@
             <div class="setting-group">
                 <label class="setting-label">Model Settings</label>
                 <div class="model-settings-ui">
-                    <!-- Model dropdown with remove button -->
-                    <div style="display: flex; gap: 10px; align-items: center;">
-                        <select class="setting-input" id="modelSettingsSelect" style="flex: 1;"></select>
-                        <button class="control-btn" id="removeModelBtn" style="display: none; background-color: #d9534f; padding: 8px 12px;">Remove</button>
-                    </div>
-                    
-                    <!-- Add Model UI -->
-                    <div class="add-model-ui" id="addModelUI">
-                        <button class="control-btn" id="addModelBtn">Add Model</button>
-                        <div class="new-model-input" id="newModelInputContainer" style="display: none; margin-top: 10px;">
-                            <input type="text" class="setting-input" id="newModelName" placeholder="Enter model name">
-                            <button class="control-btn" id="saveModelBtn">Save Model</button>
-                            <button class="control-btn" id="cancelAddModelBtn">Cancel</button>
+                    <!-- Model dropdown with remove button (hidden for llamacpp) -->
+                    <div id="modelSelectionGroup">
+                        <div style="display: flex; gap: 10px; align-items: center;">
+                            <select class="setting-input" id="modelSettingsSelect" style="flex: 1;"></select>
+                            <button class="control-btn" id="removeModelBtn" style="display: none; background-color: #d9534f; padding: 8px 12px;">Remove</button>
+                        </div>
+
+                        <!-- Add Model UI -->
+                        <div class="add-model-ui" id="addModelUI">
+                            <button class="control-btn" id="addModelBtn">Add Model</button>
+                            <div class="new-model-input" id="newModelInputContainer" style="display: none; margin-top: 10px;">
+                                <input type="text" class="setting-input" id="newModelName" placeholder="Enter model name">
+                                <button class="control-btn" id="saveModelBtn">Save Model</button>
+                                <button class="control-btn" id="cancelAddModelBtn">Cancel</button>
+                            </div>
                         </div>
                     </div>
                     

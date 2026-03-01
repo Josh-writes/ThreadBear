@@ -1280,7 +1280,7 @@
       const unfiledChats = state.history.filter(c => !chatsInFolders.has(c.filename) && !c.parent_chat_id);
       if (unfiledChats.length > 0) {
         const label = el('div', 'folder-section-label');
-        label.textContent = 'Folders';
+        label.textContent = 'Chats';
         E.chatHistory.appendChild(label);
       }
     }
@@ -2955,6 +2955,10 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
     E.providerSelect.addEventListener('change', async () => {
       const p = E.providerSelect.value;
 
+      // Hide model selection for llamacpp
+      const modelSelGrp = $('modelSelectionGroup');
+      if (modelSelGrp) modelSelGrp.style.display = p === 'llamacpp' ? 'none' : '';
+
       // DO NOT mirror to header - settings panel is independent!
 
       // Rebuild settings model list for this provider
@@ -3145,6 +3149,8 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
       const hide = provider === 'llamacpp';
       E.modelHeader.style.display = hide ? 'none' : '';
       if (E.refreshModelsBtn) E.refreshModelsBtn.style.display = hide ? 'none' : '';
+      const modelSelGrp = $('modelSelectionGroup');
+      if (modelSelGrp) modelSelGrp.style.display = hide ? 'none' : '';
     }
 
     // Header provider/model
