@@ -151,18 +151,54 @@ tool_registry.register_tool('run_command', run_command, {
 
 
 # === web_request ===
+
+# Path to web-to-markdown CLI
+_PROJECT_ROOT = Path(os.path.abspath(os.path.dirname(os.path.dirname(__file__))))
+_MARKITDOWN_CLI = _PROJECT_ROOT / '_workspace' / 'mark-it-down' / 'dist' / 'bin' / 'web-to-markdown.js'
+
+
+def _fetch_as_markdown(url: str, timeout: int = 30) -> str:
+    """Use web-to-markdown to convert a URL to clean Markdown."""
+    result = subprocess.run(
+        ['node', str(_MARKITDOWN_CLI), url, '--timeout', str(timeout * 1000)],
+        capture_output=True, text=True, timeout=timeout + 5,
+        cwd=str(_PROJECT_ROOT),
+    )
+    if result.returncode != 0:
+        return None  # Fall back to raw requests
+    return result.stdout
+
+
 def web_request(args: dict) -> dict:
-    """Make an HTTP request with timeout and size limit."""
+    """Make an HTTP request. GET requests return clean Markdown when possible."""
     url = args.get('url', '')
     method = args.get('method', 'GET').upper()
     timeout = args.get('timeout', 15)
     max_size = args.get('max_size', 50_000)
     headers = args.get('headers', {})
     body = args.get('body')
-    
+    raw = args.get('raw', False)
+
     if not url:
         return {'error': 'No URL provided'}
-    
+
+    # For GET requests to web pages, try Markdown conversion first
+    if method == 'GET' and not raw and not body and _MARKITDOWN_CLI.exists():
+        try:
+            md = _fetch_as_markdown(url, timeout=timeout)
+            if md and md.strip():
+                content = md[:max_size]
+                return {
+                    'status_code': 200,
+                    'content': content,
+                    'format': 'markdown',
+                    'truncated': len(md) > max_size,
+                    'url': url,
+                }
+        except Exception:
+            pass  # Fall through to raw request
+
+    # Fallback: raw HTTP request
     try:
         resp = requests.request(
             method, url, timeout=timeout,
@@ -170,10 +206,11 @@ def web_request(args: dict) -> dict:
             data=body
         )
         content = resp.text[:max_size]
-        
+
         return {
             'status_code': resp.status_code,
             'content': content,
+            'format': 'raw',
             'truncated': len(resp.text) > max_size,
             'headers': dict(resp.headers),
             'url': url
@@ -183,11 +220,12 @@ def web_request(args: dict) -> dict:
 
 
 tool_registry.register_tool('web_request', web_request, {
-    'description': 'Make an HTTP request to a URL.',
+    'description': 'Fetch a web page or make an HTTP request. GET requests automatically convert HTML to clean Markdown for readability. Use raw=true to get the original HTML.',
     'properties': {
         'url': {'type': 'string', 'description': 'The URL to request'},
         'method': {'type': 'string', 'description': 'HTTP method (default GET)'},
         'timeout': {'type': 'integer', 'description': 'Timeout in seconds (default 15)'},
+        'raw': {'type': 'boolean', 'description': 'Return raw HTML instead of Markdown (default false)'},
         'headers': {'type': 'object', 'description': 'Request headers (optional)'},
         'body': {'type': 'string', 'description': 'Request body (optional)'}
     },

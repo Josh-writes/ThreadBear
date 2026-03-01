@@ -1,119 +1,90 @@
 """
 URL Reader for ThreadBear
 
-Handles web page ingestion using requests + BeautifulSoup.
-Converts HTML to clean markdown text.
+Converts web pages to clean Markdown using the mark-it-down tool
+(web-to-markdown Node.js CLI). Falls back to requests if unavailable.
 """
+import os
+import re
+import subprocess
+from pathlib import Path
+
 from .registry import reader_registry
+
+# Resolve path to the web-to-markdown CLI relative to project root
+_PROJECT_ROOT = Path(os.path.abspath(os.path.dirname(os.path.dirname(__file__))))
+_MARKITDOWN_CLI = _PROJECT_ROOT / '_workspace' / 'mark-it-down' / 'dist' / 'bin' / 'web-to-markdown.js'
+
+
+def _run_markitdown(url: str, timeout: int = 30) -> str:
+    """Run web-to-markdown CLI and return the Markdown output."""
+    result = subprocess.run(
+        ['node', str(_MARKITDOWN_CLI), url, '--timeout', str(timeout * 1000)],
+        capture_output=True, text=True, timeout=timeout + 5,
+        cwd=str(_PROJECT_ROOT),
+    )
+    if result.returncode != 0:
+        stderr = result.stderr.strip()
+        raise RuntimeError(f"web-to-markdown failed: {stderr or 'unknown error'}")
+    return result.stdout
 
 
 class UrlReader:
-    """Reader for web URLs."""
+    """Reader for web URLs — converts pages to clean Markdown."""
 
     @staticmethod
-    def extract_text(url):
-        """Fetch URL, convert to clean text."""
-        # Try trafilatura first (best for article extraction)
-        try:
-            import trafilatura
-            downloaded = trafilatura.fetch_url(url)
-            if downloaded:
-                text = trafilatura.extract(downloaded, include_links=True)
-                if text:
-                    return text
-        except ImportError:
-            pass
-        except Exception:
-            pass
-        
-        # Fallback: requests + BeautifulSoup
-        try:
-            import requests
-            from bs4 import BeautifulSoup
-            
-            resp = requests.get(url, timeout=15, headers={
-                'User-Agent': 'Mozilla/5.0 (compatible; ThreadBear/1.0; +https://github.com/threadbear)'
-            })
-            resp.raise_for_status()
-            
-            soup = BeautifulSoup(resp.text, 'html.parser')
-            
-            # Remove scripts, styles, and other non-content elements
-            for tag in soup(['script', 'style', 'nav', 'footer', 'header', 'aside']):
-                tag.decompose()
-            
-            # Get text
-            text = soup.get_text(separator='\n', strip=True)
-            
-            # Clean up whitespace
-            lines = [line.strip() for line in text.split('\n') if line.strip()]
-            return '\n'.join(lines)
-            
-        except ImportError:
-            raise ImportError("URL reading requires requests and beautifulsoup4: pip install requests beautifulsoup4")
-        except Exception as e:
-            raise Exception(f"Failed to fetch URL: {e}")
+    def extract_text(url: str) -> str:
+        """Fetch URL, convert to clean Markdown text."""
+        if not _MARKITDOWN_CLI.exists():
+            raise RuntimeError(
+                "web-to-markdown not built. Run: cd _workspace/mark-it-down && npm install && npm run build"
+            )
+        text = _run_markitdown(url)
+        if not text or not text.strip():
+            raise RuntimeError(f"No content extracted from {url}")
+        return text
 
     @staticmethod
-    def extract_segments(url):
-        """Section-based segmentation from HTML headings."""
-        try:
-            import requests
-            from bs4 import BeautifulSoup
-        except ImportError:
-            raise ImportError("URL reading requires requests and beautifulsoup4: pip install requests beautifulsoup4")
-        
-        resp = requests.get(url, timeout=15, headers={
-            'User-Agent': 'Mozilla/5.0 (compatible; ThreadBear/1.0)'
-        })
-        resp.raise_for_status()
-        
-        soup = BeautifulSoup(resp.text, 'html.parser')
-        
-        # Remove non-content elements
-        for tag in soup(['script', 'style', 'nav', 'footer', 'header', 'aside']):
-            tag.decompose()
-        
-        # Find all headings
-        headings = soup.find_all(['h1', 'h2', 'h3', 'h4', 'h5', 'h6'])
-        
+    def extract_segments(url: str) -> list:
+        """Split Markdown output into segments by headings."""
+        if not _MARKITDOWN_CLI.exists():
+            raise RuntimeError(
+                "web-to-markdown not built. Run: cd _workspace/mark-it-down && npm install && npm run build"
+            )
+        text = _run_markitdown(url)
+        if not text or not text.strip():
+            return []
+
+        # Split on markdown headings (# through ######)
         segments = []
-        for i, heading in enumerate(headings):
-            # Get content between this heading and the next
-            content = []
-            current = heading.next_sibling
-            while current and current.name not in ['h1', 'h2', 'h3', 'h4', 'h5', 'h6']:
-                if hasattr(current, 'get_text'):
-                    content.append(current.get_text(strip=True))
-                elif isinstance(current, str) and current.strip():
-                    content.append(current.strip())
-                current = current.next_sibling if hasattr(current, 'next_sibling') else None
-            
-            text = heading.get_text(strip=True)
-            if content:
-                text += '\n\n' + '\n'.join(content)
-            
-            if text.strip():
+        # Find all heading positions
+        heading_pattern = re.compile(r'^(#{1,6})\s+(.+)$', re.MULTILINE)
+        matches = list(heading_pattern.finditer(text))
+
+        if not matches:
+            # No headings — return entire content as one segment
+            return [{
+                'text': text.strip(),
+                'start': 0,
+                'end': 1,
+                'tokens': len(text) // 4,
+                'label': 'Web Page Content',
+            }]
+
+        for i, match in enumerate(matches):
+            start_pos = match.start()
+            end_pos = matches[i + 1].start() if i + 1 < len(matches) else len(text)
+            section_text = text[start_pos:end_pos].strip()
+
+            if section_text:
                 segments.append({
-                    'text': text,
+                    'text': section_text,
                     'start': i,
                     'end': i + 1,
-                    'tokens': len(text) // 4,
-                    'label': heading.get_text(strip=True)[:60]
+                    'tokens': len(section_text) // 4,
+                    'label': match.group(2).strip()[:60],
                 })
-        
-        # If no headings found, return entire content as one segment
-        if not segments:
-            text = soup.get_text(separator='\n', strip=True)
-            if text.strip():
-                segments.append({
-                    'text': text,
-                    'start': 0,
-                    'end': 1,
-                    'tokens': len(text) // 4,
-                    'label': 'Web Page Content'
-                })
-        
+
         return segments
 
 
