@@ -11,6 +11,7 @@ config.json
 chats/
 documents/
 threadbear_docs.db
+threadbear.db
 
 # Tool configs
 .claude/
