@@ -15,8 +15,13 @@ def read_file(args: dict) -> dict:
     """Read file contents with size limit."""
     path = args.get('path', '')
     max_size = args.get('max_size', 100_000)  # 100KB default
-    
+
     p = Path(path)
+    # Relative paths resolve to toolbox/ first
+    if not p.is_absolute():
+        toolbox_path = Path('toolbox') / p
+        if toolbox_path.exists():
+            p = toolbox_path
     if not p.exists():
         return {'error': f'File not found: {path}'}
     
@@ -47,10 +52,14 @@ def write_file(args: dict) -> dict:
     """Write content to a file. Creates parent directories if needed."""
     path = Path(args.get('path', ''))
     content = args.get('content', '')
-    
+
     if not path:
         return {'error': 'No path provided'}
-    
+
+    # Relative paths go into toolbox/
+    if not path.is_absolute():
+        path = Path('toolbox') / path
+
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content, encoding='utf-8')
     

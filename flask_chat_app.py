@@ -13,6 +13,7 @@ except ImportError:
 
 import json
 import sqlite3
+import subprocess
 import threading
 import time
 import re
@@ -851,6 +852,22 @@ class FlaskChatApp:
                     tool_config = self.config.get_tool_config(provider)
                     tools_enabled = tool_config.get('enabled', False)
                     tool_schemas = tool_registry.get_schemas_for_provider() if tools_enabled else None
+
+                    # Inject tool-awareness into the system prompt
+                    if tools_enabled and tool_schemas:
+                        tool_names = [t['function']['name'] for t in tool_schemas]
+                        tool_hint = (
+                            "\n\nYou have access to the following tools: "
+                            + ", ".join(tool_names) + ". "
+                            "When the user asks you to write files, run commands, list directories, "
+                            "or perform actions on their system, USE the tools directly instead of "
+                            "just showing code. Execute the actions using your tools."
+                        )
+                        # Append to existing system message or insert one
+                        if api_messages and api_messages[0].get('role') == 'system':
+                            api_messages[0]['content'] += tool_hint
+                        else:
+                            api_messages.insert(0, {'role': 'system', 'content': tool_hint.strip()})
                     safety_mgr = ToolSafetyManager({
                         'blocked_commands': tool_config.get('blocked_commands', []),
                         'tool_workspace': tool_config.get('workspace'),
@@ -861,6 +878,10 @@ class FlaskChatApp:
                     stream_usage = None  # Capture real token usage from provider
                     max_overflow_retries = 2
                     for iteration in range(max_iterations):
+                        # Rate-limit protection: pause between tool loop iterations
+                        if iteration > 0:
+                            time.sleep(2)
+
                         tool_calls_this_round = []
                         content_buffer = ""
 
@@ -1100,6 +1121,69 @@ class FlaskChatApp:
             self.config.save_config()
 
             return jsonify({"success": True})
+
+        # ---- Toolbox file management ----
+
+        TOOLBOX_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'toolbox')
+
+        @app.route('/api/toolbox/files', methods=['GET'])
+        def list_toolbox_files():
+            """List all files in the toolbox/ directory."""
+            os.makedirs(TOOLBOX_DIR, exist_ok=True)
+            files = []
+            for name in sorted(os.listdir(TOOLBOX_DIR)):
+                if name.startswith('.'):
+                    continue
+                fpath = os.path.join(TOOLBOX_DIR, name)
+                if os.path.isfile(fpath):
+                    stat = os.stat(fpath)
+                    files.append({
+                        'name': name,
+                        'size': stat.st_size,
+                        'modified': stat.st_mtime,
+                    })
+            return jsonify({"success": True, "files": files})
+
+        @app.route('/api/toolbox/files/<path:filename>', methods=['GET'])
+        def read_toolbox_file(filename):
+            """Read contents of a toolbox file."""
+            fpath = os.path.join(TOOLBOX_DIR, filename)
+            if not os.path.isfile(fpath):
+                return jsonify({"success": False, "error": "File not found"}), 404
+            try:
+                with open(fpath, 'r', encoding='utf-8', errors='replace') as f:
+                    content = f.read()
+                return jsonify({"success": True, "content": content, "name": filename})
+            except Exception as e:
+                return jsonify({"success": False, "error": str(e)}), 500
+
+        @app.route('/api/toolbox/files/<path:filename>', methods=['DELETE'])
+        def delete_toolbox_file(filename):
+            """Delete a file from toolbox/."""
+            fpath = os.path.join(TOOLBOX_DIR, filename)
+            if not os.path.isfile(fpath):
+                return jsonify({"success": False, "error": "File not found"}), 404
+            try:
+                os.remove(fpath)
+                return jsonify({"success": True})
+            except Exception as e:
+                return jsonify({"success": False, "error": str(e)}), 500
+
+        @app.route('/api/toolbox/open/<path:filename>', methods=['POST'])
+        def open_toolbox_file(filename):
+            """Open a toolbox file in Notepad++."""
+            fpath = os.path.join(TOOLBOX_DIR, filename)
+            if not os.path.isfile(fpath):
+                return jsonify({"success": False, "error": "File not found"}), 404
+            try:
+                subprocess.Popen(['notepad++.exe', fpath])
+                return jsonify({"success": True})
+            except FileNotFoundError:
+                # Fallback to regular notepad
+                subprocess.Popen(['notepad.exe', fpath])
+                return jsonify({"success": True, "fallback": "notepad"})
+            except Exception as e:
+                return jsonify({"success": False, "error": str(e)}), 500
 
         # ---- Folder management ----
         @app.route('/api/folders', methods=['GET'])

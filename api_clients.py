@@ -537,6 +537,10 @@ def call_mistral_stream(messages: List[Dict], config: Dict, tools=None) -> Itera
             "stream": True,
             "stream_options": {"include_usage": True}
         }
+        # Add tools if provided
+        if tools:
+            data['tools'] = tools
+            data['tool_choice'] = 'auto'
         # Optional sampling params (per-model/per-provider)
         if "top_p" in config:
             data["top_p"] = config["top_p"]
@@ -557,6 +561,7 @@ def call_mistral_stream(messages: List[Dict], config: Dict, tools=None) -> Itera
         if response.status_code != 200:
             raise LLMApiError(response.status_code, response.text, "mistral")
 
+        tool_calls_acc = {}  # index -> {id, function: {name, arguments}}
         usage_data = None
         for line in response.iter_lines():
             if line:
@@ -579,6 +584,27 @@ def call_mistral_stream(messages: List[Dict], config: Dict, tools=None) -> Itera
                             content = delta.get('content', '')
                             if content:
                                 yield content
+                            # Tool call deltas
+                            if delta.get('tool_calls'):
+                                for tc_delta in delta['tool_calls']:
+                                    idx = tc_delta.get('index', 0)
+                                    if idx not in tool_calls_acc:
+                                        tool_calls_acc[idx] = {
+                                            'id': tc_delta.get('id', f'call_{idx}'),
+                                            'type': 'function',
+                                            'function': {'name': '', 'arguments': ''}
+                                        }
+                                    if tc_delta.get('function', {}).get('name'):
+                                        tool_calls_acc[idx]['function']['name'] = tc_delta['function']['name']
+                                    if tc_delta.get('function', {}).get('arguments'):
+                                        tool_calls_acc[idx]['function']['arguments'] += tc_delta['function']['arguments']
+                            # On finish_reason='tool_calls', yield accumulated tool calls
+                            finish = chunk['choices'][0].get('finish_reason')
+                            if finish == 'tool_calls' and tool_calls_acc:
+                                for tc in tool_calls_acc.values():
+                                    tc['function']['arguments'] = _repair_json(tc['function']['arguments'])
+                                yield {'type': 'tool_calls', 'tool_calls': list(tool_calls_acc.values())}
+                                tool_calls_acc = {}
                     except json.JSONDecodeError:
                         continue
         if usage_data:
@@ -604,10 +630,26 @@ def _llamacpp_sanitize_messages(api_messages: List[Dict]) -> List[Dict]:
     if not api_messages:
         return api_messages
 
+    # Step 0: Separate tool-related messages (pass through unchanged)
+    # assistant messages with tool_calls and role='tool' messages are part of
+    # the tool loop and must not be mangled by sanitization.
+    tool_messages = []
+    regular_messages = []
+    for msg in api_messages:
+        if msg.get("role") == "tool" or msg.get("tool_calls"):
+            tool_messages.append(msg)
+        else:
+            regular_messages.append(msg)
+
+    # If we have tool messages, pass everything through unchanged —
+    # the model needs the exact tool call/response structure
+    if tool_messages:
+        return api_messages
+
     # Step 1: Separate leading system messages from the rest
     system_parts = []
     rest = []
-    for msg in api_messages:
+    for msg in regular_messages:
         if msg["role"] == "system" and not rest:
             system_parts.append(msg["content"])
         else:
@@ -791,6 +833,11 @@ def call_llamacpp_stream(messages: List[Dict], config: Dict, tools=None) -> Iter
             "stream": True
         }
 
+        # Add tools if provided
+        if tools:
+            data['tools'] = tools
+            data['tool_choice'] = 'auto'
+
         # Optional sampling params
         if "top_p" in config:
             data["top_p"] = config["top_p"]
@@ -814,6 +861,7 @@ def call_llamacpp_stream(messages: List[Dict], config: Dict, tools=None) -> Iter
         if response.status_code != 200:
             raise LLMApiError(response.status_code, response.text, "llamacpp")
 
+        tool_calls_acc = {}  # index -> {id, function: {name, arguments}}
         usage_data = None
         for line in response.iter_lines():
             if not line:
@@ -837,6 +885,27 @@ def call_llamacpp_stream(messages: List[Dict], config: Dict, tools=None) -> Iter
                         content = delta.get('content', '')
                         if content:
                             yield content
+                        # Tool call deltas
+                        if delta.get('tool_calls'):
+                            for tc_delta in delta['tool_calls']:
+                                idx = tc_delta.get('index', 0)
+                                if idx not in tool_calls_acc:
+                                    tool_calls_acc[idx] = {
+                                        'id': tc_delta.get('id', f'call_{idx}'),
+                                        'type': 'function',
+                                        'function': {'name': '', 'arguments': ''}
+                                    }
+                                if tc_delta.get('function', {}).get('name'):
+                                    tool_calls_acc[idx]['function']['name'] = tc_delta['function']['name']
+                                if tc_delta.get('function', {}).get('arguments'):
+                                    tool_calls_acc[idx]['function']['arguments'] += tc_delta['function']['arguments']
+                        # On finish_reason='tool_calls', yield accumulated tool calls
+                        finish = chunk['choices'][0].get('finish_reason')
+                        if finish == 'tool_calls' and tool_calls_acc:
+                            for tc in tool_calls_acc.values():
+                                tc['function']['arguments'] = _repair_json(tc['function']['arguments'])
+                            yield {'type': 'tool_calls', 'tool_calls': list(tool_calls_acc.values())}
+                            tool_calls_acc = {}
                 except json.JSONDecodeError:
                     continue
         if usage_data:
@@ -963,6 +1032,10 @@ def call_openrouter_stream(messages: List[Dict], config: Dict, tools=None) -> It
             "temperature": config.get("openrouter_temperature", 0.7),
             "stream": True
         }
+        # Add tools if provided
+        if tools:
+            data['tools'] = tools
+            data['tool_choice'] = 'auto'
         # Optional sampling params (per-model/per-provider)
         if "top_p" in config:
             data["top_p"] = config["top_p"]
@@ -984,6 +1057,7 @@ def call_openrouter_stream(messages: List[Dict], config: Dict, tools=None) -> It
         if response.status_code != 200:
             raise LLMApiError(response.status_code, response.text, "openrouter")
 
+        tool_calls_acc = {}  # index -> {id, function: {name, arguments}}
         usage_data = None
         for line in response.iter_lines(decode_unicode=False):
             if line:
@@ -1006,6 +1080,27 @@ def call_openrouter_stream(messages: List[Dict], config: Dict, tools=None) -> It
                             content = delta.get('content', '')
                             if content:
                                 yield content
+                            # Tool call deltas
+                            if delta.get('tool_calls'):
+                                for tc_delta in delta['tool_calls']:
+                                    idx = tc_delta.get('index', 0)
+                                    if idx not in tool_calls_acc:
+                                        tool_calls_acc[idx] = {
+                                            'id': tc_delta.get('id', f'call_{idx}'),
+                                            'type': 'function',
+                                            'function': {'name': '', 'arguments': ''}
+                                        }
+                                    if tc_delta.get('function', {}).get('name'):
+                                        tool_calls_acc[idx]['function']['name'] = tc_delta['function']['name']
+                                    if tc_delta.get('function', {}).get('arguments'):
+                                        tool_calls_acc[idx]['function']['arguments'] += tc_delta['function']['arguments']
+                            # On finish_reason='tool_calls', yield accumulated tool calls
+                            finish = chunk['choices'][0].get('finish_reason')
+                            if finish == 'tool_calls' and tool_calls_acc:
+                                for tc in tool_calls_acc.values():
+                                    tc['function']['arguments'] = _repair_json(tc['function']['arguments'])
+                                yield {'type': 'tool_calls', 'tool_calls': list(tool_calls_acc.values())}
+                                tool_calls_acc = {}
                     except json.JSONDecodeError:
                         continue
         if usage_data:

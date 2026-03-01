@@ -17,5 +17,8 @@ folders.json
 # Tool configs
 .claude/
 
+# User scripts
+toolbox/
+
 # Non-code workspace (notes, vision docs, old DBs, screenshots)
 _workspace/

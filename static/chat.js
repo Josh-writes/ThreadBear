@@ -56,6 +56,7 @@
       message: $('messageContextMenu')
     },
     ctxMenuTarget: { type: null, index: null, filename: null },
+    toolboxTarget: null,
 
     // settings
     theme: (document.documentElement.getAttribute('data-theme') || 'light')
@@ -163,6 +164,22 @@
     mainUtilizationFill: $('mainUtilizationFill'),
     mainUtilizationBreakdown: $('mainUtilizationBreakdown'),
     refreshModelsBtn: $('refreshModelsBtn'),
+
+    // Tools panel
+    toolsSettingsPanel: $('toolsSettingsPanel'),
+    closeToolsSettingsBtn: $('closeToolsSettingsBtn'),
+    openToolsSettingsBtn: $('openToolsSettingsBtn'),
+    toolsEnabledCheckbox: $('toolsEnabledCheckbox'),
+    toolsProviderHint: $('toolsProviderHint'),
+    toolsStatus: $('toolsStatus'),
+    toolsIndicator: $('toolsIndicator'),
+    toolboxFileList: $('toolboxFileList'),
+    toolboxRefreshBtn: $('toolboxRefreshBtn'),
+    toolboxContextMenu: $('toolboxContextMenu'),
+    toolboxCopyContents: $('toolboxCopyContents'),
+    toolboxOpenNotepad: $('toolboxOpenNotepad'),
+    toolboxEditInChat: $('toolboxEditInChat'),
+    toolboxDeleteFile: $('toolboxDeleteFile'),
 
     // System Settings panel (appearance)
     systemSettingsPanel: $('systemSettingsPanel'),
@@ -396,6 +413,71 @@
   }
   content.appendChild(bubble);
 
+  // ===== Tool events (persisted in state) =====
+  if (msg.tool_events && msg.tool_events.length) {
+    const toolContainer = el('div', 'tool-chips-container');
+    msg.tool_events.forEach(te => {
+      const block = el('div', 'tool-block ' + te.status);
+      const header = el('div', 'tool-block-header');
+      const icon = te.status === 'running' ? '⏳' : te.status === 'success' ? '✅' : '❌';
+      header.innerHTML = `<span class="tool-icon">${icon}</span><span class="tool-name">${te.name}</span>`;
+      block.appendChild(header);
+
+      // Args
+      if (te.args && Object.keys(te.args).length) {
+        const argsEl = el('div', 'tool-block-args');
+        argsEl.textContent = Object.entries(te.args).map(([k,v]) => `${k}: ${typeof v === 'string' ? v : JSON.stringify(v)}`).join('\n');
+        block.appendChild(argsEl);
+      }
+
+      // Result output
+      if (te.result) {
+        const resultEl = el('div', 'tool-block-result');
+        const r = te.result.result || te.result;  // unwrap {success, result} wrapper
+        let output = '';
+        if (r.error) {
+          output = 'Error: ' + r.error;
+        } else if (r.stdout !== undefined) {
+          // run_command result
+          output = r.stdout || '';
+          if (r.stderr) output += (output ? '\n' : '') + 'stderr: ' + r.stderr;
+          if (r.exit_code !== undefined && r.exit_code !== 0) output += '\n(exit code ' + r.exit_code + ')';
+        } else if (r.content !== undefined) {
+          // read_file result
+          output = r.truncated ? r.content + '\n... (truncated)' : r.content;
+        } else if (r.written) {
+          output = 'Wrote ' + r.size + ' bytes to ' + r.written;
+        } else if (r.files) {
+          // list_directory result
+          output = r.files.map(f => (f.type === 'dir' ? '📁 ' : '📄 ') + f.name).join('\n');
+        } else {
+          output = JSON.stringify(r, null, 2);
+        }
+        // Truncate very long output for display
+        if (output.length > 2000) output = output.substring(0, 2000) + '\n... (truncated)';
+        resultEl.textContent = output;
+        block.appendChild(resultEl);
+      }
+
+      // Toggle expand/collapse
+      block.dataset.expanded = 'false';
+      const argsChild = block.querySelector('.tool-block-args');
+      const resultChild = block.querySelector('.tool-block-result');
+      if (argsChild) argsChild.style.display = 'none';
+      if (resultChild) resultChild.style.display = 'none';
+      header.style.cursor = 'pointer';
+      header.addEventListener('click', () => {
+        const exp = block.dataset.expanded === 'true';
+        block.dataset.expanded = exp ? 'false' : 'true';
+        if (argsChild) argsChild.style.display = exp ? 'none' : 'block';
+        if (resultChild) resultChild.style.display = exp ? 'none' : 'block';
+      });
+
+      toolContainer.appendChild(block);
+    });
+    content.appendChild(toolContainer);
+  }
+
   // === Inline preview toggle when a summary is attached ===
   // Removed: summary is always shown inline below the bubble.
 
@@ -466,6 +548,13 @@
     e.preventDefault();
     state.ctxMenuTarget = { type: 'message', index };
     openMenuAt(E.msgContextMenu, e.pageX, e.pageY, () => {
+      // Restore all items to default visibility (model label menu hides these)
+      E.menuBranchFull.style.display = '';
+      E.menuSummarize.style.display = '';
+      E.menuCopy.style.display = '';
+      E.menuDelete.style.display = '';
+      E.menuViewUsageDetails.style.display = 'none';
+
       const sel = window.getSelection ? window.getSelection().toString().trim() : '';
       E.menuBranchSelected.style.display = sel ? '' : 'none';
       E.menuCopySelected.style.display = sel ? '' : 'none';
@@ -537,15 +626,33 @@
 
   // ===== Tool Chip Rendering (Phase 3) =====
 
+  function getOrCreateToolContainer(msgIndex) {
+    const msgEl = E.messages.querySelector(`.message.assistant[data-index="${msgIndex}"]`);
+    if (!msgEl) return null;
+    let container = msgEl.querySelector('.tool-chips-container');
+    if (!container) {
+      container = el('div', 'tool-chips-container');
+      // Insert after the message-bubble
+      const bubble = msgEl.querySelector('.message-bubble');
+      if (bubble && bubble.nextSibling) {
+        bubble.parentNode.insertBefore(container, bubble.nextSibling);
+      } else if (bubble) {
+        bubble.parentNode.appendChild(container);
+      } else {
+        msgEl.querySelector('.message-content')?.appendChild(container);
+      }
+    }
+    return container;
+  }
+
   function appendToolChip(msgIndex, name, args, status) {
-    // Get or create the message bubble
-    const bubble = E.messages.querySelector(`.message.assistant[data-index="${msgIndex}"] .message-bubble`);
-    if (!bubble) return;
+    const container = getOrCreateToolContainer(msgIndex);
+    if (!container) return;
 
     const chip = el('div', 'tool-chip ' + status);
     chip.dataset.toolName = name;
     chip.dataset.toolIndex = msgIndex;
-    
+
     const argsStr = truncateArgs(args);
     chip.innerHTML = `
       <span class="tool-icon">🔧</span>
@@ -553,14 +660,16 @@
       <span class="tool-args">${argsStr}</span>
       <span class="tool-status-icon">⏳</span>
     `;
-    
+
     chip.onclick = () => toggleToolDetail(chip);
-    bubble.appendChild(chip);
-    bubble.scrollTop = bubble.scrollHeight;
+    container.appendChild(chip);
+    E.messages.scrollTop = E.messages.scrollHeight;
   }
 
   function updateToolChip(msgIndex, name, result) {
-    const chip = E.messages.querySelector(`.message.assistant[data-index="${msgIndex}"] .tool-chip[data-tool-name="${name}"].running`);
+    const msgEl = E.messages.querySelector(`.message.assistant[data-index="${msgIndex}"]`);
+    if (!msgEl) return;
+    const chip = msgEl.querySelector(`.tool-chip[data-tool-name="${name}"].running`);
     if (!chip) return;
 
     const success = result && result.success;
@@ -2370,10 +2479,19 @@ async function loadPrompts() {
             E.messages.scrollTop = E.messages.scrollHeight;
           }
         } else if (data.type === 'tool_start') {
-          // Tool execution starting - append tool chip
+          // Store in state so it survives renderMessages()
+          if (!state.messages[idx].tool_events) state.messages[idx].tool_events = [];
+          state.messages[idx].tool_events.push({
+            name: data.name, args: data.args, status: 'running', result: null
+          });
           appendToolChip(idx, data.name, data.args, 'running');
         } else if (data.type === 'tool_end') {
-          // Tool execution complete - update chip
+          // Update the matching tool event in state
+          if (state.messages[idx].tool_events) {
+            const te = [...state.messages[idx].tool_events].reverse()
+              .find(t => t.name === data.name && t.status === 'running');
+            if (te) { te.status = data.result?.success ? 'success' : 'error'; te.result = data.result; }
+          }
           updateToolChip(idx, data.name, data.result);
         } else if (data.type === 'title') {
           const ti = state.history.findIndex(c => c.filename === (data.filename || state.currentChatFile));
@@ -2676,6 +2794,7 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
     E.settingsPanel, E.promptsSettingsPanel,
     E.systemSettingsPanel, E.openrouterBrowsePanel,
     E.folderContextPanel, E.usageDetailsPanel,
+    E.toolsSettingsPanel,
   ];
 
   function openSettingsPanel(panel) {
@@ -2748,13 +2867,23 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
       E.promptEditor.style.display = 'none';
     });
 
-    // Open Appearance Settings  
+    // Open System Settings
     E.openAppearanceSettingsBtn.addEventListener('click', () => {
       E.settingsDropdown.classList.remove('open');
       openSettingsPanel(E.systemSettingsPanel);
     });
 
     E.closeSystemSettingsBtn.addEventListener('click', () => closeAllSettingsPanels());
+
+    // Open Tools Settings
+    E.openToolsSettingsBtn.addEventListener('click', () => {
+      E.settingsDropdown.classList.remove('open');
+      openSettingsPanel(E.toolsSettingsPanel);
+      updateToolsUI();
+      loadToolbox();
+    });
+
+    E.closeToolsSettingsBtn.addEventListener('click', () => closeAllSettingsPanels());
 
     // ===== Browse Models Panel (multi-provider) =====
     let _browseDebounce = null;
@@ -3174,6 +3303,7 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
         await refreshModelsHeader(p, null);
       }
       await refreshModelsSettings(p);
+      updateToolsUI();
     });
     E.modelHeader.addEventListener('change', async () => {
       const m = E.modelHeader.value;
@@ -3315,6 +3445,162 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
         });
       }
     }
+  }
+
+  // ====== Tools toggle ======
+  const TOOLS_UNSUPPORTED_PROVIDERS = ['google'];
+
+  async function loadToolsConfig() {
+    try {
+      const res = await fetch('/api/config/tools');
+      const data = await res.json();
+      if (data.success) {
+        state.toolsConfig = data.config || {};
+        updateToolsUI();
+      }
+    } catch (e) {
+      console.warn('Failed to load tools config:', e);
+    }
+  }
+
+  function updateToolsUI() {
+    const provider = state.currentProvider;
+    const unsupported = TOOLS_UNSUPPORTED_PROVIDERS.includes(provider);
+    const enabled = !unsupported && !!(state.toolsConfig || {})[provider];
+
+    if (E.toolsEnabledCheckbox) {
+      E.toolsEnabledCheckbox.checked = enabled;
+      E.toolsEnabledCheckbox.disabled = unsupported;
+    }
+    if (E.toolsProviderHint) {
+      E.toolsProviderHint.textContent = unsupported
+        ? 'Not supported for ' + provider[0].toUpperCase() + provider.slice(1)
+        : 'for ' + provider[0].toUpperCase() + provider.slice(1);
+    }
+    if (E.toolsIndicator) {
+      E.toolsIndicator.style.display = enabled ? '' : 'none';
+    }
+  }
+
+  async function loadToolbox() {
+    if (!E.toolboxFileList) return;
+    try {
+      const res = await fetch('/api/toolbox/files');
+      const data = await res.json();
+      const files = data.files || [];
+      if (files.length === 0) {
+        E.toolboxFileList.innerHTML = '<span style="font-size: 12px; color: var(--text-muted);">No scripts yet. Ask the LLM to write one!</span>';
+        return;
+      }
+      E.toolboxFileList.innerHTML = files.map(f => {
+        const sizeStr = f.size < 1024 ? f.size + ' B' : (f.size / 1024).toFixed(1) + ' KB';
+        const dateStr = new Date(f.modified * 1000).toLocaleString();
+        return `
+          <div class="toolbox-file-item" data-filename="${f.name}"
+               style="padding: 8px 10px; border: 1px solid var(--border-color); border-radius: 6px; font-size: 13px; cursor: context-menu;">
+            <div style="font-weight: 500; color: var(--text-primary);">📄 ${f.name}</div>
+            <div style="font-size: 11px; color: var(--text-secondary); margin-top: 2px;">${sizeStr} &middot; ${dateStr}</div>
+          </div>`;
+      }).join('');
+
+      // Attach right-click handlers
+      E.toolboxFileList.querySelectorAll('.toolbox-file-item').forEach(item => {
+        item.addEventListener('contextmenu', (e) => {
+          e.preventDefault();
+          state.toolboxTarget = item.dataset.filename;
+          openMenuAt(E.toolboxContextMenu, e.pageX, e.pageY);
+        });
+      });
+    } catch (e) {
+      console.warn('Failed to load toolbox:', e);
+      E.toolboxFileList.innerHTML = '<span style="font-size: 12px; color: var(--text-muted);">Failed to load toolbox</span>';
+    }
+  }
+
+  // Toolbox context menu actions
+  if (E.toolboxCopyContents) {
+    E.toolboxCopyContents.addEventListener('click', async () => {
+      E.toolboxContextMenu.style.display = 'none';
+      const name = state.toolboxTarget;
+      if (!name) return;
+      try {
+        const res = await fetch('/api/toolbox/files/' + encodeURIComponent(name));
+        const data = await res.json();
+        if (data.success) {
+          await navigator.clipboard.writeText(data.content);
+        }
+      } catch (e) { console.warn('Copy failed:', e); }
+    });
+  }
+
+  if (E.toolboxOpenNotepad) {
+    E.toolboxOpenNotepad.addEventListener('click', async () => {
+      E.toolboxContextMenu.style.display = 'none';
+      const name = state.toolboxTarget;
+      if (!name) return;
+      try {
+        await fetch('/api/toolbox/open/' + encodeURIComponent(name), { method: 'POST' });
+      } catch (e) { console.warn('Open failed:', e); }
+    });
+  }
+
+  if (E.toolboxEditInChat) {
+    E.toolboxEditInChat.addEventListener('click', async () => {
+      E.toolboxContextMenu.style.display = 'none';
+      const name = state.toolboxTarget;
+      if (!name) return;
+      try {
+        const res = await fetch('/api/toolbox/files/' + encodeURIComponent(name));
+        const data = await res.json();
+        if (data.success) {
+          await newChat();
+          E.userInput.value = '```\n' + data.content + '\n```';
+          E.userInput.focus();
+          closeAllSettingsPanels();
+        }
+      } catch (e) { console.warn('Edit in chat failed:', e); }
+    });
+  }
+
+  if (E.toolboxDeleteFile) {
+    E.toolboxDeleteFile.addEventListener('click', async () => {
+      E.toolboxContextMenu.style.display = 'none';
+      const name = state.toolboxTarget;
+      if (!name) return;
+      if (!confirm('Delete ' + name + '?')) return;
+      try {
+        await fetch('/api/toolbox/files/' + encodeURIComponent(name), { method: 'DELETE' });
+        loadToolbox();
+      } catch (e) { console.warn('Delete failed:', e); }
+    });
+  }
+
+  if (E.toolboxRefreshBtn) {
+    E.toolboxRefreshBtn.addEventListener('click', () => loadToolbox());
+  }
+
+  if (E.toolsEnabledCheckbox) {
+    E.toolsEnabledCheckbox.addEventListener('change', async () => {
+      const provider = state.currentProvider;
+      const enabled = E.toolsEnabledCheckbox.checked;
+      try {
+        await fetch('/api/config/tools', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ provider, enabled }),
+        });
+        if (!state.toolsConfig) state.toolsConfig = {};
+        state.toolsConfig[provider] = enabled;
+        updateToolsUI();
+        if (E.toolsStatus) {
+          E.toolsStatus.textContent = enabled ? 'Tools enabled' : 'Tools disabled';
+          setTimeout(() => { E.toolsStatus.textContent = ''; }, 2000);
+        }
+      } catch (e) {
+        console.error('Failed to toggle tools:', e);
+        if (E.toolsStatus) E.toolsStatus.textContent = 'Error saving';
+      }
+    });
   }
 
   // ====== Context bar bindings ======
@@ -4035,13 +4321,14 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
     console.time('TB:parallelLoad');
 
     // Load all critical data in parallel
-    const [configResult, promptsResult, historyResult, docsResult, messagesResult, foldersResult] = await Promise.allSettled([
+    const [configResult, promptsResult, historyResult, docsResult, messagesResult, foldersResult, _toolsResult] = await Promise.allSettled([
       loadConfigAndModels(),
       loadPrompts(),
       loadHistory(),
       loadDocs(),
       loadMessages(),
-      loadFolders()
+      loadFolders(),
+      loadToolsConfig()
     ]);
 
     console.timeEnd('TB:parallelLoad');

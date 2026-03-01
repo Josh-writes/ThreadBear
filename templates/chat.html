@@ -1533,6 +1533,13 @@
         }
 
         /* ===== Tool Chips (Phase 3) ===== */
+        .tool-chips-container {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 4px;
+            margin-top: 6px;
+        }
+
         .tool-chip {
             display: inline-flex;
             align-items: center;
@@ -1594,6 +1601,69 @@
 
         .tool-detail.hidden {
             display: none;
+        }
+
+        /* ===== Tool Blocks (persistent, expandable) ===== */
+        .tool-block {
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            margin: 4px 0;
+            overflow: hidden;
+            font-size: 13px;
+            width: 100%;
+        }
+
+        .tool-block-header {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            padding: 6px 10px;
+            background: var(--bg-secondary);
+            font-weight: 500;
+        }
+
+        .tool-block.success {
+            border-color: #4caf50;
+        }
+
+        .tool-block.error {
+            border-color: #f44336;
+        }
+
+        .tool-block.running {
+            border-color: var(--text-secondary);
+            animation: pulse 1.5s infinite;
+        }
+
+        .tool-block-args {
+            padding: 6px 10px;
+            font-family: 'Consolas', 'Monaco', monospace;
+            font-size: 12px;
+            color: var(--text-secondary);
+            white-space: pre-wrap;
+            word-break: break-all;
+            border-top: 1px solid var(--border-color);
+            background: var(--bg-primary);
+        }
+
+        .tool-block-result {
+            padding: 8px 10px;
+            font-family: 'Consolas', 'Monaco', monospace;
+            font-size: 12px;
+            white-space: pre-wrap;
+            word-break: break-all;
+            max-height: 300px;
+            overflow-y: auto;
+            border-top: 1px solid var(--border-color);
+            background: var(--bg-primary);
+        }
+
+        [data-theme="dark"] .tool-block.success {
+            border-color: #66bb6a;
+        }
+
+        [data-theme="dark"] .tool-block.error {
+            border-color: #ef5350;
         }
 
         .tool-icon {
@@ -1855,6 +1925,14 @@
             padding: 6px 10px;
             white-space: nowrap;
             align-self: center;
+        }
+
+        .tools-indicator {
+            font-size: 14px;
+            align-self: center;
+            cursor: default;
+            opacity: 0.7;
+            padding: 4px;
         }
 
         .message-input {
@@ -2621,7 +2699,10 @@
                             📝 System Prompts
                         </button>
                         <button class="settings-menu-item" id="openAppearanceSettingsBtn">
-                            🎨 Appearance
+                            ⚙️ System Settings
+                        </button>
+                        <button class="settings-menu-item" id="openToolsSettingsBtn">
+                            🔧 Tools
                         </button>
                         <button class="settings-menu-item" id="openBrowseModelsBtn">
                             🔍 Browse Models
@@ -2732,6 +2813,7 @@
             <div class="input-area">
                 <div class="input-container">
                     <div class="input-row">
+                        <span id="toolsIndicator" class="tools-indicator" style="display: none;" title="Tools enabled for this provider">🔧</span>
                         <button class="control-btn input-context-btn" id="contextSelectionBtn">Select Context</button>
                         <div class="input-field-wrap">
                             <textarea
@@ -2895,6 +2977,36 @@
             <div class="settings-section" style="display: none;">
                 <h4 class="section-title">Privacy & Security</h4>
                 <!-- Future settings like incognito defaults, data export, etc. -->
+            </div>
+        </div>
+    </div>
+
+    <!-- Tools Panel -->
+    <div class="settings-panel" id="toolsSettingsPanel">
+        <div class="settings-header">
+            <h3>Tools</h3>
+            <button class="control-btn" id="closeToolsSettingsBtn">✕</button>
+        </div>
+
+        <div class="settings-content">
+            <div class="settings-section">
+                <p style="font-size: 12px; color: var(--text-muted); margin-bottom: 12px;">
+                    Allow the LLM to read/write files, list directories, run commands, and make web requests. Tools are enabled per-provider.
+                </p>
+                <div class="setting-group" style="display: flex; align-items: center; gap: 10px;">
+                    <label class="setting-label" style="margin: 0; flex-shrink: 0;" for="toolsEnabledCheckbox">Enable Tools</label>
+                    <input type="checkbox" id="toolsEnabledCheckbox" style="width: 18px; height: 18px; accent-color: #10a37f; cursor: pointer;">
+                    <span id="toolsProviderHint" style="font-size: 12px; color: var(--text-muted); margin-left: auto;"></span>
+                </div>
+                <span id="toolsStatus" style="font-size: 12px; color: var(--text-muted); margin-top: 4px; display: block;"></span>
+            </div>
+
+            <div class="settings-section" id="toolsListSection">
+                <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px;">
+                    <h4 class="section-title" style="margin: 0;">Toolbox</h4>
+                    <button class="control-btn" id="toolboxRefreshBtn" title="Refresh" style="padding: 4px 8px; font-size: 12px;">↻</button>
+                </div>
+                <div id="toolboxFileList" style="display: flex; flex-direction: column; gap: 6px;"></div>
             </div>
         </div>
     </div>
@@ -3160,6 +3272,27 @@
     </div>
 
 
+
+    <!-- Toolbox context menu -->
+    <div class="context-menu" id="toolboxContextMenu">
+        <div class="context-menu-item" id="toolboxCopyContents">
+            <span>📋</span>
+            <span>Copy Contents</span>
+        </div>
+        <div class="context-menu-item" id="toolboxOpenNotepad">
+            <span>📝</span>
+            <span>Open in Notepad++</span>
+        </div>
+        <div class="context-menu-item" id="toolboxEditInChat">
+            <span>💬</span>
+            <span>Edit in Chat</span>
+        </div>
+        <div class="context-menu-separator"></div>
+        <div class="context-menu-item" id="toolboxDeleteFile">
+            <span>🗑️</span>
+            <span>Delete</span>
+        </div>
+    </div>
 
     <!-- Move to folder submenu -->
     <div class="context-menu" id="moveToFolderMenu">
