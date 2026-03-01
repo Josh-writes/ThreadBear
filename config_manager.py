@@ -72,25 +72,13 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "stored_mistral_models": [],
     "stored_openrouter_models": [],
 
-    # llama.cpp remote server
-    "llamacpp_url": "http://192.168.2.115:8080",
-    "llamacpp_zerotier_url": "http://10.210.60.6:8080",
-    "llamacpp_model_dir": "/home/josh/models",
+    # llama.cpp server
+    "llamacpp_url": "http://localhost:8080",
     "llamacpp_model": "",
     "llamacpp_temperature": 0.7,
     "llamacpp_system_prompt": "",
     "llamacpp_max_tokens": 8192,
     "stored_llamacpp_models": [],
-
-    # llama.cpp SSH remote management
-    "llamacpp_ssh_enabled": True,
-    "llamacpp_ssh_host": "192.168.2.115",
-    "llamacpp_zerotier_ssh_host": "10.210.60.6",
-    "llamacpp_ssh_port": 2222,
-    "llamacpp_ssh_user": "josh",
-    "llamacpp_server_binary": "~/src/llama.cpp/build/bin/llama-server",
-    "llamacpp_server_args": "-ngl 99 -t 16",
-    "llamacpp_total_vram_gb": 0,
 
     # Auto-title generation
     "title_provider": "groq",
@@ -228,6 +216,14 @@ class ConfigManager:
         
         return ""
 
+    # ---------- llama.cpp URL ----------
+    def get_llamacpp_url(self) -> str:
+        """Get llama.cpp server URL, prioritizing LLAMACPP_URL env var."""
+        env_url = os.getenv("LLAMACPP_URL", "").strip()
+        if env_url:
+            return env_url
+        return self.config.get("llamacpp_url", "http://localhost:8080")
+
     # ---------- Per-model settings ----------
     def _ensure_model_settings(self) -> None:
         if "model_settings" not in self.config or not isinstance(self.config["model_settings"], dict):
@@ -246,7 +242,7 @@ class ConfigManager:
         prov = self.config["model_settings"].setdefault(provider, {})
         cur = prov.setdefault(model, {})
         # keep only allowed keys
-        allow = {"max_tokens", "temperature", "top_p", "top_k", "system_prompt", "context_window", "n_gpu_layers", "vram_required_gb"}
+        allow = {"max_tokens", "temperature", "top_p", "top_k", "system_prompt", "context_window"}
         for k,v in updates.items():
             if k in allow:
                 cur[k] = v

@@ -79,9 +79,6 @@
     providerHeader: $('headerProviderSelect'),
     modelHeader: $('headerModelSelect'),
     systemPromptSelect: $('systemPromptSelect'),
-    loadUnloadModelBtn: $('loadUnloadModelBtn'),
-    ctxSizeSelect: $('ctxSizeSelect'),
-
     contextSelectionBtn: $('contextSelectionBtn'),
 
     chatTitle: $('chatTitle'),
@@ -145,10 +142,6 @@
     newModelInputContainer: $('newModelInputContainer'),
     modelSettingsForm: $('modelSettingsForm'),
     contextWindowInput: $('contextWindowInput'),
-    nglInput: $('nglInput'),
-    nglGroup: $('nglGroup'),
-    vramRequiredGroup: $('vramRequiredGroup'),
-    vramRequiredInput: $('vramRequiredInput'),
     maxTokensInput: $('maxTokensInput'),
     modelTemperatureRange: $('modelTemperatureRange'),
     modelTemperatureValue: $('modelTemperatureValue'),
@@ -176,8 +169,6 @@
     closeSystemSettingsBtn: $('closeSystemSettingsBtn'),
     lightThemeBtn: $('lightThemeBtn'),
     darkThemeBtn: $('darkThemeBtn'),
-    totalVramInput: $('totalVramInput'),
-
     // System Prompts panel
     promptsSettingsPanel: $('promptsSettingsPanel'),
     closePromptsSettingsBtn: $('closePromptsSettingsBtn'),
@@ -312,36 +303,6 @@
       }
     }
     return null;
-  }
-
-  function modelMatchesLoaded(selectedModel, loadedModel) {
-    if (!selectedModel || !loadedModel) return false;
-    const byName = loadedModel.name || '';
-    const byPath = loadedModel.path || '';
-    const byConfigured = loadedModel.configured_name || '';
-    const byBasename = byPath.split('/').pop().split('\\').pop();
-
-    // Exact match first (includes configured_name — the name the user selected)
-    if (selectedModel === byName || selectedModel === byPath || selectedModel === byBasename || selectedModel === byConfigured) return true;
-
-    // Normalize: lowercase, strip .gguf suffix, collapse separators
-    const norm = (s) => s.toLowerCase().replace(/\.gguf$/i, '').replace(/[-_]/g, '');
-    const sel = norm(selectedModel);
-    const candidates = [byName, byPath, byBasename, byConfigured].map(norm);
-
-    // Normalized exact match
-    if (candidates.some(c => c === sel)) return true;
-
-    // Substring: selected model name appears in loaded path/name or vice versa
-    if (candidates.some(c => c && (c.includes(sel) || sel.includes(c)))) return true;
-
-    return false;
-  }
-
-  function formatVramLabel(vram) {
-    if (typeof vram !== 'number' || !isFinite(vram) || vram <= 0) return '';
-    const pretty = Number.isInteger(vram) ? String(vram) : vram.toFixed(1).replace(/\.0$/, '');
-    return ` (${pretty}GB)`;
   }
 
   function messageNode(msg, index) {
@@ -1552,13 +1513,6 @@
 }
 
   async function loadModelSettings(provider, model) {
-    // Show/hide nglGroup based on provider
-    if (E.nglGroup) {
-      E.nglGroup.style.display = (provider === 'llamacpp') ? '' : 'none';
-    }
-    if (E.vramRequiredGroup) {
-      E.vramRequiredGroup.style.display = (provider === 'llamacpp') ? '' : 'none';
-    }
     try {
       const res = await fetch(`/api/models/${provider}/settings/${encodeURIComponent(model)}`);
       const data = await res.json();
@@ -1570,14 +1524,6 @@
           E.contextWindowInput.value = settings.context_window;
         } else {
           E.contextWindowInput.value = '';
-        }
-        E.nglInput.value = (settings.n_gpu_layers !== undefined) ? settings.n_gpu_layers : 99;
-        if (E.vramRequiredInput) {
-          if (settings.vram_required_gb !== undefined) {
-            E.vramRequiredInput.value = settings.vram_required_gb;
-          } else {
-            E.vramRequiredInput.value = '';
-          }
         }
         if (settings.max_tokens !== undefined) {
           E.maxTokensInput.value = settings.max_tokens;
@@ -2807,7 +2753,7 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
 
     // ===== Browse Models Panel (multi-provider) =====
     let _browseDebounce = null;
-    const BROWSE_PROVIDERS = ['openrouter', 'groq', 'google', 'mistral', 'llamacpp'];
+    const BROWSE_PROVIDERS = ['openrouter', 'groq', 'google', 'mistral'];
     state.browseCatalog = [];  // catalog for currently-selected browse provider
 
     function getBrowseProvider() {
@@ -3096,23 +3042,6 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
           settings.context_window = cw;
         }
 
-        // GPU layers (llamacpp only, default 99 = all on GPU)
-        const nglVal = E.nglInput.value.trim();
-        const ngl = (nglVal !== '') ? parseInt(nglVal) : 99;
-        if (ngl >= -1) {
-          settings.n_gpu_layers = ngl;
-        }
-
-        if (E.vramRequiredInput) {
-          const vramVal = E.vramRequiredInput.value.trim();
-          if (vramVal !== '') {
-            const vram = parseFloat(vramVal);
-            if (!Number.isNaN(vram) && vram >= 0) {
-              settings.vram_required_gb = vram;
-            }
-          }
-        }
-        
         // Add optional parameters if they have non-default values
         const topP = parseFloat(E.topPRange.value);
         if (topP !== 1.0) {
@@ -3220,9 +3149,6 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
       // Rebuild header + settings lists from backend
       await refreshModelsHeader(p, null);
       await refreshModelsSettings(p);
-
-      // Update Load/Unload button if relevant
-      await updateLoadUnloadButtonText();
     });
     E.modelHeader.addEventListener('change', async () => {
       const m = E.modelHeader.value;
@@ -3230,14 +3156,8 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
       state.currentModel = m;
       await postJSON('/api/config/update', { provider, model: m });
 
-      // For llamacpp, just update the button text — don't auto-load on model switch.
-      // Model will be loaded when user clicks Load or sends a message.
-      
       // Update max tokens label for the selected model
       await updateModelMaxTokensLabel(provider, m);
-      
-      // Update the load/unload button text when model changes
-      await updateLoadUnloadButtonText();
     });
 
     // System prompt
@@ -3251,8 +3171,8 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
     E.refreshModelsBtn?.addEventListener('click', async () => {
       const provider = E.providerHeader.value;
       try {
-        // For llamacpp, scan the models directory via SSH first
         if (provider === 'llamacpp') {
+          // Refresh models by querying the running llama-server
           const res = await fetch('/api/llamacpp/refresh', { method: 'POST' });
           const data = await res.json();
           if (!data.success) {
@@ -3331,70 +3251,41 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
       if (t) setTheme(t);
     } catch {}
 
-    // --- SSH settings ---
-    const sshEnabled = $('sshEnabledCheck');
-    const sshFields = $('sshFieldsGroup');
-    const sshSaveBtn = $('sshSaveBtn');
-    const sshSaveStatus = $('sshSaveStatus');
+    // --- llama.cpp URL setting ---
+    const llamacppUrlInput = $('llamacppUrlInput');
+    const llamacppUrlSaveBtn = $('llamacppUrlSaveBtn');
+    const llamacppUrlStatus = $('llamacppUrlStatus');
 
-    if (sshEnabled && sshFields) {
-      sshEnabled.addEventListener('change', () => {
-        sshFields.style.display = sshEnabled.checked ? '' : 'none';
-      });
-
-      // Load SSH config when Appearance/System settings panel opens
+    if (llamacppUrlInput) {
+      // Load URL when system settings panel opens
       E.openAppearanceSettingsBtn.addEventListener('click', async () => {
         try {
-          const resp = await fetch('/api/llamacpp/ssh-config');
+          const resp = await fetch('/api/llamacpp/url');
           const data = await resp.json();
           if (data.success) {
-            sshEnabled.checked = !!data.llamacpp_ssh_enabled;
-            sshFields.style.display = sshEnabled.checked ? '' : 'none';
-            $('sshHostInput').value = data.llamacpp_ssh_host || '';
-            $('sshPortInput').value = data.llamacpp_ssh_port || 22;
-            $('sshUserInput').value = data.llamacpp_ssh_user || '';
-            $('sshBinaryInput').value = data.llamacpp_server_binary || '';
-            $('sshArgsInput').value = data.llamacpp_server_args || '';
-            if (E.totalVramInput) E.totalVramInput.value = data.llamacpp_total_vram_gb || '';
-            const ztSshHost = $('ztSshHostInput');
-            const ztUrl = $('ztUrlInput');
-            if (ztSshHost) ztSshHost.value = data.llamacpp_zerotier_ssh_host || '';
-            if (ztUrl) ztUrl.value = data.llamacpp_zerotier_url || '';
+            llamacppUrlInput.value = data.llamacpp_url || '';
           }
         } catch (e) {
-          console.warn('Failed to load SSH config:', e);
+          console.warn('Failed to load llama.cpp URL:', e);
         }
       });
 
-      if (sshSaveBtn) {
-        sshSaveBtn.addEventListener('click', async () => {
+      if (llamacppUrlSaveBtn) {
+        llamacppUrlSaveBtn.addEventListener('click', async () => {
           try {
-            const payload = {
-              llamacpp_ssh_enabled: sshEnabled.checked,
-              llamacpp_ssh_host: $('sshHostInput').value.trim(),
-              llamacpp_ssh_port: parseInt($('sshPortInput').value) || 22,
-              llamacpp_ssh_user: $('sshUserInput').value.trim(),
-              llamacpp_server_binary: $('sshBinaryInput').value.trim(),
-              llamacpp_server_args: $('sshArgsInput').value.trim(),
-              llamacpp_total_vram_gb: parseFloat(E.totalVramInput?.value || '0') || 0,
-              llamacpp_zerotier_ssh_host: ($('ztSshHostInput')?.value || '').trim(),
-              llamacpp_zerotier_url: ($('ztUrlInput')?.value || '').trim(),
-            };
-            const resp = await fetch('/api/llamacpp/ssh-config', {
+            const resp = await fetch('/api/llamacpp/url', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify(payload),
+              body: JSON.stringify({ llamacpp_url: llamacppUrlInput.value.trim() }),
             });
             const json = await resp.json();
-            if (sshSaveStatus) {
-              sshSaveStatus.textContent = json.success ? 'Saved' : 'Error';
-              setTimeout(() => { sshSaveStatus.textContent = ''; }, 2000);
+            if (llamacppUrlStatus) {
+              llamacppUrlStatus.textContent = json.success ? 'Saved' : 'Error';
+              setTimeout(() => { llamacppUrlStatus.textContent = ''; }, 2000);
             }
-            // Refresh button state since ssh_enabled may have changed
-            await updateLoadUnloadButtonText();
           } catch (e) {
-            console.error('Failed to save SSH config:', e);
-            if (sshSaveStatus) sshSaveStatus.textContent = 'Error';
+            console.error('Failed to save llama.cpp URL:', e);
+            if (llamacppUrlStatus) llamacppUrlStatus.textContent = 'Error';
           }
         });
       }
@@ -4094,246 +3985,6 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
     }
   }
 
-  // Idle polling: periodically check status when a model is loaded
-  let _idlePollInterval = null;
-  function _startIdlePoll() {
-    if (_idlePollInterval) return; // already running
-    _idlePollInterval = setInterval(async () => {
-      try { await updateLoadUnloadButtonText(); } catch (_) {}
-    }, 60000); // every 60s
-  }
-  function _stopIdlePoll() {
-    if (_idlePollInterval) {
-      clearInterval(_idlePollInterval);
-      _idlePollInterval = null;
-    }
-  }
-
-  // Auto-load a model on the llama.cpp server (used after model switch in dropdown)
-  async function triggerModelLoad(modelName) {
-    if (!modelName) return;
-    console.log(`[auto-load] Triggering load for ${modelName}`);
-    E.loadUnloadModelBtn.disabled = true;
-    E.loadUnloadModelBtn.innerHTML = 'Loading<span class="loading-dots"></span>';
-    E.ctxSizeSelect.style.display = 'none';
-    try {
-      const nCtx = parseInt(E.ctxSizeSelect.value) || 0;
-      const loadPayload = { model: modelName, n_ctx: nCtx, n_gpu_layers: 99 };
-      // Fetch per-model settings for custom n_gpu_layers
-      try {
-        const msRes = await fetch(`/api/models/llamacpp/settings/${encodeURIComponent(modelName)}`);
-        const msData = await msRes.json();
-        if (msData.success && msData.settings && msData.settings.n_gpu_layers !== undefined) {
-          loadPayload.n_gpu_layers = msData.settings.n_gpu_layers;
-        }
-      } catch (_) {}
-      const resp = await fetch('/api/llamacpp/load', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(loadPayload),
-      });
-      const json = await resp.json();
-      if (json.success && json.loading) {
-        // Async load started — poll status until done
-        setTimeout(async () => {
-          try { await updateLoadUnloadButtonText(); } catch (_) {}
-        }, 3000);
-      } else if (json.success) {
-        // Synchronous load completed
-        await updateLoadUnloadButtonText();
-      } else {
-        console.warn('[auto-load] Load failed:', json.error);
-        E.loadUnloadModelBtn.textContent = 'Load';
-        E.loadUnloadModelBtn.disabled = false;
-        E.ctxSizeSelect.style.display = '';
-      }
-    } catch (err) {
-      console.error('[auto-load] Error:', err);
-      E.loadUnloadModelBtn.textContent = 'Load';
-      E.loadUnloadModelBtn.disabled = false;
-      E.ctxSizeSelect.style.display = '';
-    }
-  }
-
-  async function updateLoadUnloadButtonText() {
-    const provider = E.providerHeader.value;
-    const supportsLoadUnload = (provider === 'llamacpp');
-    console.log(`[btn-update] provider=${provider}, supported=${supportsLoadUnload}, disabled=${E.loadUnloadModelBtn.disabled}, current=${E.loadUnloadModelBtn.textContent.trim()}`);
-
-    if (!supportsLoadUnload) {
-      E.loadUnloadModelBtn.style.display = 'none';
-      E.ctxSizeSelect.style.display = 'none';
-      return;
-    }
-
-    E.loadUnloadModelBtn.style.display = '';
-
-    try {
-      if (provider === 'llamacpp') {
-        // Check llama.cpp server status via our backend API
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 8000);
-
-        const response = await fetch('/api/llamacpp/status', {
-          signal: controller.signal,
-          headers: { 'Content-Type': 'application/json' }
-        });
-
-        clearTimeout(timeoutId);
-
-        if (!response.ok) {
-          throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-        }
-
-        const status = await response.json();
-        console.log('[status]', JSON.stringify(status));
-
-        // Server is starting (no model yet) — show starting state and keep polling
-        if (status.starting) {
-          E.loadUnloadModelBtn.innerHTML = 'Starting<span class="loading-dots"></span>';
-          E.loadUnloadModelBtn.disabled = true;
-          E.ctxSizeSelect.style.display = 'none';
-          setTimeout(async () => {
-            try { await updateLoadUnloadButtonText(); } catch (_) {}
-          }, 3000);
-          return;
-        }
-
-        // Server is loading a model in the background — show loading state and keep polling
-        if (status.loading) {
-          const modelInfo = status.loading_model ? ` ${status.loading_model}` : '';
-          E.loadUnloadModelBtn.innerHTML = `Loading${modelInfo}<span class="loading-dots"></span>`;
-          E.loadUnloadModelBtn.disabled = true;
-          E.ctxSizeSelect.style.display = 'none';
-          // Use setInterval for reliable polling (setTimeout can be throttled in background tabs)
-          if (!window._loadPollInterval) {
-            window._loadPollInterval = setInterval(async () => {
-              try {
-                await updateLoadUnloadButtonText();
-              } catch (_) {}
-            }, 3000);
-          }
-          return;
-        }
-
-        // Clear loading poll interval if we're no longer loading
-        if (window._loadPollInterval) {
-          clearInterval(window._loadPollInterval);
-          window._loadPollInterval = null;
-        }
-
-        // Show load error if the background load failed
-        if (status.load_error) {
-          const err = status.load_error;
-          E.loadUnloadModelBtn.textContent = 'Load';
-          E.loadUnloadModelBtn.disabled = false;
-          E.ctxSizeSelect.style.display = '';
-
-          // Build error dialog
-          const overlay = document.createElement('div');
-          overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:10000;display:flex;align-items:center;justify-content:center';
-          const dialog = document.createElement('div');
-          dialog.style.cssText = 'background:var(--bg-primary,#1e1e1e);color:var(--text-primary,#e0e0e0);border:1px solid var(--border-color,#444);border-radius:10px;padding:20px 24px;max-width:520px;width:90%;max-height:80vh;overflow-y:auto;font-size:14px';
-
-          const isOOM = err.oom || /OOM|crash|out of memory/i.test(err.error);
-          const title = isOOM ? 'Load Failed — Out of Memory' : 'Model Load Failed';
-
-          let html = `<h3 style="margin:0 0 12px;color:#ff6b6b">${title}</h3>`;
-          html += `<p style="margin:0 0 8px"><strong>Model:</strong> ${err.model}</p>`;
-          html += `<p style="margin:0 0 12px"><strong>Error:</strong> ${err.error}</p>`;
-
-          if (isOOM) {
-            html += `<div style="background:rgba(255,170,0,0.1);border:1px solid rgba(255,170,0,0.3);border-radius:6px;padding:10px 12px;margin:0 0 12px">`;
-            html += `<strong style="color:#ffaa00">Suggestion:</strong> This model needs more VRAM than available. Try:`;
-            html += `<ul style="margin:6px 0 0;padding-left:20px">`;
-            html += `<li>Reduce <strong>GPU layers (ngl)</strong> in model settings to offload layers to system RAM</li>`;
-            html += `<li>Use a smaller quantization (e.g. Q4_K_M instead of Q8_0)</li>`;
-            html += `<li>Try a smaller model</li>`;
-            html += `</ul></div>`;
-          }
-
-          if (err.log) {
-            html += `<details style="margin:8px 0 0"><summary style="cursor:pointer;color:#888">Server log</summary>`;
-            html += `<pre style="background:#111;padding:8px;border-radius:4px;overflow-x:auto;font-size:12px;margin:6px 0 0;white-space:pre-wrap">${err.log.replace(/</g,'&lt;')}</pre>`;
-            html += `</details>`;
-          }
-
-          html += `<div style="margin-top:16px;text-align:right"><button id="loadErrClose" style="background:#444;color:#fff;border:none;padding:6px 18px;border-radius:5px;cursor:pointer;font-size:13px">Close</button></div>`;
-
-          dialog.innerHTML = html;
-          overlay.appendChild(dialog);
-          document.body.appendChild(overlay);
-          overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
-          dialog.querySelector('#loadErrClose').addEventListener('click', () => overlay.remove());
-          return;
-        }
-
-        // Check if model was auto-unloaded due to idle
-        if (status.idle_unloaded) {
-          _stopIdlePoll();
-          E.loadUnloadModelBtn.textContent = 'Load';
-          E.loadUnloadModelBtn.disabled = false;
-          E.ctxSizeSelect.style.display = '';
-          // Show subtle notification
-          const note = document.createElement('div');
-          note.textContent = 'Model unloaded due to inactivity';
-          note.style.cssText = 'position:fixed;top:12px;right:12px;background:#333;color:#fff;padding:8px 16px;border-radius:6px;z-index:9999;font-size:13px;opacity:0;transition:opacity 0.3s';
-          document.body.appendChild(note);
-          requestAnimationFrame(() => { note.style.opacity = '1'; });
-          setTimeout(() => { note.style.opacity = '0'; setTimeout(() => note.remove(), 400); }, 5000);
-          return;
-        }
-
-        if (status.success && status.loaded_models && status.loaded_models.length > 0) {
-          const loadedModel = status.loaded_models[0];
-          console.log(`[btn-match] selected="${E.modelHeader.value}" loaded name="${loadedModel.name}" path="${loadedModel.path}" match=${modelMatchesLoaded(E.modelHeader.value, loadedModel)}`);
-          if (!modelMatchesLoaded(E.modelHeader.value, loadedModel)) {
-            E.loadUnloadModelBtn.textContent = 'Load';
-            E.loadUnloadModelBtn.disabled = false;
-            E.ctxSizeSelect.style.display = '';
-            _stopIdlePoll();
-            return;
-          }
-          const vramInfo = formatVramLabel(Number(loadedModel.vram_required_gb));
-          E.loadUnloadModelBtn.textContent = `Unload${vramInfo}`;
-          E.loadUnloadModelBtn.disabled = false;
-          E.ctxSizeSelect.style.display = 'none';
-          _startIdlePoll(); // Poll while model is loaded to detect idle unload
-        } else if (status.success && status.server_running) {
-          E.loadUnloadModelBtn.textContent = 'Load';
-          E.loadUnloadModelBtn.disabled = false;
-          E.ctxSizeSelect.style.display = '';
-          _stopIdlePoll();
-        } else if (status.ssh_enabled) {
-          // Server offline but SSH enabled — auto-start it
-          E.loadUnloadModelBtn.innerHTML = 'Starting<span class="loading-dots"></span>';
-          E.loadUnloadModelBtn.disabled = true;
-          E.ctxSizeSelect.style.display = 'none';
-          _stopIdlePoll();
-          // Fire-and-forget: kick off server ensure
-          fetch('/api/llamacpp/server/ensure', { method: 'POST' }).catch(() => {});
-          // Poll until server is ready
-          setTimeout(async () => {
-            try { await updateLoadUnloadButtonText(); } catch (_) {}
-          }, 3000);
-          return;
-        } else {
-          E.loadUnloadModelBtn.textContent = 'Server Offline';
-          E.loadUnloadModelBtn.disabled = true;
-          E.ctxSizeSelect.style.display = 'none';
-          _stopIdlePoll();
-        }
-      }
-    } catch (error) {
-      console.warn(`[status] Error checking ${provider}:`, error.name, error.message);
-      // On error, don't change button text — keep whatever state it was in
-      // Schedule a retry instead
-      setTimeout(async () => {
-        try { await updateLoadUnloadButtonText(); } catch (_) {}
-      }, 5000);
-    }
-  }
-
   // ====== Boot ======
   async function init() {
     console.time('TB:init');
@@ -4386,20 +4037,6 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
     // Update context summary after docs are loaded
     if (docsResult.status === 'fulfilled') {
       await updateContextTokenSummary();
-    }
-
-    // For llamacpp: immediately check server status (fast), then refresh model list in background (slow SSH)
-    if (state.currentProvider === 'llamacpp') {
-      await updateLoadUnloadButtonText();
-      (async () => {
-        try {
-          await fetch('/api/llamacpp/refresh', { method: 'POST' });
-          await refreshModelsHeader('llamacpp', E.modelHeader.value);
-          await refreshModelsSettings('llamacpp');
-        } catch (e) {
-          console.warn('Skipping initial llamacpp refresh:', e);
-        }
-      })();
     }
 
     // Sidebar buttons
@@ -4545,173 +4182,6 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
       }
     });
 
-    // Header "Load/Unload" visible for llamacpp
-    const supportsLoadUnload = (p) => (p === 'llamacpp');
-    const isLlama = supportsLoadUnload(E.providerHeader.value);
-    E.loadUnloadModelBtn.style.display = isLlama ? '' : 'none';
-    E.ctxSizeSelect.style.display = isLlama ? '' : 'none';
-    E.providerHeader.addEventListener('change', async () => {
-      const show = supportsLoadUnload(E.providerHeader.value);
-      E.loadUnloadModelBtn.style.display = show ? '' : 'none';
-      E.ctxSizeSelect.style.display = show ? '' : 'none';
-      await updateLoadUnloadButtonText();
-    });
-    E.loadUnloadModelBtn.addEventListener('click', async () => {
-      const provider = E.providerHeader.value;
-      if (!supportsLoadUnload(provider)) return;
-
-      const btnText = E.loadUnloadModelBtn.textContent.trim();
-      const isUnload = btnText.startsWith('Unload');
-      const modelName = E.modelHeader.value;
-
-      if (!modelName) return;
-
-      console.log(`Starting ${isUnload ? 'unload' : 'load'} operation for ${provider} model: ${modelName}`);
-
-      // Show loading state immediately
-      E.loadUnloadModelBtn.disabled = true;
-      if (isUnload) {
-        E.loadUnloadModelBtn.innerHTML = 'Unloading<span class="loading-dots"></span>';
-      } else {
-        E.loadUnloadModelBtn.innerHTML = 'Loading<span class="loading-dots"></span>';
-      }
-
-      // Set up a timeout to prevent getting stuck forever
-      const timeoutMs = 120000; // 120 second timeout (longer for llamacpp loading large models)
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => {
-        controller.abort();
-        console.error(`Operation timed out after ${timeoutMs/1000} seconds`);
-      }, timeoutMs);
-
-      let keepDisabledUntilStatusRefresh = false;
-      try {
-        let response, json;
-
-        if (provider === 'llamacpp') {
-          if (isUnload) {
-            console.log('Making llamacpp unload API call...');
-            response = await fetch('/api/llamacpp/unload', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ slot_id: 0 }),
-              signal: controller.signal
-            });
-          } else {
-            console.log('Making llamacpp load API call...');
-            const nCtx = parseInt(E.ctxSizeSelect.value) || 0;
-            // Fetch per-model settings to get custom n_gpu_layers (default 99)
-            const loadPayload = { model: modelName, n_ctx: nCtx, n_gpu_layers: 99 };
-            try {
-              const msRes = await fetch(`/api/models/llamacpp/settings/${encodeURIComponent(modelName)}`);
-              const msData = await msRes.json();
-              if (msData.success && msData.settings && msData.settings.n_gpu_layers !== undefined) {
-                loadPayload.n_gpu_layers = msData.settings.n_gpu_layers;
-                console.log(`Using custom ngl=${loadPayload.n_gpu_layers} for ${modelName}`);
-              }
-            } catch (e) {
-              console.warn('Could not fetch model settings for ngl:', e);
-            }
-            response = await fetch('/api/llamacpp/load', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify(loadPayload),
-              signal: controller.signal
-            });
-          }
-        }
-
-        clearTimeout(timeoutId);
-        console.log('API response status:', response.status);
-
-        if (!response.ok) {
-          let apiErr = `HTTP ${response.status}: ${response.statusText}`;
-          try {
-            const errJson = await response.json();
-            if (errJson && errJson.error) apiErr = errJson.error;
-          } catch (_) {}
-          throw new Error(apiErr);
-        }
-
-        json = await response.json();
-        console.log('API response:', json);
-
-        if (json.success) {
-          if (json.loading) {
-            // Async load started — let the status poller handle button state
-            E.loadUnloadModelBtn.innerHTML = `Loading<span class="loading-dots"></span>`;
-            E.loadUnloadModelBtn.disabled = true;
-            keepDisabledUntilStatusRefresh = true;
-            // Start polling status to detect when loading completes
-            setTimeout(async () => {
-              try { await updateLoadUnloadButtonText(); } catch (_) {}
-            }, 3000);
-            return;
-          } else if (isUnload) {
-            // Unload succeeded — set button to Load immediately
-            E.loadUnloadModelBtn.textContent = 'Load';
-            E.ctxSizeSelect.style.display = '';
-          } else {
-            // Load succeeded (synchronous, e.g. router mode) — set button to Unload
-            let vramInfo = '';
-            try {
-              const msRes = await fetch(`/api/models/llamacpp/settings/${encodeURIComponent(modelName)}`);
-              const msData = await msRes.json();
-              if (msData.success && msData.settings && msData.settings.vram_required_gb !== undefined) {
-                vramInfo = formatVramLabel(Number(msData.settings.vram_required_gb));
-              }
-            } catch (_) {}
-            E.loadUnloadModelBtn.textContent = `Unload${vramInfo}`;
-            E.ctxSizeSelect.style.display = 'none';
-
-            // Save detected context_window to per-model settings
-            if (json.n_ctx > 0) {
-              try {
-                await fetch(`/api/models/llamacpp/settings/${encodeURIComponent(modelName)}`, {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ context_window: json.n_ctx })
-                });
-                console.log(`Saved context_window=${json.n_ctx} for ${modelName}`);
-              } catch (e) {
-                console.warn('Failed to save context_window setting:', e);
-              }
-            }
-          }
-        } else {
-          // API returned success: false
-          console.error('Operation failed:', json.error || 'Unknown error');
-          if (json.error) alert(json.error);
-          E.loadUnloadModelBtn.textContent = 'Load';
-          E.ctxSizeSelect.style.display = '';
-        }
-
-        // Also do a delayed status check to catch any state we missed
-        setTimeout(async () => {
-          await updateLoadUnloadButtonText();
-        }, 3000);
-
-      } catch (error) {
-        clearTimeout(timeoutId);
-        console.error(`Error with ${provider} control:`, error);
-        alert(error.message || `Failed to ${isUnload ? 'unload' : 'load'} model`);
-
-        if (error.name === 'AbortError') {
-          console.error('Operation was aborted due to timeout');
-        }
-
-        // Restore button to a safe state — use delayed status check to get the real state
-        E.loadUnloadModelBtn.textContent = 'Load';
-        setTimeout(async () => {
-          await updateLoadUnloadButtonText();
-        }, 2000);
-      } finally {
-        if (!keepDisabledUntilStatusRefresh) {
-          E.loadUnloadModelBtn.disabled = false;
-          console.log('Button re-enabled');
-        }
-      }
-    });
     console.timeEnd('TB:init');
   }
 
