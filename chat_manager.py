@@ -391,9 +391,10 @@ class ChatManager:
         return False
 
     def update_title(self, new_title: str) -> bool:
-        """Update chat title only if it's still the default 'New Chat'."""
-        if self.current_chat.get("title", "") != "New Chat":
-            return False
+        """Update chat title only if it's still the default 'New Chat' or empty (for branched chats)."""
+        current_title = self.current_chat.get("title", "")
+        if current_title != "New Chat" and current_title != "":
+            return False  # Already has a custom title
         self.current_chat["title"] = new_title
         self.save_current_chat(force_save=True)
         return True

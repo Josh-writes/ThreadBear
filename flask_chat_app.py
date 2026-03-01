@@ -986,13 +986,26 @@ class FlaskChatApp:
                                 self.chat_manager.save_current_chat()
 
                     # --- Auto-title generation after first exchange ---
+                    # Works for: new chats, branched chats, folder chats (all treated the same)
                     try:
                         chat_hist = self.chat_manager.current_chat.get("chat_history", [])
+                        current_title = self.chat_manager.current_chat.get("title", "")
+                        
+                        # Generate title if:
+                        # 1. Not temporary/incognito mode
+                        # 2. Title is default ("New Chat") OR empty (branched chats)
+                        # 3. Exactly 2 messages (first user-assistant exchange)
+                        # 4. Not a prompt branch chat (those have special handling)
+                        is_prompt_branch = self.folder_manager.is_prompt_branch(
+                            self.chat_manager.current_chat_file
+                        ) if self.chat_manager.current_chat_file else False
+                        
                         if (
                             not self.temporary_mode
                             and not self.incognito_mode
-                            and self.chat_manager.current_chat.get("title") == "New Chat"
+                            and (current_title == "New Chat" or current_title == "")
                             and len(chat_hist) == 2
+                            and not is_prompt_branch
                         ):
                             title_provider = self.config.get("title_provider", "groq")
                             title_model = self.config.get("title_model", "llama-3.1-8b-instant")
@@ -1039,6 +1052,9 @@ class FlaskChatApp:
                                     [{"role": "user", "content": title_prompt}],
                                     title_cfg,
                                 ):
+                                    # Skip dict chunks (usage data) - only accumulate string content
+                                    if isinstance(chunk, dict):
+                                        continue
                                     generated += chunk
 
                                 generated = generated.strip().strip('"').strip("'").strip()
