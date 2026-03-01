@@ -40,6 +40,7 @@ from branch_db import BranchDatabase
 from branch_manager import BranchManager
 from folder_manager import FolderManager
 from tools import tool_registry, ToolSafetyManager
+from cost_tracker import calculate_cost as calc_api_cost
 from api_clients import (
     call_groq_stream, call_google_stream,
     call_mistral_stream, call_openrouter_stream, call_llamacpp_stream,
@@ -691,9 +692,8 @@ class FlaskChatApp:
             # Add the new message (if not already in context from get_conversation_context)
             new_msg_tokens = estimate_tokens(message)
 
-            # System prompt
-            system_prompt = model_settings.get('system_prompt',
-                self.config.get(f"{provider}_system_prompt", ""))
+            # System prompt - use config method that falls back to templates
+            system_prompt = self.config.get_system_prompt(provider, model)
             system_prompt_tokens = estimate_tokens(system_prompt) if system_prompt else 0
 
             # Conversation tokens
@@ -804,15 +804,15 @@ class FlaskChatApp:
                         temperature = ms.get("temperature", temperature)
                         max_tokens = self.config.get(f"{provider}_max_tokens", 4096)
                         max_tokens = ms.get("max_tokens", max_tokens)
-                        system_prompt = self.config.get(f"{provider}_system_prompt", "")
-                        if not system_prompt and ms.get("system_prompt"):
-                            system_prompt = ms["system_prompt"]
+                        # Use config method that falls back to templates
+                        system_prompt = self.config.get_system_prompt(provider, model)
                     else:
                         provider = snap.get('provider', self.config.get("provider"))
                         model = snap.get('model', self.config.get(f"{provider}_model"))
                         temperature = snap.get('temperature', self.config.get(f"{provider}_temperature", 0.7))
                         max_tokens = snap.get('max_tokens', self.config.get(f"{provider}_max_tokens", 4096))
-                        system_prompt = snap.get('system_prompt', self.config.get(f"{provider}_system_prompt", ""))
+                        # For branch snapshots, use stored system_prompt or template
+                        system_prompt = snap.get('system_prompt') or self.config.get_system_prompt(provider, model)
 
                     # === MESSAGE COMPACTION (before LLM call) ===
                     # Compact api_messages if approaching context window limit
@@ -887,6 +887,7 @@ class FlaskChatApp:
                     max_iterations = tool_config.get('max_iterations', 5)
 
                     full_response = ""
+                    stream_usage = None  # Capture real token usage from provider
                     max_overflow_retries = 2
                     for iteration in range(max_iterations):
                         tool_calls_this_round = []
@@ -904,6 +905,8 @@ class FlaskChatApp:
 
                                     if isinstance(chunk, dict) and chunk.get('type') == 'tool_calls':
                                         tool_calls_this_round = chunk.get('tool_calls', [])
+                                    elif isinstance(chunk, dict) and chunk.get('type') == 'usage':
+                                        stream_usage = chunk
                                     elif isinstance(chunk, str):
                                         content_buffer += chunk
                                         yield f"data: {json.dumps({'type':'content','content':chunk})}\n\n"
@@ -964,6 +967,23 @@ class FlaskChatApp:
 
                     if not self.temporary_mode and not self.incognito_mode:
                         self.chat_manager.add_message("assistant", full_response, model)
+                        # Store usage data on the message if available
+                        if stream_usage:
+                            msgs = self.chat_manager.current_chat.get("chat_history", [])
+                            if msgs:
+                                msgs[-1]["usage"] = {
+                                    "input_tokens": stream_usage.get("input_tokens", 0),
+                                    "output_tokens": stream_usage.get("output_tokens", 0),
+                                }
+                                # Calculate and store cost
+                                msg_cost = calc_api_cost(
+                                    provider, model,
+                                    stream_usage.get("input_tokens", 0),
+                                    stream_usage.get("output_tokens", 0)
+                                )
+                                msgs[-1]["cost"] = msg_cost
+                                msgs[-1]["provider"] = provider
+                                self.chat_manager.save_current_chat()
 
                     # --- Auto-title generation after first exchange ---
                     try:
@@ -1029,7 +1049,20 @@ class FlaskChatApp:
                     except Exception as title_err:
                         print(f"Auto-title generation failed: {title_err}")
 
-                    yield f"data: {json.dumps({'type':'complete'})}\n\n"
+                    complete_event = {'type': 'complete'}
+                    if stream_usage:
+                        complete_event['usage'] = {
+                            'input_tokens': stream_usage.get('input_tokens', 0),
+                            'output_tokens': stream_usage.get('output_tokens', 0),
+                        }
+                        # Include cost in complete event
+                        msg_cost = calc_api_cost(
+                            provider, model,
+                            stream_usage.get('input_tokens', 0),
+                            stream_usage.get('output_tokens', 0)
+                        )
+                        complete_event['cost'] = msg_cost
+                    yield f"data: {json.dumps(complete_event)}\n\n"
                 except LLMApiError as api_err:
                     cls = classify_error(api_err.status_code, api_err.response_text)
                     msg = friendly_message(cls, api_err.provider, api_err.status_code, api_err.response_text)

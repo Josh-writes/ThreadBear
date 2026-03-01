@@ -130,6 +130,7 @@ def call_groq_stream(messages: List[Dict], config: Dict,
     """
     Enhanced to handle tool calls in streaming responses.
     Yields: str for content chunks, dict for tool calls {'type': 'tool_calls', 'tool_calls': [...]}
+    Final yield (if usage available): dict {'type': 'usage', 'input_tokens': N, 'output_tokens': N}
     """
     try:
         api_key = os.getenv('GROQ_API_KEY') or config.get('groq_api_key')
@@ -158,7 +159,8 @@ def call_groq_stream(messages: List[Dict], config: Dict,
             "model": model_name,
             "messages": api_messages,
             "temperature": config.get("groq_temperature", 0.7),
-            "stream": True
+            "stream": True,
+            "stream_options": {"include_usage": True}
         }
         # Add tools if provided
         if tools:
@@ -186,7 +188,8 @@ def call_groq_stream(messages: List[Dict], config: Dict,
         
         # Track accumulated tool calls across streaming deltas
         tool_calls_acc = {}  # index -> {id, function: {name, arguments}}
-        
+        usage_data = None  # Capture usage from final chunk
+
         if response.status_code != 200:
             raise LLMApiError(response.status_code, response.text, "groq")
 
@@ -200,6 +203,14 @@ def call_groq_stream(messages: List[Dict], config: Dict,
                     break
                 try:
                     chunk = json.loads(payload)
+                    # Capture usage data from stream (arrives in final chunk)
+                    if 'usage' in chunk and chunk['usage']:
+                        u = chunk['usage']
+                        usage_data = {
+                            'type': 'usage',
+                            'input_tokens': u.get('prompt_tokens', 0),
+                            'output_tokens': u.get('completion_tokens', 0),
+                        }
                     if 'choices' in chunk and chunk['choices']:
                         delta = chunk['choices'][0].get('delta', {})
                         # Content chunks
@@ -230,6 +241,9 @@ def call_groq_stream(messages: List[Dict], config: Dict,
                             tool_calls_acc = {}
                 except json.JSONDecodeError:
                     continue
+        # Yield usage data at the end of the stream
+        if usage_data:
+            yield usage_data
     except LLMApiError:
         raise
     except Exception as e:
@@ -275,11 +289,12 @@ def fetch_google_catalog(api_key: str) -> List[Dict]:
         return []
 
 
-def call_google_stream(messages: List[Dict], config: Dict, tools=None) -> Iterator[str]:
+def call_google_stream(messages: List[Dict], config: Dict, tools=None) -> Iterator[Union[str, Dict]]:
     """
     True streaming adapter for Google Gemini API using streamGenerateContent endpoint.
     Uses alt=sse to get Server-Sent Events format from Gemini.
     Yields plain text chunks (the flask layer wraps them in SSE for the frontend).
+    Final yield (if usage available): dict {'type': 'usage', 'input_tokens': N, 'output_tokens': N}
     """
     try:
         api_key = os.getenv('GOOGLE_API_KEY') or config.get('google_api_key')
@@ -325,6 +340,7 @@ def call_google_stream(messages: List[Dict], config: Dict, tools=None) -> Iterat
         if response.status_code != 200:
             raise LLMApiError(response.status_code, response.text or response.reason, "google")
 
+        usage_data = None
         for line in response.iter_lines():
             if not line:
                 continue
@@ -335,6 +351,14 @@ def call_google_stream(messages: List[Dict], config: Dict, tools=None) -> Iterat
                     continue
                 try:
                     chunk_data = json.loads(payload_str)
+                    # Capture usage metadata (arrives in final chunk)
+                    if 'usageMetadata' in chunk_data:
+                        um = chunk_data['usageMetadata']
+                        usage_data = {
+                            'type': 'usage',
+                            'input_tokens': um.get('promptTokenCount', 0),
+                            'output_tokens': um.get('candidatesTokenCount', 0),
+                        }
                     if 'candidates' in chunk_data and chunk_data['candidates']:
                         candidate = chunk_data['candidates'][0]
                         if 'content' in candidate:
@@ -344,6 +368,8 @@ def call_google_stream(messages: List[Dict], config: Dict, tools=None) -> Iterat
                                     yield part['text']
                 except json.JSONDecodeError:
                     continue
+        if usage_data:
+            yield usage_data
     except LLMApiError:
         raise
     except Exception as e:
@@ -486,7 +512,7 @@ def call_mistral(messages: List[Dict], config: Dict) -> str:
         return f"Mistral API error: {str(e)}"
 
 
-def call_mistral_stream(messages: List[Dict], config: Dict, tools=None) -> Iterator[str]:
+def call_mistral_stream(messages: List[Dict], config: Dict, tools=None) -> Iterator[Union[str, Dict]]:
     try:
         from config_manager import ConfigManager
         cfg_manager = ConfigManager()
@@ -508,13 +534,13 @@ def call_mistral_stream(messages: List[Dict], config: Dict, tools=None) -> Itera
             "model": model_name,
             "messages": api_messages,
             "temperature": config.get("mistral_temperature", 0.7),
-            "stream": True
+            "stream": True,
+            "stream_options": {"include_usage": True}
         }
         # Optional sampling params (per-model/per-provider)
         if "top_p" in config:
             data["top_p"] = config["top_p"]
         if "top_k" in config:
-            # Some providers ignore top_k; harmless to pass if supported.
             data["top_k"] = config["top_k"]
 
         # Respect requested max_tokens if supplied
@@ -531,6 +557,7 @@ def call_mistral_stream(messages: List[Dict], config: Dict, tools=None) -> Itera
         if response.status_code != 200:
             raise LLMApiError(response.status_code, response.text, "mistral")
 
+        usage_data = None
         for line in response.iter_lines():
             if line:
                 line = line.decode('utf-8')
@@ -540,6 +567,13 @@ def call_mistral_stream(messages: List[Dict], config: Dict, tools=None) -> Itera
                         break
                     try:
                         chunk = json.loads(line)
+                        if 'usage' in chunk and chunk['usage']:
+                            u = chunk['usage']
+                            usage_data = {
+                                'type': 'usage',
+                                'input_tokens': u.get('prompt_tokens', 0),
+                                'output_tokens': u.get('completion_tokens', 0),
+                            }
                         if 'choices' in chunk and chunk['choices']:
                             delta = chunk['choices'][0].get('delta', {})
                             content = delta.get('content', '')
@@ -547,6 +581,8 @@ def call_mistral_stream(messages: List[Dict], config: Dict, tools=None) -> Itera
                                 yield content
                     except json.JSONDecodeError:
                         continue
+        if usage_data:
+            yield usage_data
     except LLMApiError:
         raise
     except Exception as e:
@@ -756,7 +792,7 @@ def call_llamacpp(messages: List[Dict], config: Dict) -> str:
     except Exception as e:
         return f"llama.cpp API error: {str(e)}"
 
-def call_llamacpp_stream(messages: List[Dict], config: Dict, tools=None) -> Iterator[str]:
+def call_llamacpp_stream(messages: List[Dict], config: Dict, tools=None) -> Iterator[Union[str, Dict]]:
     """
     Call llama.cpp server API with streaming response.
     Yields message chunks progressively.
@@ -807,6 +843,7 @@ def call_llamacpp_stream(messages: List[Dict], config: Dict, tools=None) -> Iter
         if response.status_code != 200:
             raise LLMApiError(response.status_code, response.text, "llamacpp")
 
+        usage_data = None
         for line in response.iter_lines():
             if not line:
                 continue
@@ -817,6 +854,13 @@ def call_llamacpp_stream(messages: List[Dict], config: Dict, tools=None) -> Iter
                     break
                 try:
                     chunk = json.loads(payload)
+                    if 'usage' in chunk and chunk['usage']:
+                        u = chunk['usage']
+                        usage_data = {
+                            'type': 'usage',
+                            'input_tokens': u.get('prompt_tokens', 0),
+                            'output_tokens': u.get('completion_tokens', 0),
+                        }
                     if 'choices' in chunk and chunk['choices']:
                         delta = chunk['choices'][0].get('delta', {})
                         content = delta.get('content', '')
@@ -824,6 +868,8 @@ def call_llamacpp_stream(messages: List[Dict], config: Dict, tools=None) -> Iter
                             yield content
                 except json.JSONDecodeError:
                     continue
+        if usage_data:
+            yield usage_data
     except LLMApiError:
         raise
     except Exception as e:
@@ -917,7 +963,7 @@ def call_openrouter(messages: List[Dict], config: Dict) -> str:
         return f"OpenRouter API error: {str(e)}"
 
 
-def call_openrouter_stream(messages: List[Dict], config: Dict, tools=None) -> Iterator[str]:
+def call_openrouter_stream(messages: List[Dict], config: Dict, tools=None) -> Iterator[Union[str, Dict]]:
     try:
         from config_manager import ConfigManager
         cfg_manager = ConfigManager()
@@ -967,6 +1013,7 @@ def call_openrouter_stream(messages: List[Dict], config: Dict, tools=None) -> It
         if response.status_code != 200:
             raise LLMApiError(response.status_code, response.text, "openrouter")
 
+        usage_data = None
         for line in response.iter_lines(decode_unicode=False):
             if line:
                 line = line.decode('utf-8')
@@ -976,6 +1023,13 @@ def call_openrouter_stream(messages: List[Dict], config: Dict, tools=None) -> It
                         break
                     try:
                         chunk = json.loads(line)
+                        if 'usage' in chunk and chunk['usage']:
+                            u = chunk['usage']
+                            usage_data = {
+                                'type': 'usage',
+                                'input_tokens': u.get('prompt_tokens', 0),
+                                'output_tokens': u.get('completion_tokens', 0),
+                            }
                         if 'choices' in chunk and chunk['choices']:
                             delta = chunk['choices'][0].get('delta', {})
                             content = delta.get('content', '')
@@ -983,6 +1037,8 @@ def call_openrouter_stream(messages: List[Dict], config: Dict, tools=None) -> It
                                 yield content
                     except json.JSONDecodeError:
                         continue
+        if usage_data:
+            yield usage_data
     except LLMApiError:
         raise
     except Exception as e:

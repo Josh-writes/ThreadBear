@@ -266,6 +266,32 @@ class ConfigManager:
                     return int(ctx)
         return DEFAULT_CONTEXT_WINDOWS.get(provider, 8192)
 
+    def get_system_prompt(self, provider: str, model: str) -> str:
+        """
+        Get system prompt for a provider/model, with template fallback.
+
+        Priority:
+        1. Per-model custom system prompt (from model_settings)
+        2. Per-provider system prompt (from config)
+        3. Default template for provider
+        4. Default template for model family
+        """
+        from prompt_templates import get_default_prompt
+
+        # Check per-model settings first
+        self._ensure_model_settings()
+        model_settings = self.config["model_settings"].get(provider, {}).get(model, {})
+        if "system_prompt" in model_settings and model_settings["system_prompt"]:
+            return model_settings["system_prompt"]
+
+        # Check per-provider config
+        provider_prompt = self.config.get(f"{provider}_system_prompt", "")
+        if provider_prompt and provider_prompt.strip():
+            return provider_prompt
+
+        # Fall back to default template
+        return get_default_prompt(provider, model)
+
     def get_tool_config(self, provider: str) -> Dict[str, Any]:
         """Get tool configuration for a provider."""
         return {

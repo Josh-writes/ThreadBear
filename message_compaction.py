@@ -91,12 +91,85 @@ class MessageCompactor:
         token_count = TokenCounter.count_message_tokens(messages)
         return token_count > threshold
 
+    def prune_tool_outputs(self, messages: List[Dict[str, Any]],
+                           keep_recent: int = 2) -> Tuple[List[Dict[str, Any]], int]:
+        """Prune tool output content from older messages to save tokens.
+
+        This is a lighter-weight alternative to full compaction.
+        Tool outputs can be very large, so pruning them can free significant tokens
+        while preserving the tool call names and arguments for context.
+
+        Args:
+            messages: List of messages to prune
+            keep_recent: Number of recent tool outputs to keep unpruned
+
+        Returns:
+            (pruned_messages, tokens_freed)
+            If no pruning done, returns (messages, 0).
+        """
+        # Find all tool response messages
+        tool_msg_indices = []
+        for i, msg in enumerate(messages):
+            if msg.get("role") == "tool":
+                tool_msg_indices.append(i)
+
+        if not tool_msg_indices:
+            return messages, 0
+
+        # Determine which tool outputs to prune (all except the most recent keep_recent)
+        indices_to_prune = tool_msg_indices[:-keep_recent] if len(tool_msg_indices) > keep_recent else []
+
+        if not indices_to_prune:
+            return messages, 0
+
+        # Calculate tokens that would be freed
+        tokens_to_free = 0
+        for idx in indices_to_prune:
+            msg = messages[idx]
+            content = str(msg.get("content", ""))
+            tokens_to_free += TokenCounter.estimate_tokens(content)
+
+        # Only prune if it frees at least 20K tokens (avoid churn)
+        MIN_TOKENS_TO_PRUNE = 20000
+        if tokens_to_free < MIN_TOKENS_TO_PRUNE:
+            return messages, 0
+
+        # Create pruned copies of messages
+        pruned_messages = list(messages)  # Shallow copy
+        total_freed = 0
+
+        for idx in indices_to_prune:
+            msg = pruned_messages[idx]
+            original_content = str(msg.get("content", ""))
+            original_tokens = TokenCounter.estimate_tokens(original_content)
+
+            # Preserve tool call metadata but prune the content
+            tool_call_id = msg.get("tool_call_id", "")
+            tool_name = msg.get("tool_name", "unknown")
+
+            # Create pruned content that preserves context about what tool was called
+            pruned_content = f"[Tool output pruned — {original_tokens} tokens removed. Tool: {tool_name}]"
+
+            pruned_messages[idx] = dict(msg)  # Copy the message dict
+            pruned_messages[idx]["content"] = pruned_content
+            pruned_messages[idx]["pruned"] = True  # Mark as pruned
+            pruned_messages[idx]["original_tokens"] = original_tokens
+
+            total_freed += original_tokens - TokenCounter.estimate_tokens(pruned_content)
+
+        print(f"[Tool Output Pruning] Freed {total_freed} tokens from {len(indices_to_prune)} tool outputs")
+        return pruned_messages, total_freed
+
     def compact_messages(self, messages: List[Dict[str, Any]],
                          provider: Optional[str] = None,
                          model: Optional[str] = None,
                          force: bool = False
                          ) -> Tuple[List[Dict[str, Any]], str]:
         """Compact messages by removing low-priority older messages.
+
+        Pipeline:
+        1. First try pruning tool outputs (lighter-weight)
+        2. If still over threshold, do full compaction
 
         Args:
             messages: List of messages to compact
@@ -114,6 +187,17 @@ class MessageCompactor:
         # Not over threshold or too few messages (unless forced)
         if not force and (token_count <= threshold or len(messages) <= self.keep_recent + 5):
             return messages, ""
+
+        # First, try pruning tool outputs — this is lighter-weight than full compaction
+        pruned_messages, tokens_freed = self.prune_tool_outputs(messages, keep_recent=2)
+        if tokens_freed > 0:
+            # Check if pruning was enough
+            new_token_count = TokenCounter.count_message_tokens(pruned_messages)
+            if new_token_count <= threshold:
+                return pruned_messages, f"[Tool outputs pruned — freed {tokens_freed} tokens]"
+            # Otherwise continue with full compaction using the pruned messages
+            messages = pruned_messages
+            token_count = new_token_count
 
         target_tokens = int(threshold * self.ceiling)
 

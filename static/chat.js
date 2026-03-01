@@ -345,8 +345,15 @@
     const label = el('div', 'model-label');
     let suffix = '';
     if (msg.isSummary) suffix = ' (Summary)';
-    else if (msg.summary) suffix = ' (Summary)';   // was "(Summary attached)"
-    label.textContent = msg.model ? `${msg.model}${suffix}` : 'Assistant';
+    else if (msg.summary) suffix = ' (Summary)';
+    let costStr = '';
+    if (msg.cost != null && msg.cost > 0) {
+      costStr = msg.cost < 0.01 ? ` ($${msg.cost.toFixed(4)})` : ` ($${msg.cost.toFixed(3)})`;
+    } else if (msg.usage) {
+      const u = msg.usage;
+      costStr = ` (${u.input_tokens + u.output_tokens} tok)`;
+    }
+    label.textContent = msg.model ? `${msg.model}${suffix}${costStr}` : 'Assistant';
     row.appendChild(label);
   }
 
@@ -2264,6 +2271,12 @@ async function loadPrompts() {
           renderChatTitle();
           renderHistory();
         } else if (data.type === 'complete') {
+          if (data.usage) {
+            state.messages[idx].usage = data.usage;
+          }
+          if (data.cost != null) {
+            state.messages[idx].cost = data.cost;
+          }
           src.close();
           state.streaming = false;
           hide(E.cancelBtn);
