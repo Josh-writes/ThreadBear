@@ -12,6 +12,7 @@ chats/
 documents/
 threadbear_docs.db
 threadbear.db
+folders.json
 
 # Tool configs
 .claude/
