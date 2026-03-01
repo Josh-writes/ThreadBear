@@ -114,6 +114,21 @@ class FolderManager:
             raise ValueError(f"Folder '{new_name}' already exists at this level")
 
         folder["name"] = new_name
+        
+        # Update the prompt branch chat title
+        prompt_fn = folder.get("prompt_branch_filename")
+        if prompt_fn:
+            prompt_path = os.path.join(self.chats_directory, prompt_fn)
+            if os.path.exists(prompt_path):
+                try:
+                    with open(prompt_path, "r", encoding="utf-8") as f:
+                        prompt_data = json.load(f)
+                    prompt_data["title"] = f"[Prompt] {new_name}"
+                    with open(prompt_path, "w", encoding="utf-8") as f:
+                        json.dump(prompt_data, f, indent=2, ensure_ascii=False)
+                except Exception as e:
+                    print(f"Error updating prompt branch title: {e}")
+        
         self._save()
         return True
 
@@ -344,10 +359,10 @@ class FolderManager:
                 {
                     "role": "system",
                     "content": (
-                        f"You are helping define the system prompt for the folder \"{folder_name}\". "
-                        "Describe the role, knowledge, and behavior the AI should have "
-                        "for all chats in this folder. The last assistant message in this "
-                        "conversation becomes the active system prompt."
+                        f"You are helping define a system prompt for the folder \"{folder_name}\". "
+                        "When the user describes what they want, generate a well-structured "
+                        "system prompt that defines the AI's role, knowledge, and behavior. "
+                        "Refine it based on feedback."
                     ),
                     "timestamp": datetime.now().strftime("%H:%M"),
                 }

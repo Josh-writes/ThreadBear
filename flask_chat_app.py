@@ -499,7 +499,14 @@ class FlaskChatApp:
                 if self.temporary_mode:
                     self.chat_manager.clear_current_chat(auto_save=False)
 
+                data = request.get_json() or {}
+                folder_id = data.get('folder_id')
+
                 filename = self.chat_manager.create_new_chat()
+
+                # Assign chat to folder if specified
+                if folder_id:
+                    self.folder_manager.assign_chat_to_folder(filename, folder_id)
 
                 # Verify the file actually exists on disk before declaring success
                 chat_path = os.path.join(self.chat_manager.chats_directory, filename)

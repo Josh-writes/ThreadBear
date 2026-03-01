@@ -45,6 +45,7 @@
     chatFolderMap: {},
     fileFolderMap: {},
     expandedFolders: new Set(),
+    activeFolder: null,  // Currently selected folder for overview view
 
     // prompts
     prompts: [],
@@ -216,6 +217,7 @@
     folderContextMenu: $('folderContextMenu'),
     menuRenameFolder: $('renameFolderMenuItem'),
     menuAddSubfolder: $('addSubfolderMenuItem'),
+    menuOpenPromptBranch: $('openPromptBranchMenuItem'),
     menuFolderContextSettings: $('folderContextSettingsMenuItem'),
     menuDeleteFolder: $('deleteFolderMenuItem'),
     moveToFolderMenu: $('moveToFolderMenu'),
@@ -285,6 +287,13 @@
     } else {
       E.folderBadge.style.display = 'none';
     }
+  }
+
+  function isCurrentChatPromptBranch() {
+    const folderId = state.chatFolderMap[state.currentChatFile];
+    if (!folderId) return false;
+    const folder = findFolderById(folderId);
+    return folder && folder.prompt_branch_filename === state.currentChatFile;
   }
 
   function findFolderById(id) {
@@ -457,25 +466,56 @@
 
   function renderMessages() {
   clearNode(E.messages);
+  
+  // If viewing a folder overview, don't render messages
+  if (state.activeFolder) {
+    renderFolderOverview(state.activeFolder);
+    return;
+  }
+  
+  const isPromptBranch = isCurrentChatPromptBranch();
 
-  if (!state.messages.length) {
-    const empty = el('div', 'empty-state');
-    empty.innerHTML = `
-      <h2>Welcome to ThreadBear</h2>
-      <p>Start a conversation by typing a message below.</p>
-      <p>Press Enter to send, Shift+Enter for new line.</p>
-    `;
-    E.messages.appendChild(empty);
+  if (!state.messages.length || (isPromptBranch && state.messages.every(m => m.role === 'system'))) {
+    if (isPromptBranch) {
+      E.messages.appendChild(buildPromptBranchBanner());
+    } else {
+      const empty = el('div', 'empty-state');
+      empty.innerHTML = `
+        <h2>Welcome to ThreadBear</h2>
+        <p>Start a conversation by typing a message below.</p>
+        <p>Press Enter to send, Shift+Enter for new line.</p>
+      `;
+      E.messages.appendChild(empty);
+    }
     return;
   }
 
+  if (isPromptBranch) {
+    E.messages.appendChild(buildPromptBranchBanner());
+  }
+
   state.messages.forEach((m, i) => {
+    // Hide system messages in prompt branch chats (instructions are shown in banner)
+    if (isPromptBranch && m.role === 'system') return;
     const row = messageNode(m, i);
     E.messages.appendChild(row);
   });
 
   E.messages.scrollTop = E.messages.scrollHeight;
 }
+
+  function buildPromptBranchBanner() {
+    const banner = el('div', 'prompt-branch-banner');
+    banner.innerHTML = `
+      <div class="prompt-branch-banner-title">Folder Context Chat</div>
+      <div class="prompt-branch-banner-steps">
+        <div><strong>1.</strong> Describe the role, knowledge, and behavior the AI should have for chats in this folder.</div>
+        <div><strong>2.</strong> Iterate with the AI until the system prompt is how you want it.</div>
+        <div><strong>3.</strong> Right-click the assistant message you want to use and select <strong>"Save as Folder Prompt"</strong>.</div>
+      </div>
+    `;
+    return banner;
+  }
 
   // ===== Tool Chip Rendering (Phase 3) =====
 
@@ -577,6 +617,7 @@
       const data = await res.json();
       if (data.success) {
         await loadFolders();
+        await loadHistory();
         renderHistory();
       } else if (data.error) {
         alert(data.error);
@@ -656,7 +697,11 @@
     } else {
       state.expandedFolders.add(folderId);
     }
+    // Also set as active folder and show overview
+    state.activeFolder = folderId;
+    state.currentChatFile = null;
     renderHistory();
+    renderFolderOverview(folderId);
   }
 
   async function openFolderContextSettings(folderId) {
@@ -972,13 +1017,14 @@
     const isExpanded = state.expandedFolders.has(folder.id);
 
     // Count contents
-    const chatCount = Object.values(state.chatFolderMap).filter(fid => fid === folder.id).length;
+    const promptFn = folder.prompt_branch_filename;
+    const chatCount = Object.entries(state.chatFolderMap).filter(([fn, fid]) => fid === folder.id && fn !== promptFn).length;
     const fileCount = Object.values(state.fileFolderMap).filter(fid => fid === folder.id).length;
     const childCount = (folder.children || []).length;
     const totalCount = chatCount + fileCount + childCount;
 
     // Folder header row
-    const div = el('div', 'folder-item' + (depth > 0 ? ' subfolder' : ''));
+    const div = el('div', 'folder-item' + (depth > 0 ? ' subfolder' : '') + (state.activeFolder === folder.id ? ' active-folder' : ''));
     div.setAttribute('data-folder-id', folder.id);
 
     const chevron = el('span', 'folder-chevron' + (isExpanded ? ' expanded' : ''));
@@ -1021,18 +1067,11 @@
     if (isExpanded) {
       const contents = el('div', 'folder-contents expanded');
 
-      // Render prompt branch first (if any)
-      const promptFn = folder.prompt_branch_filename;
-      const folderChats = state.history.filter(c => state.chatFolderMap[c.filename] === folder.id);
-      if (promptFn) {
-        const promptChat = folderChats.find(c => c.filename === promptFn);
-        if (promptChat) {
-          renderChatNode(promptChat, contents, 0, true, true);
-        }
-      }
+      // Prompt branch is hidden from the list — accessible via folder right-click menu
+      const folderChats = state.history.filter(c => state.chatFolderMap[c.filename] === folder.id && c.filename !== promptFn);
 
-      // Render other chats
-      folderChats.filter(c => c.filename !== promptFn).forEach(chat => {
+      // Render chats (excluding prompt branch)
+      folderChats.forEach(chat => {
         renderChatNode(chat, contents, 0, true);
       });
 
@@ -1689,14 +1728,34 @@ async function loadPrompts() {
     }
   }
 
+  async function newChatInFolder(folderId) {
+    try {
+      const js = await postJSON('/api/chat/new', { folder_id: folderId });
+      state.currentChatFile = js.filename || js.chat_file || state.currentChatFile;
+      state.activeFolder = null;
+      state.messages = [];
+      showInputArea(true);
+      await loadHistory();
+      await loadFolders();
+      state.expandedFolders.add(folderId);
+      renderChatTitle();
+      renderHistory();
+      renderMessages();
+    } catch (e) {
+      alert('Failed to create new chat in folder: ' + String(e));
+    }
+  }
+
   async function loadChat(filename) {
     const js = await getJSON(`/api/chat/load/${encodeURIComponent(filename)}`);
     if (js.success === false) return alert(js.error || 'Failed to load chat');
     state.currentChatFile = filename;
+    state.activeFolder = null;  // Clear active folder when loading a chat
     state.messages = js.messages || [];
     renderChatTitle();
     renderHistory();
     renderMessages();
+    showInputArea(true);  // Ensure input area is visible
   }
 
   async function renameChat(filename) {
@@ -1761,6 +1820,197 @@ async function loadPrompts() {
     } catch (e) {
       alert('Duplicate failed: ' + String(e));
     }
+  }
+
+  // ====== Folder Overview UI ======
+  
+  function showInputArea(visible) {
+    const inputArea = document.querySelector('.input-area');
+    if (inputArea) {
+      inputArea.style.display = visible ? '' : 'none';
+    }
+  }
+
+  function renderFolderOverview(folderId) {
+    const folder = findFolderById(folderId);
+    if (!folder) return;
+
+    clearNode(E.messages);
+    hideInputArea();
+
+    const container = el('div', 'folder-overview-container');
+
+    // Header with folder name and new chat button
+    const header = el('div', 'folder-overview-header');
+    const title = el('h2', 'folder-overview-title');
+    title.textContent = folder.name;
+    header.appendChild(title);
+
+    const newChatBtn = el('button', 'control-btn folder-new-chat-btn');
+    newChatBtn.textContent = '+ New Chat';
+    newChatBtn.addEventListener('click', () => newChatInFolder(folderId));
+    header.appendChild(newChatBtn);
+
+    container.appendChild(header);
+
+    // Chat list section
+    const chatsSection = el('div', 'folder-section');
+    const chatsHeader = el('h3', 'folder-section-header');
+    chatsHeader.textContent = 'Chats';
+    chatsSection.appendChild(chatsHeader);
+
+    const chatList = el('div', 'folder-chat-list');
+    const folderChats = state.history.filter(c => 
+      state.chatFolderMap[c.filename] === folderId && 
+      c.filename !== folder.prompt_branch_filename
+    );
+
+    if (folderChats.length === 0) {
+      const empty = el('div', 'folder-empty-message');
+      empty.textContent = 'No chats in this folder yet. Create one!';
+      chatList.appendChild(empty);
+    } else {
+      folderChats.forEach(chat => {
+        const chatItem = el('div', 'folder-chat-item' + (chat.filename === state.currentChatFile ? ' active' : ''));
+        chatItem.textContent = chat.title || chat.filename.replace(/\.json$/, '');
+        chatItem.addEventListener('click', () => loadChat(chat.filename));
+        chatList.appendChild(chatItem);
+      });
+    }
+    chatsSection.appendChild(chatList);
+    container.appendChild(chatsSection);
+
+    // Documents section with drop zone
+    const docsSection = el('div', 'folder-section');
+    const docsHeader = el('h3', 'folder-section-header');
+    docsHeader.textContent = 'Documents';
+    docsSection.appendChild(docsHeader);
+
+    const dropZone = el('div', 'folder-drop-zone');
+    dropZone.textContent = 'Drag & drop files here';
+    
+    const docList = el('div', 'folder-doc-list');
+    const folderDocs = Object.keys(state.fileFolderMap).filter(fn => state.fileFolderMap[fn] === folderId);
+    
+    if (folderDocs.length === 0) {
+      const empty = el('div', 'folder-empty-message');
+      empty.textContent = 'No documents. Drop files here or use the upload button.';
+      docList.appendChild(empty);
+    } else {
+      folderDocs.forEach(fn => {
+        const docItem = el('div', 'folder-doc-item');
+        docItem.innerHTML = `<span>📄</span><span>${fn}</span>`;
+        docList.appendChild(docItem);
+      });
+    }
+
+    dropZone.appendChild(docList);
+    docsSection.appendChild(dropZone);
+    container.appendChild(docsSection);
+
+    // Active prompt preview section
+    const promptSection = el('div', 'folder-section');
+    const promptHeader = el('h3', 'folder-section-header');
+    promptHeader.textContent = 'Active Prompt';
+    promptSection.appendChild(promptHeader);
+
+    const promptInfo = el('div', 'folder-prompt-info');
+    const activePromptId = folder.active_prompt_id;
+    const savedPrompts = folder.saved_prompts || [];
+    const activePrompt = savedPrompts.find(p => p.id === activePromptId);
+
+    if (activePrompt) {
+      const promptName = el('div', 'folder-prompt-name');
+      promptName.textContent = activePrompt.name;
+      promptInfo.appendChild(promptName);
+
+      const promptPreview = el('div', 'folder-prompt-preview');
+      promptPreview.textContent = activePrompt.content.substring(0, 200) + (activePrompt.content.length > 200 ? '...' : '');
+      promptInfo.appendChild(promptPreview);
+    } else {
+      const noPrompt = el('div', 'folder-empty-message');
+      noPrompt.textContent = 'No active prompt. Use the prompt branch to create one.';
+      promptInfo.appendChild(noPrompt);
+    }
+    promptSection.appendChild(promptInfo);
+    container.appendChild(promptSection);
+
+    // Memory notes section
+    const memorySection = el('div', 'folder-section');
+    const memoryHeader = el('h3', 'folder-section-header');
+    memoryHeader.textContent = 'Memory Notes';
+    memorySection.appendChild(memoryHeader);
+
+    const memoryCount = el('div', 'folder-memory-count');
+    const notesCount = folder.memory_notes ? folder.memory_notes.length : 0;
+    memoryCount.textContent = notesCount + ' note' + (notesCount !== 1 ? 's' : '');
+    memorySection.appendChild(memoryCount);
+    container.appendChild(memorySection);
+
+    // Setup drag and drop
+    setupFolderDropZone(dropZone, folderId);
+
+    E.messages.appendChild(container);
+  }
+
+  function hideInputArea() {
+    showInputArea(false);
+  }
+
+  function setupFolderDropZone(dropZone, folderId) {
+    ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+      dropZone.addEventListener(eventName, (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+      }, false);
+    });
+
+    dropZone.addEventListener('dragover', (e) => {
+      dropZone.classList.add('drop-zone-active');
+    });
+
+    dropZone.addEventListener('dragleave', (e) => {
+      if (e.target === dropZone || !dropZone.contains(e.relatedTarget)) {
+        dropZone.classList.remove('drop-zone-active');
+      }
+    });
+
+    dropZone.addEventListener('drop', async (e) => {
+      dropZone.classList.remove('drop-zone-active');
+      const files = e.dataTransfer.files;
+
+      if (files.length > 0) {
+        for (let file of files) {
+          try {
+            // Upload the file
+            const formData = new FormData();
+            formData.append('file', file);
+
+            const uploadRes = await fetch('/api/context/docs/upload', {
+              method: 'POST',
+              body: formData
+            });
+
+            const uploadData = await uploadRes.json();
+            if (uploadData.success && uploadData.document) {
+              const doc = uploadData.document;
+              // Assign to folder using the document's filename
+              await fetch(`/api/folders/${folderId}/files`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ filename: doc.name })
+              });
+              // Refresh folders and re-render
+              await loadFolders();
+              renderFolderOverview(folderId);
+            }
+          } catch (err) {
+            console.error('Upload failed:', err);
+            alert('Failed to upload file: ' + String(err));
+          }
+        }
+      }
+    });
   }
 
   // ====== Context Overflow Warning ======
@@ -4004,6 +4254,16 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
       E.folderContextMenu.style.display = 'none';
       if (state.ctxMenuTarget.type === 'folder') {
         openFolderContextSettings(state.ctxMenuTarget.folderId);
+      }
+    });
+
+    // Folder context menu: Open Context Chat (prompt branch)
+    E.menuOpenPromptBranch.addEventListener('click', () => {
+      E.folderContextMenu.style.display = 'none';
+      if (state.ctxMenuTarget.type !== 'folder') return;
+      const folder = findFolderById(state.ctxMenuTarget.folderId);
+      if (folder && folder.prompt_branch_filename) {
+        loadChat(folder.prompt_branch_filename);
       }
     });
 
