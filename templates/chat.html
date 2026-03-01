@@ -1532,12 +1532,43 @@
             overflow-wrap: break-word;
         }
 
+        /* ===== Working Text (pre-tool narration) ===== */
+        .tool-working-text {
+            font-size: 12px;
+            color: var(--text-secondary);
+            padding: 6px 10px;
+            border-left: 2px solid var(--border-color);
+            margin-bottom: 6px;
+            width: 100%;
+        }
+        .tool-working-toggle {
+            cursor: pointer;
+            font-size: 12px;
+            color: var(--text-secondary);
+            user-select: none;
+        }
+        .tool-working-toggle:hover {
+            color: var(--text-primary);
+        }
+        .tool-working-text.collapsed .tool-working-content {
+            display: none;
+        }
+        .tool-working-content {
+            margin-top: 4px;
+            font-size: 12px;
+            line-height: 1.4;
+            color: var(--text-secondary);
+        }
+        .tool-working-content p {
+            margin: 2px 0;
+        }
+
         /* ===== Tool Chips (Phase 3) ===== */
         .tool-chips-container {
             display: flex;
             flex-wrap: wrap;
             gap: 4px;
-            margin-top: 6px;
+            margin-bottom: 6px;
         }
 
         .tool-chip {
@@ -1927,12 +1958,45 @@
             align-self: center;
         }
 
-        .tools-indicator {
-            font-size: 14px;
+        .tools-toggle {
+            display: flex;
+            align-items: center;
+            gap: 4px;
             align-self: center;
-            cursor: default;
-            opacity: 0.7;
-            padding: 4px;
+            cursor: pointer;
+            padding: 4px 8px;
+            border-radius: 12px;
+            font-size: 12px;
+            border: 1px solid var(--border-color);
+            background: var(--bg-secondary);
+            transition: background 0.2s, border-color 0.2s, opacity 0.2s;
+            user-select: none;
+            white-space: nowrap;
+        }
+        .tools-toggle:hover {
+            border-color: var(--text-secondary);
+        }
+        .tools-toggle.active {
+            background: #e8f5e9;
+            border-color: #4caf50;
+        }
+        [data-theme="dark"] .tools-toggle.active {
+            background: #1b3a1f;
+            border-color: #66bb6a;
+        }
+        .tools-toggle.unsupported {
+            opacity: 0.4;
+            cursor: not-allowed;
+        }
+        .tools-toggle .tools-toggle-icon {
+            font-size: 13px;
+        }
+        .tools-toggle .tools-toggle-label {
+            font-size: 11px;
+            color: var(--text-secondary);
+        }
+        .tools-toggle.active .tools-toggle-label {
+            color: var(--text-primary);
         }
 
         .message-input {
@@ -2754,12 +2818,6 @@
                     <button class="context-action-btn summarize-btn" id="summarizeAllBtn">Summarize Conversation</button>
                     <button class="context-action-btn" id="addDocumentBtn">📎 Add Document</button>
                     <input type="file" id="documentUpload" accept=".txt,.md,.markdown,.pdf,.docx,.csv,.tsv,.py,.js,.ts,.html,.css,.json,.yaml,.yml,.toml,.cpp,.c,.h,.java,.rs,.go,.sh,.sql,.xml,.rb,.php,.xlsx,.xls,.pptx,.epub" style="display: none;">
-                    
-                    <!-- URL Ingestion (Phase 7) -->
-                    <div class="url-ingestion-input" style="display: flex; gap: 4px; margin-top: 8px;">
-                        <input type="url" id="urlIngestInput" placeholder="Ingest web page URL..." style="flex: 1; padding: 6px 8px; border: 1px solid var(--border-color); border-radius: 4px; background: var(--bg-primary); color: var(--text-primary); font-size: 12px;" />
-                        <button class="context-action-btn" id="urlIngestBtn" style="padding: 6px 12px; white-space: nowrap;">🌐 Ingest URL</button>
-                    </div>
 
                     <!-- Progress and attachment elements from work doc 1.2 -->
                     <div id="uploadProgress" style="display:none">
@@ -2813,7 +2871,10 @@
             <div class="input-area">
                 <div class="input-container">
                     <div class="input-row">
-                        <span id="toolsIndicator" class="tools-indicator" style="display: none;" title="Tools enabled for this provider">🔧</span>
+                        <div class="tools-toggle" id="toolsToggle" title="Toggle tools for this provider">
+                            <span class="tools-toggle-icon">🔧</span>
+                            <span class="tools-toggle-label" id="toolsToggleLabel">Tools</span>
+                        </div>
                         <button class="control-btn input-context-btn" id="contextSelectionBtn">Select Context</button>
                         <div class="input-field-wrap">
                             <textarea

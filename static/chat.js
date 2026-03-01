@@ -18,6 +18,17 @@
   const fmt = (n) => (typeof n === 'number' ? n.toLocaleString() : n);
   const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
+  // Open external links in the user's default browser (new tab)
+  marked.use({
+    renderer: {
+      link({ href, title, tokens }) {
+        const text = this.parser.parseInline(tokens);
+        const titleAttr = title ? ` title="${title}"` : '';
+        return `<a href="${href}"${titleAttr} target="_blank" rel="noopener noreferrer">${text}</a>`;
+      }
+    }
+  });
+
   const state = {
     config: null,
     providers: [],
@@ -86,8 +97,6 @@
 
     // Context controls bar (hidden until toggled)
     contextControls: $('contextControls'),
-    urlIngestInput: $('urlIngestInput'),
-    urlIngestBtn: $('urlIngestBtn'),
     contextTokenCountTop: $('contextTokenCount'),
     modelMaxTokensLabel: $('modelMaxTokensLabel'),
     selectAllBtn: $('selectAllBtn'),
@@ -172,7 +181,8 @@
     toolsEnabledCheckbox: $('toolsEnabledCheckbox'),
     toolsProviderHint: $('toolsProviderHint'),
     toolsStatus: $('toolsStatus'),
-    toolsIndicator: $('toolsIndicator'),
+    toolsToggle: $('toolsToggle'),
+    toolsToggleLabel: $('toolsToggleLabel'),
     toolboxFileList: $('toolboxFileList'),
     toolboxRefreshBtn: $('toolboxRefreshBtn'),
     toolboxContextMenu: $('toolboxContextMenu'),
@@ -404,16 +414,25 @@
     content.appendChild(checkbox);
   }
 
-  // ===== Bubble (markdown) =====
-  const bubble = el('div', 'message-bubble');
-  try {
-    bubble.innerHTML = marked.parse(msg.content || '');
-  } catch {
-    bubble.textContent = msg.content || '';
+  // ===== Working text (intermediate LLM narration before tools) =====
+  if (msg.workingText) {
+    const workingWrap = el('div', 'tool-working-text collapsed');
+    const workingToggle = el('div', 'tool-working-toggle');
+    workingToggle.textContent = '💭 Show working notes';
+    workingToggle.addEventListener('click', () => {
+      const isCollapsed = workingWrap.classList.contains('collapsed');
+      workingWrap.classList.toggle('collapsed');
+      workingToggle.textContent = isCollapsed ? '💭 Hide working notes' : '💭 Show working notes';
+    });
+    workingWrap.appendChild(workingToggle);
+    const workingContent = el('div', 'tool-working-content');
+    try { workingContent.innerHTML = marked.parse(msg.workingText); }
+    catch { workingContent.textContent = msg.workingText; }
+    workingWrap.appendChild(workingContent);
+    content.appendChild(workingWrap);
   }
-  content.appendChild(bubble);
 
-  // ===== Tool events (persisted in state) =====
+  // ===== Tool events ABOVE the bubble =====
   if (msg.tool_events && msg.tool_events.length) {
     const toolContainer = el('div', 'tool-chips-container');
     msg.tool_events.forEach(te => {
@@ -477,6 +496,15 @@
     });
     content.appendChild(toolContainer);
   }
+
+  // ===== Bubble (markdown) =====
+  const bubble = el('div', 'message-bubble');
+  try {
+    bubble.innerHTML = marked.parse(msg.content || '');
+  } catch {
+    bubble.textContent = msg.content || '';
+  }
+  content.appendChild(bubble);
 
   // === Inline preview toggle when a summary is attached ===
   // Removed: summary is always shown inline below the bubble.
@@ -632,12 +660,10 @@
     let container = msgEl.querySelector('.tool-chips-container');
     if (!container) {
       container = el('div', 'tool-chips-container');
-      // Insert after the message-bubble
+      // Insert BEFORE the message-bubble (tools above response)
       const bubble = msgEl.querySelector('.message-bubble');
-      if (bubble && bubble.nextSibling) {
-        bubble.parentNode.insertBefore(container, bubble.nextSibling);
-      } else if (bubble) {
-        bubble.parentNode.appendChild(container);
+      if (bubble) {
+        bubble.parentNode.insertBefore(container, bubble);
       } else {
         msgEl.querySelector('.message-content')?.appendChild(container);
       }
@@ -2479,6 +2505,19 @@ async function loadPrompts() {
             E.messages.scrollTop = E.messages.scrollHeight;
           }
         } else if (data.type === 'tool_start') {
+          // If bubble has accumulated content before tools, save it as working text
+          const currentContent = (state.messages[idx].content || '').trim();
+          if (currentContent && !state.messages[idx]._toolsSeen) {
+            // First tool_start: move current content to workingText
+            state.messages[idx].workingText = (state.messages[idx].workingText || '') +
+              (state.messages[idx].workingText ? '\n\n' : '') + currentContent;
+            state.messages[idx].content = '';
+            // Clear the bubble visually
+            if (state.currentStreamingBubble) {
+              state.currentStreamingBubble.innerHTML = '';
+            }
+          }
+          state.messages[idx]._toolsSeen = true;
           // Store in state so it survives renderMessages()
           if (!state.messages[idx].tool_events) state.messages[idx].tool_events = [];
           state.messages[idx].tool_events.push({
@@ -2518,6 +2557,8 @@ async function loadPrompts() {
           hide(E.cancelBtn);
           show(E.sendBtn);
           state.currentStreamingBubble = null;
+          // Clean up streaming-only flag
+          delete state.messages[idx]._toolsSeen;
           renderMessages();
           afterMessageSettled();
         } else if (data.type === 'error') {
@@ -3468,6 +3509,7 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
     const unsupported = TOOLS_UNSUPPORTED_PROVIDERS.includes(provider);
     const enabled = !unsupported && !!(state.toolsConfig || {})[provider];
 
+    // Settings panel checkbox
     if (E.toolsEnabledCheckbox) {
       E.toolsEnabledCheckbox.checked = enabled;
       E.toolsEnabledCheckbox.disabled = unsupported;
@@ -3475,10 +3517,15 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
     if (E.toolsProviderHint) {
       E.toolsProviderHint.textContent = unsupported
         ? 'Not supported for ' + provider[0].toUpperCase() + provider.slice(1)
-        : 'for ' + provider[0].toUpperCase() + provider.slice(1);
+        : '';
     }
-    if (E.toolsIndicator) {
-      E.toolsIndicator.style.display = enabled ? '' : 'none';
+    // Input area toggle
+    if (E.toolsToggle) {
+      E.toolsToggle.classList.toggle('active', enabled);
+      E.toolsToggle.classList.toggle('unsupported', unsupported);
+      E.toolsToggle.title = unsupported
+        ? 'Tools not supported for ' + provider[0].toUpperCase() + provider.slice(1)
+        : enabled ? 'Tools on (click to disable)' : 'Tools off (click to enable)';
     }
   }
 
@@ -3579,28 +3626,37 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
     E.toolboxRefreshBtn.addEventListener('click', () => loadToolbox());
   }
 
-  if (E.toolsEnabledCheckbox) {
-    E.toolsEnabledCheckbox.addEventListener('change', async () => {
-      const provider = state.currentProvider;
-      const enabled = E.toolsEnabledCheckbox.checked;
-      try {
-        await fetch('/api/config/tools', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ provider, enabled }),
-        });
-        if (!state.toolsConfig) state.toolsConfig = {};
-        state.toolsConfig[provider] = enabled;
-        updateToolsUI();
-        if (E.toolsStatus) {
-          E.toolsStatus.textContent = enabled ? 'Tools enabled' : 'Tools disabled';
-          setTimeout(() => { E.toolsStatus.textContent = ''; }, 2000);
-        }
-      } catch (e) {
-        console.error('Failed to toggle tools:', e);
-        if (E.toolsStatus) E.toolsStatus.textContent = 'Error saving';
+  async function toggleTools(forceState) {
+    const provider = state.currentProvider;
+    if (TOOLS_UNSUPPORTED_PROVIDERS.includes(provider)) return;
+    const enabled = forceState !== undefined ? forceState : !(state.toolsConfig || {})[provider];
+    try {
+      await fetch('/api/config/tools', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ provider, enabled }),
+      });
+      if (!state.toolsConfig) state.toolsConfig = {};
+      state.toolsConfig[provider] = enabled;
+      updateToolsUI();
+      if (E.toolsStatus) {
+        E.toolsStatus.textContent = enabled ? 'Tools enabled' : 'Tools disabled';
+        setTimeout(() => { E.toolsStatus.textContent = ''; }, 2000);
       }
+    } catch (e) {
+      console.error('Failed to toggle tools:', e);
+      if (E.toolsStatus) E.toolsStatus.textContent = 'Error saving';
+    }
+  }
+
+  if (E.toolsEnabledCheckbox) {
+    E.toolsEnabledCheckbox.addEventListener('change', () => {
+      toggleTools(E.toolsEnabledCheckbox.checked);
     });
+  }
+
+  if (E.toolsToggle) {
+    E.toolsToggle.addEventListener('click', () => toggleTools());
   }
 
   // ====== Context bar bindings ======
@@ -3636,41 +3692,6 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
     E.documentUpload.addEventListener('change', async () => {
       if (!E.documentUpload.files || !E.documentUpload.files.length) return;
       await uploadDocument(E.documentUpload.files[0]);
-    });
-
-    // URL Ingestion (Phase 7)
-    E.urlIngestBtn.addEventListener('click', async () => {
-      const url = E.urlIngestInput.value.trim();
-      if (!url) {
-        alert('Please enter a URL');
-        return;
-      }
-      
-      E.urlIngestBtn.disabled = true;
-      E.urlIngestBtn.textContent = 'Ingesting...';
-      
-      try {
-        const res = await fetch('/api/context/url', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ url })
-        });
-        const data = await res.json();
-        
-        if (data.success) {
-          alert(`Successfully ingested: ${data.document.name}`);
-          E.urlIngestInput.value = '';
-          await loadDocs();
-          await updateContextTokenSummary();
-        } else {
-          alert('Failed to ingest URL: ' + (data.error || 'Unknown error'));
-        }
-      } catch (e) {
-        alert('Failed to ingest URL: ' + e);
-      } finally {
-        E.urlIngestBtn.disabled = false;
-        E.urlIngestBtn.textContent = '🌐 Ingest URL';
-      }
     });
 
     // Selection helpers (operate on MESSAGES, not documents)

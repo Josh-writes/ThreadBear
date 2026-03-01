@@ -99,6 +99,45 @@ def _cancel_generation(message_id: int):
             _request_contexts[message_id]['cancel_generation'] = True
 
 
+def _truncate_text_head_tail(text: str, max_chars: int) -> str:
+    """Truncate text keeping head + tail so the LLM sees how it started and ended."""
+    if len(text) <= max_chars:
+        return text
+    half = max_chars // 2
+    # Break at newlines so we don't cut mid-line
+    head = text[:half]
+    tail = text[-half:]
+    # Snap to last newline in head
+    nl = head.rfind('\n')
+    if nl > half // 2:
+        head = head[:nl]
+    # Snap to first newline in tail
+    nl = tail.find('\n')
+    if nl != -1 and nl < half // 2:
+        tail = tail[nl + 1:]
+    omitted = len(text) - len(head) - len(tail)
+    total_lines = text.count('\n') + 1
+    return f"{head}\n\n[... {omitted} chars omitted, {total_lines} total lines ...]\n\n{tail}"
+
+
+def _truncate_tool_result(result: dict, max_chars: int = 3000) -> dict:
+    """
+    Smart-truncate a tool result dict for the LLM context.
+    Truncates individual text fields (stdout, content, etc.) using head+tail,
+    preserving structure so JSON remains valid.
+    """
+    truncated = dict(result)
+    # Fields that can be large
+    text_fields = ['stdout', 'stderr', 'content', 'data']
+    for field in text_fields:
+        if field in truncated and isinstance(truncated[field], str):
+            truncated[field] = _truncate_text_head_tail(truncated[field], max_chars)
+    # Handle nested {success, result} wrapper
+    if 'result' in truncated and isinstance(truncated['result'], dict):
+        truncated['result'] = _truncate_tool_result(truncated['result'], max_chars)
+    return truncated
+
+
 class FlaskChatApp:
     def __init__(self):
         # figure out where the repo root is (same folder that has templates/, static/, prompts/)
@@ -853,7 +892,9 @@ class FlaskChatApp:
                     tools_enabled = tool_config.get('enabled', False)
                     tool_schemas = tool_registry.get_schemas_for_provider() if tools_enabled else None
 
-                    # Inject tool-awareness into the system prompt
+                    # Inject tool-awareness into the system prompt (via config,
+                    # NOT api_messages, to avoid duplicate system messages that
+                    # break strict chat templates like llama.cpp's Jinja)
                     if tools_enabled and tool_schemas:
                         tool_names = [t['function']['name'] for t in tool_schemas]
                         tool_hint = (
@@ -861,13 +902,15 @@ class FlaskChatApp:
                             + ", ".join(tool_names) + ". "
                             "When the user asks you to write files, run commands, list directories, "
                             "or perform actions on their system, USE the tools directly instead of "
-                            "just showing code. Execute the actions using your tools."
+                            "just showing code. Execute the actions using your tools. "
+                            "After running tools, present the key results clearly in your response. "
+                            "For command output, include the relevant output directly in your reply "
+                            "rather than just saying 'done'."
                         )
-                        # Append to existing system message or insert one
-                        if api_messages and api_messages[0].get('role') == 'system':
-                            api_messages[0]['content'] += tool_hint
-                        else:
-                            api_messages.insert(0, {'role': 'system', 'content': tool_hint.strip()})
+                        system_prompt = (system_prompt or "") + tool_hint
+                        # Update merged_cfg so API clients use the combined prompt
+                        merged_cfg["system_prompt"] = system_prompt
+                        merged_cfg[f"{provider}_system_prompt"] = system_prompt
                     safety_mgr = ToolSafetyManager({
                         'blocked_commands': tool_config.get('blocked_commands', []),
                         'tool_workspace': tool_config.get('workspace'),
@@ -945,10 +988,19 @@ class FlaskChatApp:
                             yield f"data: {json.dumps({'type':'tool_end', 'name': name, 'result': result})}\n\n"
 
                             # Add tool result to messages for next LLM call
+                            # Budget: 30% of context window for tool results,
+                            # ~4 chars per token, split across tool calls this round
+                            try:
+                                ctx_window = self.config.get_context_window(provider, model)
+                            except Exception:
+                                ctx_window = 8192
+                            budget_chars = int(ctx_window * 0.3 * 4) // max(len(tool_calls_this_round), 1)
+                            budget_chars = max(budget_chars, 500)  # floor
+                            llm_result = _truncate_tool_result(result, max_chars=budget_chars)
                             api_messages.append({
                                 'role': 'tool',
                                 'tool_call_id': tc.get('id', ''),
-                                'content': json.dumps(result)
+                                'content': json.dumps(llm_result)
                             })
 
                         # Loop continues — LLM gets tool results and generates next response
