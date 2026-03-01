@@ -2533,6 +2533,60 @@
         [data-theme="dark"] .folder-item.active-folder {
             background: rgba(16, 163, 127, 0.25);
         }
+
+        /* Usage details panel */
+        .usage-message-item {
+            padding: 10px;
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            margin-bottom: 8px;
+            background: var(--bg-primary);
+            font-size: 12px;
+        }
+
+        .usage-message-item:hover {
+            border-color: #10a37f;
+        }
+
+        .usage-message-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 6px;
+            font-size: 11px;
+            color: var(--text-secondary);
+        }
+
+        .usage-message-model {
+            font-weight: 600;
+            color: var(--text-primary);
+        }
+
+        .usage-message-stats {
+            display: flex;
+            gap: 12px;
+            font-size: 11px;
+        }
+
+        .usage-stat {
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+        }
+
+        .usage-stat-label {
+            color: var(--text-secondary);
+            font-size: 9px;
+        }
+
+        .usage-stat-value {
+            font-weight: 500;
+            color: var(--text-primary);
+        }
+
+        .usage-stat-value.cost {
+            color: #10a37f;
+        }
     </style>
 </head>
 <body>
@@ -3060,6 +3114,29 @@
         </div>
     </div>
 
+    <!-- Usage Details Panel -->
+    <div class="settings-panel" id="usageDetailsPanel">
+        <div class="settings-header">
+            <h3>Usage Details</h3>
+            <button class="control-btn" id="closeUsageDetailsBtn">✕</button>
+        </div>
+        <div class="settings-content">
+            <div class="setting-group">
+                <label class="setting-label">Conversation Total</label>
+                <div id="usageConversationTotal" style="margin-top: 8px; padding: 12px; background: var(--bg-secondary); border-radius: 6px;">
+                    <div style="font-size: 13px; color: var(--text-secondary); margin-bottom: 4px;">Total Tokens</div>
+                    <div style="font-size: 20px; font-weight: 600; color: var(--text-primary);" id="usageTotalTokens">0</div>
+                    <div style="font-size: 13px; color: var(--text-secondary); margin-top: 8px;">Estimated Cost</div>
+                    <div style="font-size: 18px; font-weight: 600; color: #10a37f;" id="usageTotalCost">$0.00</div>
+                </div>
+            </div>
+            <div class="setting-group">
+                <label class="setting-label">Messages</label>
+                <div id="usageMessageList" style="margin-top: 8px; max-height: 400px; overflow-y: auto;"></div>
+            </div>
+        </div>
+    </div>
+
     <!-- Folder Context Settings Panel -->
     <div class="settings-panel" id="folderContextPanel">
         <div class="settings-header">
@@ -3182,6 +3259,11 @@
         <div class="context-menu-item" id="saveAsFolderPromptMenuItem" style="display: none;">
             <span>💾</span>
             <span>Save as Folder Prompt</span>
+        </div>
+        <div class="context-menu-separator"></div>
+        <div class="context-menu-item" id="menuViewUsageDetails" style="display: none;">
+            <span>📊</span>
+            <span>View Usage Details</span>
         </div>
         <div class="context-menu-separator"></div>
         <div class="context-menu-item danger" id="deleteResponseMenuItem">

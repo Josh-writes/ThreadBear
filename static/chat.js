@@ -232,6 +232,14 @@
     menuSaveAsFolderPrompt: $('saveAsFolderPromptMenuItem'),
     menuDelete: $('deleteResponseMenuItem'),
 
+    // Usage details panel
+    menuViewUsageDetails: $('menuViewUsageDetails'),
+    usageDetailsPanel: $('usageDetailsPanel'),
+    closeUsageDetailsBtn: $('closeUsageDetailsBtn'),
+    usageTotalTokens: $('usageTotalTokens'),
+    usageTotalCost: $('usageTotalCost'),
+    usageMessageList: $('usageMessageList'),
+
     // Folder badge
     folderBadge: $('folderBadge'),
 
@@ -340,20 +348,70 @@
   const row = el('div', `message ${msg.role}`);
   row.dataset.index = index;
 
-  // ===== Model label for assistant messages (keep as you had) =====
+  // ===== Model label for assistant messages =====
   if (msg.role === 'assistant') {
     const label = el('div', 'model-label');
-    let suffix = '';
-    if (msg.isSummary) suffix = ' (Summary)';
-    else if (msg.summary) suffix = ' (Summary)';
-    let costStr = '';
-    if (msg.cost != null && msg.cost > 0) {
-      costStr = msg.cost < 0.01 ? ` ($${msg.cost.toFixed(4)})` : ` ($${msg.cost.toFixed(3)})`;
-    } else if (msg.usage) {
-      const u = msg.usage;
-      costStr = ` (${u.input_tokens + u.output_tokens} tok)`;
+    
+    // Provider prefix (if available)
+    const provider = msg.provider || '';
+    const modelName = msg.model || '';
+    
+    // Build label content
+    let labelContent = '';
+    if (provider && modelName) {
+      labelContent = `${provider}: ${modelName}`;
+    } else if (modelName) {
+      labelContent = modelName;
+    } else {
+      labelContent = 'Assistant';
     }
-    label.textContent = msg.model ? `${msg.model}${suffix}${costStr}` : 'Assistant';
+    
+    // Add summary indicator
+    if (msg.isSummary || msg.summary) {
+      labelContent += ' (Summary)';
+    }
+    
+    // Add token info if available
+    if (msg.usage) {
+      const totalTok = msg.usage.input_tokens + msg.usage.output_tokens;
+      labelContent += ` • ${totalTok} tok`;
+      
+      // Add tokens/sec if timing available
+      if (msg.timing && msg.timing.duration_ms > 0) {
+        const tokensPerSec = (totalTok / (msg.timing.duration_ms / 1000)).toFixed(1);
+        labelContent += ` (${tokensPerSec} t/s)`;
+      }
+    }
+    
+    // Add cost if available
+    if (msg.cost != null && msg.cost > 0) {
+      const costDisplay = msg.cost < 0.01 
+        ? `$${msg.cost.toFixed(4)}` 
+        : `$${msg.cost.toFixed(3)}`;
+      labelContent += ` • ${costDisplay}`;
+    }
+    
+    label.textContent = labelContent;
+    
+    // Right-click for details menu
+    label.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      state.ctxMenuTarget = { type: 'model_label', messageIndex: index, msg };
+      openMenuAt(E.msgContextMenu, e.pageX, e.pageY, () => {
+        // Show "View Usage Details" option for model labels
+        E.menuViewUsageDetails.style.display = '';
+        E.menuBranchFull.style.display = 'none';
+        E.menuBranchSelected.style.display = 'none';
+        E.menuSummarize.style.display = 'none';
+        E.menuCopySelected.style.display = 'none';
+        E.menuCopy.style.display = 'none';
+        E.menuAddToFolderMemory.style.display = 'none';
+        E.menuSaveAsFolderPrompt.style.display = 'none';
+        E.menuDelete.style.display = 'none';
+      });
+    });
+    
     row.appendChild(label);
   }
 
@@ -972,6 +1030,108 @@
       });
     });
     E.memoryNotesList.parentNode.insertBefore(addBtn, E.memoryNotesList.nextSibling);
+  }
+
+  function showUsageDetails(selectedMessageIndex) {
+    // Calculate conversation totals
+    let totalInputTokens = 0;
+    let totalOutputTokens = 0;
+    let totalCost = 0;
+
+    const messageItems = [];
+
+    state.messages.forEach((msg, idx) => {
+      if (msg.role === 'assistant' && msg.usage) {
+        const inputTok = msg.usage.input_tokens || 0;
+        const outputTok = msg.usage.output_tokens || 0;
+        const msgCost = msg.cost || 0;
+
+        totalInputTokens += inputTok;
+        totalOutputTokens += outputTok;
+        totalCost += msgCost;
+
+        messageItems.push({
+          index: idx,
+          model: msg.model || 'Unknown',
+          provider: msg.provider || '',
+          inputTokens: inputTok,
+          outputTokens: outputTok,
+          totalTokens: inputTok + outputTok,
+          cost: msgCost,
+          isTarget: idx === selectedMessageIndex,
+        });
+      }
+    });
+
+    // Update totals
+    E.usageTotalTokens.textContent = (totalInputTokens + totalOutputTokens).toLocaleString();
+    E.usageTotalCost.textContent = totalCost < 0.01 
+      ? `$${totalCost.toFixed(4)}` 
+      : `$${totalCost.toFixed(3)}`;
+
+    // Build message list
+    clearNode(E.usageMessageList);
+
+    if (messageItems.length === 0) {
+      const empty = el('div', 'folder-empty-message');
+      empty.textContent = 'No usage data available for this conversation.';
+      E.usageMessageList.appendChild(empty);
+    } else {
+      // Show most recent first
+      messageItems.reverse().forEach(item => {
+        const msgItem = el('div', 'usage-message-item' + (item.isTarget ? ' active' : ''));
+
+        const header = el('div', 'usage-message-header');
+        const modelSpan = el('span', 'usage-message-model');
+        modelSpan.textContent = item.provider ? `${item.provider}: ${item.model}` : item.model;
+        header.appendChild(modelSpan);
+
+        const stats = el('div', 'usage-message-stats');
+
+        const tokensStat = el('div', 'usage-stat');
+        const tokLabel = el('div', 'usage-stat-label');
+        tokLabel.textContent = 'Tokens';
+        const tokValue = el('div', 'usage-stat-value');
+        tokValue.textContent = item.totalTokens.toLocaleString();
+        tokensStat.appendChild(tokLabel);
+        tokensStat.appendChild(tokValue);
+        stats.appendChild(tokensStat);
+
+        const costStat = el('div', 'usage-stat');
+        const costLabel = el('div', 'usage-stat-label');
+        costLabel.textContent = 'Cost';
+        const costValue = el('div', 'usage-stat-value cost');
+        costValue.textContent = item.cost < 0.01 
+          ? `$${item.cost.toFixed(4)}` 
+          : `$${item.cost.toFixed(3)}`;
+        costStat.appendChild(costLabel);
+        costStat.appendChild(costValue);
+        stats.appendChild(costStat);
+
+        header.appendChild(stats);
+        msgItem.appendChild(header);
+
+        // Click to scroll to message
+        msgItem.style.cursor = 'pointer';
+        msgItem.addEventListener('click', () => {
+          closeAllSettingsPanels();
+          const messageEl = E.messages.querySelector(`.message.assistant[data-index="${item.index}"]`);
+          if (messageEl) {
+            messageEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            // Flash highlight
+            messageEl.style.transition = 'background 0.3s';
+            messageEl.style.background = 'rgba(16, 163, 127, 0.2)';
+            setTimeout(() => {
+              messageEl.style.background = '';
+            }, 1500);
+          }
+        });
+
+        E.usageMessageList.appendChild(msgItem);
+      });
+    }
+
+    openSettingsPanel(E.usageDetailsPanel);
   }
 
   function showMoveToFolderMenu(x, y, filename) {
@@ -2221,7 +2381,14 @@ async function loadPrompts() {
 
     // prepare assistant streaming node
     const ts = new Date().toLocaleTimeString();
-    state.messages.push({ role: 'assistant', content: '', timestamp: ts, model: state.currentModel });
+    const streamStartTime = Date.now();  // Track start time for tokens/sec
+    state.messages.push({ 
+      role: 'assistant', 
+      content: '', 
+      timestamp: ts, 
+      model: state.currentModel,
+      provider: E.providerHeader.value  // Store provider
+    });
     renderMessages();
     const idx = state.messages.length - 1;
 
@@ -2273,6 +2440,14 @@ async function loadPrompts() {
         } else if (data.type === 'complete') {
           if (data.usage) {
             state.messages[idx].usage = data.usage;
+            // Calculate timing for tokens/sec
+            const duration = Date.now() - streamStartTime;
+            state.messages[idx].timing = {
+              duration_ms: duration,
+              tokens_per_sec: data.usage.input_tokens && data.usage.output_tokens
+                ? ((data.usage.input_tokens + data.usage.output_tokens) / (duration / 1000)).toFixed(1)
+                : null
+            };
           }
           if (data.cost != null) {
             state.messages[idx].cost = data.cost;
@@ -4352,6 +4527,16 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
       if (!confirm('Clear all memory notes? This cannot be undone.')) return;
       await fetch(`/api/folders/${fid}/memory/clear`, { method: 'POST' });
       renderMemoryNotes([]);
+    });
+
+    // Usage details panel
+    E.closeUsageDetailsBtn.addEventListener('click', () => closeAllSettingsPanels());
+
+    E.menuViewUsageDetails.addEventListener('click', () => {
+      E.msgContextMenu.style.display = 'none';
+      if (state.ctxMenuTarget.type === 'model_label') {
+        showUsageDetails(state.ctxMenuTarget.messageIndex);
+      }
     });
 
     // Chat context menu: Move to Folder
