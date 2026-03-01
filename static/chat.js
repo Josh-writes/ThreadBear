@@ -351,11 +351,11 @@
   // ===== Model label for assistant messages =====
   if (msg.role === 'assistant') {
     const label = el('div', 'model-label');
-    
+
     // Provider prefix (if available)
     const provider = msg.provider || '';
     const modelName = msg.model || '';
-    
+
     // Build label content
     let labelContent = '';
     if (provider && modelName) {
@@ -365,32 +365,24 @@
     } else {
       labelContent = 'Assistant';
     }
-    
+
     // Add summary indicator
     if (msg.isSummary || msg.summary) {
       labelContent += ' (Summary)';
     }
-    
+
     // Add token info if available
     if (msg.usage) {
       const totalTok = msg.usage.input_tokens + msg.usage.output_tokens;
       labelContent += ` • ${totalTok} tok`;
-      
+
       // Add tokens/sec if timing available
       if (msg.timing && msg.timing.duration_ms > 0) {
         const tokensPerSec = (totalTok / (msg.timing.duration_ms / 1000)).toFixed(1);
         labelContent += ` (${tokensPerSec} t/s)`;
       }
     }
-    
-    // Add cost if available
-    if (msg.cost != null && msg.cost > 0) {
-      const costDisplay = msg.cost < 0.01 
-        ? `$${msg.cost.toFixed(4)}` 
-        : `$${msg.cost.toFixed(3)}`;
-      labelContent += ` • ${costDisplay}`;
-    }
-    
+
     label.textContent = labelContent;
     
     // Right-click for details menu
@@ -2732,7 +2724,7 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
   const ALL_SETTINGS_PANELS = () => [
     E.settingsPanel, E.promptsSettingsPanel,
     E.systemSettingsPanel, E.openrouterBrowsePanel,
-    E.folderContextPanel,
+    E.folderContextPanel, E.usageDetailsPanel,
   ];
 
   function openSettingsPanel(panel) {
