@@ -21,6 +21,10 @@ from datetime import datetime
 from typing import Dict, List
 import requests
 from api_clients import estimate_tokens, get_llamacpp_context_size
+
+# No-proxy session for llama.cpp LAN/local calls
+_local_session = requests.Session()
+_local_session.trust_env = False
 from context_documents import context_documents  
 
 from flask import Flask, render_template, request, jsonify, Response, send_from_directory
@@ -149,15 +153,18 @@ class FlaskChatApp:
         @app.route('/api/config')
         def get_config():
             current_provider = self.config.get("provider", "groq")
-            models = self.get_provider_models(current_provider)
 
-            current_model = self.config.get(f"{current_provider}_model", "")
-            if not current_model or current_model not in models:
-                # Fallback to first available model
-                current_model = models[0] if models else ""
-                if current_model:
-                    self.config.set(f"{current_provider}_model", current_model)
-                    self.config.save_config()
+            # For llamacpp, query the server for the actual loaded model
+            if current_provider == "llamacpp":
+                models, current_model = self._get_llamacpp_live_model()
+            else:
+                models = self.get_provider_models(current_provider)
+                current_model = self.config.get(f"{current_provider}_model", "")
+                if not current_model or current_model not in models:
+                    current_model = models[0] if models else ""
+                    if current_model:
+                        self.config.set(f"{current_provider}_model", current_model)
+                        self.config.save_config()
 
             return jsonify({
                 "providers": self.available_providers,
@@ -173,8 +180,11 @@ class FlaskChatApp:
 
         @app.route('/api/models/<provider>')
         def get_models(provider: str):
-            models = self.get_provider_models(provider)
-            current_model = self.config.get(f"{provider}_model", (models[0] if models else ""))
+            if provider == "llamacpp":
+                models, current_model = self._get_llamacpp_live_model()
+            else:
+                models = self.get_provider_models(provider)
+                current_model = self.config.get(f"{provider}_model", (models[0] if models else ""))
             return jsonify({
                 "models": models,
                 "current_model": current_model,
@@ -548,8 +558,8 @@ class FlaskChatApp:
             if not message:
                 return jsonify({"success": False, "error": "Empty message"}), 400
 
-            provider = self.config.get("provider")
-            model = self.config.get(f"{provider}_model")
+            provider = data.get('provider') or self.config.get("provider")
+            model = data.get('model') or self.config.get(f"{provider}_model")
 
             # pick effective settings: request -> per-model -> provider defaults
             model_settings = self.config.get_model_settings(provider, model)
@@ -1579,7 +1589,7 @@ class FlaskChatApp:
 
                 # Check /v1/models
                 try:
-                    rm = requests.get(f"{base}/v1/models", timeout=5)
+                    rm = _local_session.get(f"{base}/v1/models", timeout=5)
                     if rm.status_code == 200:
                         for m in rm.json().get("data", []):
                             mid = m.get("id", "")
@@ -1591,7 +1601,7 @@ class FlaskChatApp:
                 # If no models from /v1/models, check /health
                 if not loaded:
                     try:
-                        rh = requests.get(f"{base}/health", timeout=5)
+                        rh = _local_session.get(f"{base}/health", timeout=5)
                         if rh.status_code == 200:
                             return jsonify({"success": True, "server_running": True, "loaded_models": []})
                     except Exception:
@@ -2014,6 +2024,20 @@ class FlaskChatApp:
     def _get_llamacpp_url(self) -> str:
         """Return the llama.cpp server URL (env var > config > default)."""
         return self.config.get_llamacpp_url().rstrip("/")
+
+    def _get_llamacpp_live_model(self):
+        """Query the running llama-server for the currently loaded model.
+        Returns (model_list, current_model) — both derived from the server."""
+        try:
+            base = self._get_llamacpp_url()
+            resp = _local_session.get(f"{base}/v1/models", timeout=5)
+            if resp.status_code == 200:
+                ids = [m.get("id", "") for m in resp.json().get("data", []) if m.get("id")]
+                if ids:
+                    return ids, ids[0]
+        except Exception:
+            pass
+        return [], ""
 
     # ---- Folder context helpers ----
 

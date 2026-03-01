@@ -1423,6 +1423,11 @@
       });
     }
 
+    // Hide model dropdown for llamacpp (models loaded manually on server)
+    const hideLlamacpp = state.currentProvider === 'llamacpp';
+    E.modelHeader.style.display = hideLlamacpp ? 'none' : '';
+    if (E.refreshModelsBtn) E.refreshModelsBtn.style.display = hideLlamacpp ? 'none' : '';
+
     // ----- Models -----
     const models = cfg.models || [];
     let chosenModel = (cfg.current_model && models.includes(cfg.current_model)) ? cfg.current_model : '';
@@ -1437,7 +1442,7 @@
     }
 
     state.currentModel = chosenModel;
-    applyModelsToSelect(E.modelHeader, models, state.currentModel);
+    if (!hideLlamacpp) applyModelsToSelect(E.modelHeader, models, state.currentModel);
 
     // Use cfg.models directly for BOTH header and settings (no extra fetch)
     function applyModelsToSelect(selectEl, models, currentModel) {
@@ -2261,7 +2266,7 @@ async function loadPrompts() {
     const payload = {
       message: text,
       provider: E.providerHeader.value,
-      model: E.modelHeader.value,
+      model: state.currentModel || E.modelHeader.value,
       system_prompt: systemPrompt
     };
 
@@ -3135,10 +3140,18 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
       E.topKValue.textContent = (+e.target.value);
     });
 
+    // Hide model dropdown + refresh for llamacpp (models loaded manually on server)
+    function updateLlamacppVisibility(provider) {
+      const hide = provider === 'llamacpp';
+      E.modelHeader.style.display = hide ? 'none' : '';
+      if (E.refreshModelsBtn) E.refreshModelsBtn.style.display = hide ? 'none' : '';
+    }
+
     // Header provider/model
     E.providerHeader.addEventListener('change', async () => {
       const p = E.providerHeader.value;
       state.currentProvider = p;  // Keep state in sync
+      updateLlamacppVisibility(p);
 
       // Mirror to settings immediately
       E.providerSelect.value = p;
@@ -3147,7 +3160,13 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
       await postJSON('/api/config/update', { provider: p });
 
       // Rebuild header + settings lists from backend
-      await refreshModelsHeader(p, null);
+      if (p === 'llamacpp') {
+        // Query server for the actual loaded model
+        const data = await getJSON(`/api/models/llamacpp`);
+        state.currentModel = data.current_model || '';
+      } else {
+        await refreshModelsHeader(p, null);
+      }
       await refreshModelsSettings(p);
     });
     E.modelHeader.addEventListener('change', async () => {

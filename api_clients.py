@@ -684,7 +684,7 @@ def get_available_llamacpp_models(config_or_url=None) -> List[str]:
 
     url = f"{base.rstrip('/')}/v1/models"
     try:
-        resp = _web_session.get(url, timeout=6)
+        resp = _local_session.get(url, timeout=6)
         resp.raise_for_status()
         data = resp.json() or {}
         models = data.get("data", [])
@@ -694,52 +694,23 @@ def get_available_llamacpp_models(config_or_url=None) -> List[str]:
 
 
 def _resolve_llamacpp_model(config: Dict) -> str:
-    """Resolve the model name to the ID the llama.cpp server actually expects.
+    """Query the llama.cpp server's /v1/models and return whatever model is loaded.
 
-    In router mode the server uses aliases (dir name or filename-without-.gguf).
-    In single-model mode it uses the full filesystem path.
-    Query /v1/models to find what the server actually knows.
+    The user loads models manually on the server, so we just ask the server
+    what it has rather than relying on a configured name.
     """
-    configured = config.get("llamacpp_model", "model")
     try:
         base = _llamacpp_base_from(config)
-        resp = _web_session.get(f"{base}/v1/models", timeout=5)
+        resp = _local_session.get(f"{base}/v1/models", timeout=5)
         if resp.status_code == 200:
             models = resp.json().get("data", [])
-            ids = [m.get("id", "") for m in models]
-
-            # 1. Exact match
-            if configured in ids:
-                return configured
-
-            # 2. Strip .gguf suffix and try again (stale config may have extension)
-            bare = configured.rsplit(".gguf", 1)[0] if configured.endswith(".gguf") else configured
-            if bare != configured and bare in ids:
-                return bare
-
-            # 3. Single model on server — just use it
-            if len(ids) == 1 and ids[0]:
+            ids = [m.get("id", "") for m in models if m.get("id")]
+            if ids:
                 return ids[0]
-
-            # 4. Find loaded/ready models and prefer those
-            for m in models:
-                mid = m.get("id", "")
-                status_val = ""
-                st = m.get("status")
-                if isinstance(st, dict):
-                    status_val = st.get("value", "")
-                if status_val in ("loaded", "ready"):
-                    # If configured name matches this loaded model (with or without .gguf)
-                    if configured == mid or bare == mid or mid in configured:
-                        return mid
-
-            # 5. Last resort: find any model whose id matches stripped name
-            for mid in ids:
-                if bare == mid:
-                    return mid
     except Exception:
         pass
-    return configured
+    # Fallback if server is unreachable
+    return config.get("llamacpp_model", "model")
 
 
 def call_llamacpp(messages: List[Dict], config: Dict) -> str:
@@ -782,7 +753,7 @@ def call_llamacpp(messages: List[Dict], config: Dict) -> str:
             data["max_tokens"] = req
 
         headers = {"Content-Type": "application/json"}
-        response = _web_session.post(url, headers=headers, json=data, timeout=300)
+        response = _local_session.post(url, headers=headers, json=data, timeout=300)
 
         if response.status_code == 200:
             result = response.json()
@@ -838,7 +809,7 @@ def call_llamacpp_stream(messages: List[Dict], config: Dict, tools=None) -> Iter
         }
 
         # Use longer timeout for inference (3090 can take time on large contexts)
-        response = _web_session.post(url, headers=headers, json=data, stream=True, timeout=300)
+        response = _local_session.post(url, headers=headers, json=data, stream=True, timeout=300)
 
         if response.status_code != 200:
             raise LLMApiError(response.status_code, response.text, "llamacpp")
