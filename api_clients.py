@@ -1238,3 +1238,138 @@ def call_openrouter_stream(messages: List[Dict], config: Dict, tools=None) -> It
     except Exception as e:
         raise LLMApiError(0, str(e), "openrouter") from e
 
+
+# ======== Generic OpenAI-compatible endpoint ========
+
+def fetch_openai_compat_catalog(base_url: str, api_key: str) -> List[Dict]:
+    """Fetch model catalog from any OpenAI-compatible /v1/models endpoint."""
+    try:
+        url = base_url.rstrip("/") + "/models"
+        headers = {}
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+        resp = _web_session.get(url, headers=headers, timeout=30)
+        resp.raise_for_status()
+        data = resp.json().get("data", [])
+        catalog = []
+        for m in data:
+            catalog.append({
+                "id": m.get("id", ""),
+                "name": m.get("id", ""),
+                "context_length": m.get("context_length", 0) or m.get("max_model_len", 0),
+                "prompt_price": "0",
+                "completion_price": "0",
+                "is_free": True,
+            })
+        return catalog
+    except Exception as e:
+        print(f"Failed to fetch OpenAI-compat catalog from {base_url}: {e}")
+        return []
+
+
+def call_openai_compat_stream(messages: List[Dict], config: Dict, tools=None) -> Iterator[Union[str, Dict]]:
+    """Stream from any OpenAI-compatible chat/completions endpoint.
+
+    Expects config to contain:
+        _endpoint_base_url  — e.g. "https://integrate.api.nvidia.com/v1"
+        _endpoint_api_key   — Bearer token
+        _endpoint_provider  — provider id (for error messages and config key lookups)
+    """
+    try:
+        base_url = config.get("_endpoint_base_url", "").rstrip("/")
+        api_key = config.get("_endpoint_api_key", "")
+        provider = config.get("_endpoint_provider", "custom")
+
+        if not base_url:
+            raise LLMApiError(0, "No base_url configured for custom endpoint", provider)
+
+        api_messages = []
+        system_prompt = config.get(f"{provider}_system_prompt") or config.get("system_prompt", "")
+        if system_prompt:
+            api_messages.append({"role": "system", "content": system_prompt})
+        api_messages.extend(messages)
+
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        }
+
+        model_name = config.get(f"{provider}_model") or config.get("model", "")
+        data = {
+            "model": model_name,
+            "messages": api_messages,
+            "temperature": config.get(f"{provider}_temperature", config.get("temperature", 0.7)),
+            "stream": True,
+        }
+
+        if tools:
+            data['tools'] = tools
+            data['tool_choice'] = 'auto'
+
+        if "top_p" in config:
+            data["top_p"] = config["top_p"]
+        if "top_k" in config:
+            data["top_k"] = config["top_k"]
+
+        req_max = (config.get("max_tokens")
+                   or config.get(f"{provider}_max_tokens"))
+        if isinstance(req_max, int) and req_max > 0:
+            data["max_tokens"] = req_max
+
+        url = base_url + "/chat/completions"
+        response = _web_session.post(url, headers=headers, json=data,
+                                     stream=True, timeout=(15, 120))
+        if response.status_code != 200:
+            raise LLMApiError(response.status_code, response.text, provider)
+
+        tool_calls_acc = {}
+        usage_data = None
+        for line in response.iter_lines(decode_unicode=False):
+            if line:
+                line = line.decode('utf-8')
+                if line.startswith('data: '):
+                    line = line[6:]
+                    if line.strip() == '[DONE]':
+                        break
+                    try:
+                        chunk = json.loads(line)
+                        if 'usage' in chunk and chunk['usage']:
+                            u = chunk['usage']
+                            usage_data = {
+                                'type': 'usage',
+                                'input_tokens': u.get('prompt_tokens', 0),
+                                'output_tokens': u.get('completion_tokens', 0),
+                            }
+                        if 'choices' in chunk and chunk['choices']:
+                            delta = chunk['choices'][0].get('delta', {})
+                            content = delta.get('content', '')
+                            if content:
+                                yield content
+                            if delta.get('tool_calls'):
+                                for tc_delta in delta['tool_calls']:
+                                    idx = tc_delta.get('index', 0)
+                                    if idx not in tool_calls_acc:
+                                        tool_calls_acc[idx] = {
+                                            'id': tc_delta.get('id', f'call_{idx}'),
+                                            'type': 'function',
+                                            'function': {'name': '', 'arguments': ''}
+                                        }
+                                    if tc_delta.get('function', {}).get('name'):
+                                        tool_calls_acc[idx]['function']['name'] = tc_delta['function']['name']
+                                    if tc_delta.get('function', {}).get('arguments'):
+                                        tool_calls_acc[idx]['function']['arguments'] += tc_delta['function']['arguments']
+                            finish = chunk['choices'][0].get('finish_reason')
+                            if finish == 'tool_calls' and tool_calls_acc:
+                                for tc in tool_calls_acc.values():
+                                    tc['function']['arguments'] = _repair_json(tc['function']['arguments'])
+                                yield {'type': 'tool_calls', 'tool_calls': list(tool_calls_acc.values())}
+                                tool_calls_acc = {}
+                    except json.JSONDecodeError:
+                        continue
+        if usage_data:
+            yield usage_data
+    except LLMApiError:
+        raise
+    except Exception as e:
+        raise LLMApiError(0, str(e), config.get("_endpoint_provider", "custom")) from e
+

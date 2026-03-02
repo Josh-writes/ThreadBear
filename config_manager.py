@@ -98,6 +98,19 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "blocked_commands": ['rm -rf', 'del /f /s', 'format', 'shutdown'],
     "tool_workspace": None,                    # Restrict file access (None = unrestricted)
 
+    # Custom OpenAI-compatible endpoints
+    "custom_endpoints": {},
+    # Structure: {
+    #   "nvidia": {
+    #     "name": "NVIDIA NIM",
+    #     "base_url": "https://integrate.api.nvidia.com/v1",
+    #     "api_key_env": "NVIDIA_API_KEY",
+    #     "api_key": "",
+    #     "default_model": "",
+    #     "context_window": 32768,
+    #   },
+    # }
+
     # Misc
     "temp_mode_warning": True,
 }
@@ -149,7 +162,9 @@ class ConfigManager:
         self.config.update(updates)
 
     def get_all_providers(self) -> List[str]:
-        return ["groq", "google", "mistral", "openrouter", "llamacpp"]
+        builtin = ["groq", "google", "mistral", "openrouter", "llamacpp"]
+        custom = list(self.config.get("custom_endpoints", {}).keys())
+        return builtin + custom
 
     def get_models_for_provider(self, provider: str) -> List[str]:
         defaults = {
@@ -196,25 +211,40 @@ class ConfigManager:
         """
         Get API key for provider, prioritizing environment variables for security.
         Always reads from environment first, then falls back to config.json (not recommended).
+        Supports custom endpoints via their api_key_env / api_key fields.
         """
         env_map = {
             "groq": "GROQ_API_KEY",
-            "google": "GOOGLE_API_KEY", 
+            "google": "GOOGLE_API_KEY",
             "mistral": "MISTRAL_API_KEY",
             "openrouter": "OPENROUTER_API_KEY",
         }
         env = env_map.get(provider)
         if env:
             v = os.getenv(env)
-            if v and v.strip():  # Make sure it's not empty
+            if v and v.strip():
                 return v.strip()
-        
+
+        # Check custom endpoints
+        endpoints = self.config.get("custom_endpoints", {})
+        if provider in endpoints:
+            ep = endpoints[provider]
+            env_var = ep.get("api_key_env", "")
+            if env_var:
+                v = os.getenv(env_var, "")
+                if v and v.strip():
+                    return v.strip()
+            direct = ep.get("api_key", "")
+            if direct and direct.strip():
+                return direct.strip()
+            return ""
+
         # Fallback to config.json (should be removed for security)
         config_key = self.config.get(f"{provider}_api_key", "")
         if config_key and config_key != f"your_{provider}_api_key_here":
             print(f"WARNING: Using API key from config.json for {provider}. Consider using environment variable {env} instead.")
             return config_key
-        
+
         return ""
 
     # ---------- llama.cpp URL ----------
@@ -287,6 +317,10 @@ class ConfigManager:
                 ctx = entry.get("context_length", 0)
                 if ctx > 0:
                     return int(ctx)
+        # Check custom endpoint default
+        ep = self.config.get("custom_endpoints", {}).get(provider, {})
+        if ep.get("context_window"):
+            return int(ep["context_window"])
         return DEFAULT_CONTEXT_WINDOWS.get(provider, 8192)
 
     def get_system_prompt(self, provider: str, model: str) -> str:
@@ -325,6 +359,37 @@ class ConfigManager:
             'blocked_commands': self.config.get('blocked_commands', []),
             'workspace': self.config.get('tool_workspace'),
         }
+
+    # ---------- Custom endpoints ----------
+    def get_custom_endpoints(self) -> Dict[str, Any]:
+        return self.config.get("custom_endpoints", {})
+
+    def get_endpoint_config(self, endpoint_id: str) -> Dict[str, Any]:
+        return self.config.get("custom_endpoints", {}).get(endpoint_id, {})
+
+    def save_endpoint(self, endpoint_id: str, endpoint_cfg: Dict[str, Any]) -> None:
+        if "custom_endpoints" not in self.config:
+            self.config["custom_endpoints"] = {}
+        self.config["custom_endpoints"][endpoint_id] = endpoint_cfg
+        self.save_config()
+
+    def delete_endpoint(self, endpoint_id: str) -> bool:
+        endpoints = self.config.get("custom_endpoints", {})
+        if endpoint_id in endpoints:
+            del endpoints[endpoint_id]
+            # Clean up associated config keys
+            for suffix in ["_model", "_temperature", "_system_prompt", "_max_tokens",
+                           "_tools_enabled", "_catalog"]:
+                self.config.pop(f"{endpoint_id}{suffix}", None)
+            self.config.pop(f"stored_{endpoint_id}_models", None)
+            self.config.pop(f"recent_{endpoint_id}_models", None)
+            self.config.pop(f"custom_{endpoint_id}_models", None)
+            # Clean up model_settings for this provider
+            if "model_settings" in self.config and endpoint_id in self.config["model_settings"]:
+                del self.config["model_settings"][endpoint_id]
+            self.save_config()
+            return True
+        return False
 
     def reload_api_keys_from_env(self) -> None:
         """

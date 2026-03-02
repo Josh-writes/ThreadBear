@@ -209,6 +209,21 @@
     cancelPromptBtn: $('cancelPromptBtn'),
     deletePromptBtn: $('deletePromptBtn'),
 
+    // Custom Endpoints
+    customEndpointsList: $('customEndpointsList'),
+    addEndpointBtn: $('addEndpointBtn'),
+    endpointForm: $('endpointForm'),
+    endpointEditId: $('endpointEditId'),
+    endpointName: $('endpointName'),
+    endpointBaseUrl: $('endpointBaseUrl'),
+    endpointApiKeyEnv: $('endpointApiKeyEnv'),
+    endpointApiKey: $('endpointApiKey'),
+    endpointContextWindow: $('endpointContextWindow'),
+    endpointSaveBtn: $('endpointSaveBtn'),
+    endpointCancelBtn: $('endpointCancelBtn'),
+    endpointTestBtn: $('endpointTestBtn'),
+    endpointFormStatus: $('endpointFormStatus'),
+
     // Browse Models panel
     openBrowseModelsBtn: $('openBrowseModelsBtn'),
     openrouterBrowsePanel: $('openrouterBrowsePanel'),
@@ -1523,26 +1538,32 @@
     return await r.json();
   }
 
-  async function postJSON(url, body) {
-    const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) });
+  async function postJSON(url, body, method) {
+    const r = await fetch(url, { method: method || 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) });
     const js = await r.json().catch(() => ({}));
     if (!r.ok || js.success === false) throw new Error(js.error || `${r.status} ${r.statusText}`);
     return js;
   }
 
   // ====== Loads / init ======
+  function providerDisplayName(p) {
+    if (state.endpointNames && state.endpointNames[p]) return state.endpointNames[p];
+    return p[0].toUpperCase() + p.slice(1);
+  }
+
   async function loadConfigAndModels() {
     const cfg = await getJSON('/api/config');
     state.config = cfg;
     state.providers = cfg.providers || ['groq','google','mistral','openrouter'];
+    state.endpointNames = cfg.endpoint_names || {};
     state.currentProvider = cfg.current_provider || 'groq';
 
     // ----- Provider dropdowns -----
     E.providerHeader.innerHTML = '';
     state.providers.forEach(p => {
-      const o = el('option'); 
-      o.value = p; 
-      o.textContent = p[0].toUpperCase() + p.slice(1);
+      const o = el('option');
+      o.value = p;
+      o.textContent = providerDisplayName(p);
       if (p === state.currentProvider) o.selected = true;
       E.providerHeader.appendChild(o);
     });
@@ -1552,7 +1573,7 @@
       state.providers.forEach(p => {
         const o = el('option');
         o.value = p;
-        o.textContent = p[0].toUpperCase() + p.slice(1);
+        o.textContent = providerDisplayName(p);
         if (p === state.currentProvider) o.selected = true;
         E.providerSelect.appendChild(o);
       });
@@ -2928,7 +2949,11 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
 
     // ===== Browse Models Panel (multi-provider) =====
     let _browseDebounce = null;
-    const BROWSE_PROVIDERS = ['openrouter', 'groq', 'google', 'mistral'];
+    function getBrowseProviders() {
+      const builtins = ['openrouter', 'groq', 'google', 'mistral'];
+      const custom = Object.keys(state.endpointNames || {});
+      return builtins.concat(custom);
+    }
     state.browseCatalog = [];  // catalog for currently-selected browse provider
 
     function getBrowseProvider() {
@@ -3077,10 +3102,25 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
       E.browseSelectedCount.textContent = selected.size + ' model' + (selected.size !== 1 ? 's' : '') + ' selected';
     }
 
+    function rebuildBrowseProviderSelect() {
+      const current = E.browseProviderSelect.value;
+      E.browseProviderSelect.innerHTML = '';
+      getBrowseProviders().forEach(p => {
+        const o = el('option');
+        o.value = p;
+        o.textContent = providerDisplayName(p);
+        E.browseProviderSelect.appendChild(o);
+      });
+      if (current && getBrowseProviders().includes(current)) {
+        E.browseProviderSelect.value = current;
+      }
+    }
+
     E.openBrowseModelsBtn.addEventListener('click', async () => {
       E.settingsDropdown.classList.remove('open');
+      rebuildBrowseProviderSelect();
       // Auto-select current provider if browseable
-      if (BROWSE_PROVIDERS.includes(state.currentProvider)) {
+      if (getBrowseProviders().includes(state.currentProvider)) {
         E.browseProviderSelect.value = state.currentProvider;
       }
       openSettingsPanel(E.openrouterBrowsePanel);
@@ -3595,6 +3635,153 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
         });
       }
     }
+  }
+
+  // ====== Custom Endpoints Management ======
+  async function loadCustomEndpoints() {
+    try {
+      const res = await getJSON('/api/endpoints');
+      renderCustomEndpoints(res.endpoints || {});
+    } catch (e) {
+      console.warn('Failed to load custom endpoints:', e);
+    }
+  }
+
+  function renderCustomEndpoints(endpoints) {
+    if (!E.customEndpointsList) return;
+    E.customEndpointsList.innerHTML = '';
+    const ids = Object.keys(endpoints);
+    if (ids.length === 0) {
+      E.customEndpointsList.innerHTML = '<span style="font-size:12px; color:var(--text-muted);">No custom endpoints configured.</span>';
+      return;
+    }
+    ids.forEach(eid => {
+      const ep = endpoints[eid];
+      const row = el('div');
+      row.style.cssText = 'display:flex; align-items:center; gap:8px; padding:6px 8px; border:1px solid var(--border-color); border-radius:6px; background:var(--bg-primary);';
+      row.innerHTML = `
+        <span style="flex:1; font-size:13px; font-weight:500;">${ep.name || eid}</span>
+        <span style="font-size:11px; color:var(--text-muted); max-width:180px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="${ep.base_url}">${ep.base_url}</span>
+        <button class="control-btn ep-edit-btn" data-eid="${eid}" style="padding:3px 8px; font-size:11px;">Edit</button>
+        <button class="control-btn ep-delete-btn" data-eid="${eid}" style="padding:3px 8px; font-size:11px; color:#e74c3c;">Delete</button>
+      `;
+      E.customEndpointsList.appendChild(row);
+    });
+
+    // Bind edit/delete buttons
+    E.customEndpointsList.querySelectorAll('.ep-edit-btn').forEach(btn => {
+      btn.addEventListener('click', () => editEndpoint(btn.dataset.eid, endpoints[btn.dataset.eid]));
+    });
+    E.customEndpointsList.querySelectorAll('.ep-delete-btn').forEach(btn => {
+      btn.addEventListener('click', () => deleteEndpoint(btn.dataset.eid));
+    });
+  }
+
+  function showEndpointForm(data) {
+    if (!E.endpointForm) return;
+    E.endpointEditId.value = data.id || '';
+    E.endpointName.value = data.name || '';
+    E.endpointBaseUrl.value = data.base_url || '';
+    E.endpointApiKeyEnv.value = data.api_key_env || '';
+    E.endpointApiKey.value = data.api_key || '';
+    E.endpointContextWindow.value = data.context_window || 32768;
+    E.endpointFormStatus.textContent = '';
+    E.endpointForm.style.display = 'block';
+  }
+
+  function hideEndpointForm() {
+    if (E.endpointForm) E.endpointForm.style.display = 'none';
+  }
+
+  function editEndpoint(eid, ep) {
+    showEndpointForm({ id: eid, ...ep });
+  }
+
+  async function deleteEndpoint(eid) {
+    if (!confirm(`Delete endpoint "${eid}"?`)) return;
+    try {
+      await postJSON(`/api/endpoints/${eid}`, {}, 'DELETE');
+      await loadCustomEndpoints();
+      await loadConfigAndModels();
+    } catch (e) {
+      alert('Failed to delete endpoint: ' + e);
+    }
+  }
+
+  async function saveEndpoint() {
+    const eid = E.endpointEditId.value;
+    const payload = {
+      name: E.endpointName.value.trim(),
+      base_url: E.endpointBaseUrl.value.trim(),
+      api_key_env: E.endpointApiKeyEnv.value.trim(),
+      api_key: E.endpointApiKey.value.trim(),
+      context_window: parseInt(E.endpointContextWindow.value) || 32768,
+    };
+    if (!payload.name || !payload.base_url) {
+      E.endpointFormStatus.textContent = 'Name and Base URL required';
+      E.endpointFormStatus.style.color = '#e74c3c';
+      return;
+    }
+    try {
+      let res;
+      if (eid) {
+        res = await postJSON(`/api/endpoints/${eid}`, payload, 'PUT');
+      } else {
+        res = await postJSON('/api/endpoints', payload);
+      }
+      if (res.success) {
+        hideEndpointForm();
+        await loadCustomEndpoints();
+        await loadConfigAndModels();
+      } else {
+        E.endpointFormStatus.textContent = res.error || 'Failed';
+        E.endpointFormStatus.style.color = '#e74c3c';
+      }
+    } catch (e) {
+      E.endpointFormStatus.textContent = 'Error: ' + e;
+      E.endpointFormStatus.style.color = '#e74c3c';
+    }
+  }
+
+  async function testEndpoint() {
+    const eid = E.endpointEditId.value;
+    E.endpointFormStatus.textContent = 'Testing...';
+    E.endpointFormStatus.style.color = 'var(--text-muted)';
+
+    // If not saved yet, save first then test
+    if (!eid) {
+      E.endpointFormStatus.textContent = 'Save the endpoint first before testing.';
+      E.endpointFormStatus.style.color = '#e74c3c';
+      return;
+    }
+
+    try {
+      const res = await postJSON(`/api/endpoints/${eid}/test`, {});
+      if (res.success) {
+        E.endpointFormStatus.textContent = `Connected! ${res.model_count} models found.`;
+        E.endpointFormStatus.style.color = '#27ae60';
+      } else {
+        E.endpointFormStatus.textContent = res.error || 'Connection failed';
+        E.endpointFormStatus.style.color = '#e74c3c';
+      }
+    } catch (e) {
+      E.endpointFormStatus.textContent = 'Error: ' + e;
+      E.endpointFormStatus.style.color = '#e74c3c';
+    }
+  }
+
+  // Bind endpoint UI events
+  if (E.addEndpointBtn) {
+    E.addEndpointBtn.addEventListener('click', () => showEndpointForm({}));
+  }
+  if (E.endpointCancelBtn) {
+    E.endpointCancelBtn.addEventListener('click', hideEndpointForm);
+  }
+  if (E.endpointSaveBtn) {
+    E.endpointSaveBtn.addEventListener('click', saveEndpoint);
+  }
+  if (E.endpointTestBtn) {
+    E.endpointTestBtn.addEventListener('click', testEndpoint);
   }
 
   // ====== Tools toggle ======
@@ -4451,14 +4638,15 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
     console.time('TB:parallelLoad');
 
     // Load all critical data in parallel
-    const [configResult, promptsResult, historyResult, docsResult, messagesResult, foldersResult, _toolsResult] = await Promise.allSettled([
+    const [configResult, promptsResult, historyResult, docsResult, messagesResult, foldersResult, _toolsResult, _endpointsResult] = await Promise.allSettled([
       loadConfigAndModels(),
       loadPrompts(),
       loadHistory(),
       loadDocs(),
       loadMessages(),
       loadFolders(),
-      loadToolsConfig()
+      loadToolsConfig(),
+      loadCustomEndpoints()
     ]);
 
     console.timeEnd('TB:parallelLoad');

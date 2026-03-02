@@ -54,6 +54,7 @@ from cost_tracker import calculate_cost as calc_api_cost
 from api_clients import (
     call_groq_stream, call_google_stream,
     call_mistral_stream, call_openrouter_stream, call_llamacpp_stream,
+    call_openai_compat_stream, fetch_openai_compat_catalog,
 )
 from context_documents import (
     list_documents, save_document, delete_document, get_document,
@@ -166,12 +167,41 @@ class FlaskChatApp:
 
         self.temporary_mode = False
         self.incognito_mode = False
-        self.available_providers = ["groq", "google", "mistral", "openrouter", "llamacpp"]
+        self.builtin_providers = ["groq", "google", "mistral", "openrouter", "llamacpp"]
 
         self.pending_messages: Dict[int, Dict[str, str]] = {}
 
         self.setup_routes()
         self.server = None
+
+    @property
+    def available_providers(self):
+        return self.builtin_providers + list(self.config.get("custom_endpoints", {}).keys())
+
+    def _get_stream_func(self, provider):
+        """Return the streaming function for a provider (builtin or custom endpoint)."""
+        builtin = {
+            "groq": call_groq_stream,
+            "google": call_google_stream,
+            "mistral": call_mistral_stream,
+            "openrouter": call_openrouter_stream,
+            "llamacpp": call_llamacpp_stream,
+        }
+        if provider in builtin:
+            return builtin[provider]
+        if provider in self.config.get("custom_endpoints", {}):
+            return call_openai_compat_stream
+        return None
+
+    def _inject_endpoint_config(self, provider, merged_cfg):
+        """For custom endpoints, inject base_url and api_key into the config dict."""
+        endpoints = self.config.get("custom_endpoints", {})
+        if provider in endpoints:
+            ep = endpoints[provider]
+            api_key = self.config.get_api_key(provider)
+            merged_cfg["_endpoint_base_url"] = ep["base_url"]
+            merged_cfg["_endpoint_api_key"] = api_key
+            merged_cfg["_endpoint_provider"] = provider
 
     # ---------------- Routes ----------------
     def setup_routes(self):
@@ -207,6 +237,11 @@ class FlaskChatApp:
                         self.config.set(f"{current_provider}_model", current_model)
                         self.config.save_config()
 
+            # Build display name map for custom endpoints
+            endpoint_names = {}
+            for eid, ecfg in self.config.get("custom_endpoints", {}).items():
+                endpoint_names[eid] = ecfg.get("name", eid)
+
             return jsonify({
                 "providers": self.available_providers,
                 "current_provider": current_provider,
@@ -217,6 +252,7 @@ class FlaskChatApp:
                 "system_prompt": self.config.get(f"{current_provider}_system_prompt", ""),
                 "temporary_mode": self.temporary_mode,
                 "incognito_mode": self.incognito_mode,
+                "endpoint_names": endpoint_names,
             })
 
         @app.route('/api/models/<provider>')
@@ -422,7 +458,8 @@ class FlaskChatApp:
         def toggle_browse_model(provider):
             """Add/remove model selection and keep provider dropdown synced to browse checkboxes."""
             BROWSEABLE = ("openrouter", "groq", "google", "mistral")
-            if provider not in BROWSEABLE:
+            custom_endpoints = self.config.get("custom_endpoints", {})
+            if provider not in BROWSEABLE and provider not in custom_endpoints:
                 return jsonify({"success": False, "error": f"Provider '{provider}' not browseable"}), 400
 
             data = request.get_json() or {}
@@ -462,16 +499,24 @@ class FlaskChatApp:
         @app.route('/api/browse/<provider>/catalog')
         def get_browse_catalog(provider):
             BROWSEABLE = ("openrouter", "groq", "google", "mistral")
-            if provider not in BROWSEABLE:
+            custom_endpoints = self.config.get("custom_endpoints", {})
+            if provider not in BROWSEABLE and provider not in custom_endpoints:
                 return jsonify({"success": False, "error": f"Provider '{provider}' not browseable"}), 400
             return jsonify(self.config.get(f"{provider}_catalog", []))
 
         @app.route('/api/browse/<provider>/refresh', methods=['POST'])
         def refresh_browse_catalog(provider):
             BROWSEABLE = ("openrouter", "groq", "google", "mistral")
-            if provider not in BROWSEABLE:
+            custom_endpoints = self.config.get("custom_endpoints", {})
+            if provider not in BROWSEABLE and provider not in custom_endpoints:
                 return jsonify({"success": False, "error": f"Provider '{provider}' not browseable"}), 400
-            if provider == "openrouter":
+
+            if provider in custom_endpoints:
+                # Custom OpenAI-compatible endpoint
+                ep = custom_endpoints[provider]
+                api_key = self.config.get_api_key(provider)
+                catalog = fetch_openai_compat_catalog(ep["base_url"], api_key)
+            elif provider == "openrouter":
                 from api_clients import fetch_openrouter_catalog
                 catalog = fetch_openrouter_catalog()
             else:
@@ -497,6 +542,80 @@ class FlaskChatApp:
             self.config.set(f"{provider}_catalog", catalog)
             self.config.save_config()
             return jsonify({"success": True, "count": len(catalog)})
+
+        # ---- Custom Endpoints CRUD ----
+        @app.route('/api/endpoints', methods=['GET'])
+        def list_endpoints():
+            endpoints = self.config.get_custom_endpoints()
+            return jsonify({"endpoints": endpoints})
+
+        @app.route('/api/endpoints', methods=['POST'])
+        def create_endpoint():
+            data = request.get_json() or {}
+            name = (data.get("name") or "").strip()
+            base_url = (data.get("base_url") or "").strip().rstrip("/")
+            if not name or not base_url:
+                return jsonify({"success": False, "error": "Name and Base URL are required"}), 400
+
+            # Generate a safe ID from the name
+            eid = re.sub(r'[^a-z0-9]+', '_', name.lower()).strip('_')
+            if not eid:
+                return jsonify({"success": False, "error": "Invalid name"}), 400
+            # Prevent collision with builtins
+            if eid in self.builtin_providers:
+                eid = eid + "_custom"
+            # Prevent collision with existing custom endpoints
+            existing = self.config.get_custom_endpoints()
+            if eid in existing:
+                return jsonify({"success": False, "error": f"Endpoint '{eid}' already exists. Use PUT to update."}), 409
+
+            ep_cfg = {
+                "name": name,
+                "base_url": base_url,
+                "api_key_env": (data.get("api_key_env") or "").strip(),
+                "api_key": (data.get("api_key") or "").strip(),
+                "default_model": (data.get("default_model") or "").strip(),
+                "context_window": int(data.get("context_window", 32768)),
+            }
+            self.config.save_endpoint(eid, ep_cfg)
+            return jsonify({"success": True, "id": eid, "endpoint": ep_cfg})
+
+        @app.route('/api/endpoints/<eid>', methods=['PUT'])
+        def update_endpoint(eid):
+            data = request.get_json() or {}
+            existing = self.config.get_endpoint_config(eid)
+            if not existing:
+                return jsonify({"success": False, "error": "Endpoint not found"}), 404
+            # Update fields if provided
+            if "name" in data: existing["name"] = data["name"].strip()
+            if "base_url" in data: existing["base_url"] = data["base_url"].strip().rstrip("/")
+            if "api_key_env" in data: existing["api_key_env"] = data["api_key_env"].strip()
+            if "api_key" in data: existing["api_key"] = data["api_key"].strip()
+            if "default_model" in data: existing["default_model"] = data["default_model"].strip()
+            if "context_window" in data: existing["context_window"] = int(data["context_window"])
+            self.config.save_endpoint(eid, existing)
+            return jsonify({"success": True, "endpoint": existing})
+
+        @app.route('/api/endpoints/<eid>', methods=['DELETE'])
+        def delete_endpoint(eid):
+            if self.config.delete_endpoint(eid):
+                return jsonify({"success": True})
+            return jsonify({"success": False, "error": "Endpoint not found"}), 404
+
+        @app.route('/api/endpoints/<eid>/test', methods=['POST'])
+        def test_endpoint(eid):
+            ep = self.config.get_endpoint_config(eid)
+            if not ep:
+                return jsonify({"success": False, "error": "Endpoint not found"}), 404
+            api_key = self.config.get_api_key(eid)
+            try:
+                catalog = fetch_openai_compat_catalog(ep["base_url"], api_key)
+                if catalog:
+                    return jsonify({"success": True, "model_count": len(catalog),
+                                    "models": [m["id"] for m in catalog[:5]]})
+                return jsonify({"success": False, "error": "No models returned (check URL and API key)"}), 502
+            except Exception as e:
+                return jsonify({"success": False, "error": str(e)}), 502
 
         @app.route('/api/chat/history')
         def get_chat_history():
@@ -847,13 +966,7 @@ class FlaskChatApp:
                     except Exception as compact_err:
                         print(f"Pre-LLM compaction failed (non-blocking): {compact_err}")
 
-                    stream_func = {
-                        "groq": call_groq_stream,
-                        "google": call_google_stream,
-                        "mistral": call_mistral_stream,
-                        "openrouter": call_openrouter_stream,
-                        "llamacpp": call_llamacpp_stream,
-                    }.get(provider)
+                    stream_func = self._get_stream_func(provider)
                     if not stream_func:
                         yield f"data: {json.dumps({'type':'error','content':f'Unknown provider: {provider}'})}\n\n"
                         return
@@ -873,6 +986,7 @@ class FlaskChatApp:
                     merged_cfg = dict(self.config.config)
                     if provider == "llamacpp":
                         merged_cfg["llamacpp_url"] = self._get_llamacpp_url()
+                    self._inject_endpoint_config(provider, merged_cfg)
                     merged_cfg.update({
                         "model": model,
                         f"{provider}_model": model,
@@ -1098,13 +1212,7 @@ class FlaskChatApp:
                             title_provider = self.config.get("title_provider", "groq")
                             title_model = self.config.get("title_model", "llama-3.1-8b-instant")
 
-                            title_stream = {
-                                "groq": call_groq_stream,
-                                "google": call_google_stream,
-                                "mistral": call_mistral_stream,
-                                "openrouter": call_openrouter_stream,
-                                "llamacpp": call_llamacpp_stream,
-                            }.get(title_provider)
+                            title_stream = self._get_stream_func(title_provider)
 
                             if title_stream:
                                 user_text = chat_hist[0].get("content", "")[:500]
@@ -1123,6 +1231,7 @@ class FlaskChatApp:
                                     title_cfg[f"{title_provider}_api_key"] = api_key
                                 if title_provider == "llamacpp":
                                     title_cfg["llamacpp_url"] = self._get_llamacpp_url()
+                                self._inject_endpoint_config(title_provider, title_cfg)
                                 title_cfg.update({
                                     "model": title_model,
                                     f"{title_provider}_model": title_model,
@@ -1506,13 +1615,7 @@ class FlaskChatApp:
             title_provider = self.config.get("title_provider", "groq")
             title_model = self.config.get("title_model",
                                           "llama-3.1-8b-instant")
-            stream_func = {
-                "groq": call_groq_stream,
-                "google": call_google_stream,
-                "mistral": call_mistral_stream,
-                "openrouter": call_openrouter_stream,
-                "llamacpp": call_llamacpp_stream,
-            }.get(title_provider)
+            stream_func = self._get_stream_func(title_provider)
             if not stream_func:
                 return jsonify({"error": "no title provider"}), 500
 
@@ -1531,6 +1634,7 @@ class FlaskChatApp:
                 cfg[f"{title_provider}_api_key"] = api_key
             if title_provider == "llamacpp":
                 cfg["llamacpp_url"] = self._get_llamacpp_url()
+            self._inject_endpoint_config(title_provider, cfg)
             cfg.update({
                 "model": title_model,
                 f"{title_provider}_model": title_model,
@@ -1738,13 +1842,7 @@ class FlaskChatApp:
                 + content + "\n\nSummary:"
             )
 
-            stream_func = {
-                "groq": call_groq_stream,
-                "google": call_google_stream,
-                "mistral": call_mistral_stream,
-                "openrouter": call_openrouter_stream,
-                "llamacpp": call_llamacpp_stream,
-            }.get(provider)
+            stream_func = self._get_stream_func(provider)
 
             if not stream_func:
                 return jsonify({"success": False, "error": f"Unknown provider: {provider}"}), 400
@@ -1753,6 +1851,7 @@ class FlaskChatApp:
             merged_cfg = dict(self.config.config)
             if provider == "llamacpp":
                 merged_cfg["llamacpp_url"] = self._get_llamacpp_url()
+            self._inject_endpoint_config(provider, merged_cfg)
             if model:
                 merged_cfg["model"] = model
                 merged_cfg[f"{provider}_model"] = model
