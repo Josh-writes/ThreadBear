@@ -51,6 +51,10 @@
     selectedDocIds: new Set(),
     contextBarOpen: false,
 
+    // toolbelt
+    toolbeltOpen: false,
+    toolbelt: [],
+
     // folders
     folders: [],
     chatFolderMap: {},
@@ -122,6 +126,13 @@
     documentAttachmentsBar: $('documentAttachmentsBar'),
     attachmentList: $('attachmentList'),
 
+    // Toolbelt
+    toolbeltBtn: $('toolbeltBtn'),
+    toolbeltControls: $('toolbeltControls'),
+    toolbeltList: $('toolbeltList'),
+    toolbeltAddBtn: $('toolbeltAddBtn'),
+    toolbeltAddMenu: $('toolbeltAddMenu'),
+
     // Messages
     messages: $('messages'),
 
@@ -178,6 +189,7 @@
     toolsSettingsPanel: $('toolsSettingsPanel'),
     closeToolsSettingsBtn: $('closeToolsSettingsBtn'),
     openToolsSettingsBtn: $('openToolsSettingsBtn'),
+    toolOsSelect: $('toolOsSelect'),
     toolsEnabledCheckbox: $('toolsEnabledCheckbox'),
     toolsProviderHint: $('toolsProviderHint'),
     toolsStatus: $('toolsStatus'),
@@ -263,6 +275,7 @@
     menuCopy: $('copyResponseMenuItem'),
     menuAddToFolderMemory: $('addToFolderMemoryMenuItem'),
     menuSaveAsFolderPrompt: $('saveAsFolderPromptMenuItem'),
+    menuResend: $('resendMessageMenuItem'),
     menuDelete: $('deleteResponseMenuItem'),
 
     // Usage details panel
@@ -403,6 +416,7 @@
         E.menuCopy.style.display = 'none';
         E.menuAddToFolderMemory.style.display = 'none';
         E.menuSaveAsFolderPrompt.style.display = 'none';
+        E.menuResend.style.display = 'none';
         E.menuDelete.style.display = 'none';
       });
     });
@@ -601,6 +615,8 @@
       const sel = window.getSelection ? window.getSelection().toString().trim() : '';
       E.menuBranchSelected.style.display = sel ? '' : 'none';
       E.menuCopySelected.style.display = sel ? '' : 'none';
+      // Show "Resend Message" only for user messages
+      E.menuResend.style.display = (msgRole === 'user') ? '' : 'none';
       // Show folder actions only when chat is in a folder
       const inFolder = state.chatFolderMap[state.currentChatFile];
       const msgRole = state.messages[index] && state.messages[index].role;
@@ -2021,6 +2037,7 @@ async function loadPrompts() {
     renderChatTitle();
     renderHistory();
     renderMessages();
+    loadToolbelt();
     showInputArea(true);  // Ensure input area is visible
   }
 
@@ -2052,6 +2069,11 @@ async function loadPrompts() {
     // Update with the actual filename from backend if different
     if (js.filename && js.filename !== filename) {
       state.currentChatFile = js.filename;
+      // Preserve folder mapping under the new filename
+      if (state.chatFolderMap[filename]) {
+        state.chatFolderMap[js.filename] = state.chatFolderMap[filename];
+        delete state.chatFolderMap[filename];
+      }
       if (chatIndex !== -1) {
         state.history[chatIndex].filename = js.filename;
         renderHistory();
@@ -2836,6 +2858,14 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
       const i = state.ctxMenuTarget.index;
       E.msgContextMenu.style.display = 'none';
       if (typeof i === 'number') deleteMessage(i);
+    });
+    E.menuResend.addEventListener('click', () => {
+      const i = state.ctxMenuTarget.index;
+      E.msgContextMenu.style.display = 'none';
+      if (typeof i === 'number' && state.messages[i]?.role === 'user') {
+        E.userInput.value = state.messages[i].content;
+        sendMessage();
+      }
     });
     E.menuBranchFull.addEventListener('click', () => {
       const i = state.ctxMenuTarget.index;
@@ -3793,6 +3823,9 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
       const data = await res.json();
       if (data.success) {
         state.toolsConfig = data.config || {};
+        if (E.toolOsSelect && data.config.tool_os) {
+          E.toolOsSelect.value = data.config.tool_os;
+        }
         updateToolsUI();
       }
     } catch (e) {
@@ -3951,9 +3984,155 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
     });
   }
 
+  if (E.toolOsSelect) {
+    E.toolOsSelect.addEventListener('change', async () => {
+      try {
+        await fetch('/api/config/tools/os', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ tool_os: E.toolOsSelect.value }),
+        });
+      } catch (e) {
+        console.error('Failed to save OS setting:', e);
+      }
+    });
+  }
+
   if (E.toolsToggle) {
     E.toolsToggle.addEventListener('click', () => toggleTools());
   }
+
+  // ====== Toolbelt ======
+  async function loadToolbelt() {
+    if (!state.currentChatFile) { state.toolbelt = []; renderToolbelt(); return; }
+    try {
+      const js = await getJSON(`/api/toolbelt/${encodeURIComponent(state.currentChatFile)}`);
+      state.toolbelt = js.success ? (js.toolbelt || []) : [];
+    } catch { state.toolbelt = []; }
+    renderToolbelt();
+  }
+
+  function renderToolbelt() {
+    if (!E.toolbeltList) return;
+    if (state.toolbelt.length === 0) {
+      E.toolbeltList.innerHTML = '<span class="toolbelt-empty">No scripts assigned. Click + Add Script.</span>';
+      return;
+    }
+    E.toolbeltList.innerHTML = state.toolbelt.map(s => `
+      <div class="toolbelt-item">
+        <span class="script-name">${s}</span>
+        <button class="run-btn" data-script="${s}">&#9654; Run</button>
+        <button class="remove-btn" data-script="${s}" title="Remove">&times;</button>
+      </div>
+    `).join('');
+    // Bind run buttons
+    E.toolbeltList.querySelectorAll('.run-btn').forEach(btn => {
+      btn.addEventListener('click', () => runToolbeltScript(btn.dataset.script, btn));
+    });
+    // Bind remove buttons
+    E.toolbeltList.querySelectorAll('.remove-btn').forEach(btn => {
+      btn.addEventListener('click', () => removeFromToolbelt(btn.dataset.script));
+    });
+  }
+
+  async function addToToolbelt(scriptName) {
+    const js = await postJSON(`/api/toolbelt/${encodeURIComponent(state.currentChatFile)}`, {
+      script: scriptName, action: 'add'
+    });
+    if (js.success) { state.toolbelt = js.toolbelt; renderToolbelt(); }
+    else alert(js.error || 'Failed to add script');
+    E.toolbeltAddMenu.style.display = 'none';
+  }
+
+  async function removeFromToolbelt(scriptName) {
+    const js = await postJSON(`/api/toolbelt/${encodeURIComponent(state.currentChatFile)}`, {
+      script: scriptName, action: 'remove'
+    });
+    if (js.success) { state.toolbelt = js.toolbelt; renderToolbelt(); }
+    else alert(js.error || 'Failed to remove script');
+  }
+
+  async function runToolbeltScript(scriptName, btn) {
+    if (btn) { btn.disabled = true; btn.textContent = '...'; }
+    try {
+      const js = await postJSON('/api/toolbelt/run', {
+        script: scriptName, chat_file: state.currentChatFile
+      });
+      showToolbeltResult(scriptName, js);
+    } catch (e) {
+      showToolbeltResult(scriptName, { success: false, error: String(e) });
+    }
+    if (btn) { btn.disabled = false; btn.innerHTML = '&#9654; Run'; }
+  }
+
+  function showToolbeltResult(scriptName, result) {
+    const container = E.messages;
+    const div = document.createElement('div');
+    div.className = 'toolbelt-result';
+    const ok = result.success;
+    const output = (result.output || '') + (result.error || '');
+    div.innerHTML = `
+      <div class="toolbelt-result-header">
+        <span class="script-label">${scriptName}</span>
+        <span class="toolbelt-result-status ${ok ? 'success' : 'error'}">${ok ? '\u2713 Done' : '\u2717 Error'}</span>
+      </div>
+      <pre class="toolbelt-result-output">${output || '(no output)'}</pre>
+    `;
+    // Toggle collapse on header click
+    const header = div.querySelector('.toolbelt-result-header');
+    const pre = div.querySelector('.toolbelt-result-output');
+    header.addEventListener('click', () => {
+      pre.style.display = pre.style.display === 'none' ? '' : 'none';
+    });
+    container.appendChild(div);
+    container.scrollTop = container.scrollHeight;
+  }
+
+  async function showToolbeltAddMenu() {
+    try {
+      const js = await getJSON('/api/toolbox/files');
+      const files = (js.files || []).map(f => f.name);
+      const available = files.filter(f => !state.toolbelt.includes(f));
+      if (available.length === 0) {
+        E.toolbeltAddMenu.innerHTML = '<div class="add-menu-empty">No scripts available</div>';
+      } else {
+        E.toolbeltAddMenu.innerHTML = available.map(f =>
+          `<div class="add-menu-item" data-script="${f}">${f}</div>`
+        ).join('');
+        E.toolbeltAddMenu.querySelectorAll('.add-menu-item').forEach(item => {
+          item.addEventListener('click', () => addToToolbelt(item.dataset.script));
+        });
+      }
+      E.toolbeltAddMenu.style.display = 'block';
+    } catch (e) {
+      alert('Failed to load toolbox files: ' + String(e));
+    }
+  }
+
+  function bindToolbelt() {
+    if (!E.toolbeltBtn) return;
+    E.toolbeltBtn.addEventListener('click', () => {
+      state.toolbeltOpen = !state.toolbeltOpen;
+      E.toolbeltControls.style.display = state.toolbeltOpen ? 'flex' : 'none';
+      if (state.toolbeltOpen) loadToolbelt();
+      E.toolbeltAddMenu.style.display = 'none';
+    });
+    E.toolbeltAddBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (E.toolbeltAddMenu.style.display === 'block') {
+        E.toolbeltAddMenu.style.display = 'none';
+      } else {
+        showToolbeltAddMenu();
+      }
+    });
+    // Close add menu when clicking outside
+    document.addEventListener('click', (e) => {
+      if (!E.toolbeltAddMenu.contains(e.target) && e.target !== E.toolbeltAddBtn) {
+        E.toolbeltAddMenu.style.display = 'none';
+      }
+    });
+  }
+  bindToolbelt();
 
   // ====== Context bar bindings ======
   function bindContextBar() {

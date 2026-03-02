@@ -1012,9 +1012,16 @@ class FlaskChatApp:
                     # break strict chat templates like llama.cpp's Jinja)
                     if tools_enabled and tool_schemas:
                         tool_names = [t['function']['name'] for t in tool_schemas]
+                        tool_os = self.config.get('tool_os', 'windows')
+                        os_hints = {
+                            'windows': "The user is on Windows. Use Windows commands (PowerShell/cmd), Windows file paths (backslashes), and Windows-compatible tools.",
+                            'linux': "The user is on Linux. Use Bash/shell commands, Unix file paths (forward slashes), and Linux-compatible tools.",
+                            'macos': "The user is on macOS. Use Bash/zsh commands, Unix file paths (forward slashes), and macOS-compatible tools (e.g. brew, open).",
+                        }
                         tool_hint = (
                             "\n\nYou have access to the following tools: "
                             + ", ".join(tool_names) + ". "
+                            + os_hints.get(tool_os, os_hints['windows']) + " "
                             "When the user asks you to write files, run commands, list directories, "
                             "or perform actions on their system, USE the tools directly instead of "
                             "just showing code. Execute the actions using your tools. "
@@ -1369,6 +1376,7 @@ class FlaskChatApp:
                 config[p] = self.config.get(f'{p}_tools_enabled', False)
             config['max_iterations'] = self.config.get('max_tool_iterations', 5)
             config['timeout'] = self.config.get('tool_execution_timeout', 30)
+            config['tool_os'] = self.config.get('tool_os', 'windows')
             return jsonify({"success": True, "config": config})
 
         @app.route('/api/config/tools', methods=['POST'])
@@ -1387,6 +1395,17 @@ class FlaskChatApp:
             self.config.set(f'{provider}_tools_enabled', enabled)
             self.config.save_config()
 
+            return jsonify({"success": True})
+
+        @app.route('/api/config/tools/os', methods=['POST'])
+        def set_tool_os():
+            """Set the operating system hint for tool commands."""
+            data = request.get_json() or {}
+            tool_os = data.get('tool_os', 'windows')
+            if tool_os not in ('windows', 'linux', 'macos'):
+                return jsonify({"success": False, "error": "Invalid OS"}), 400
+            self.config.set('tool_os', tool_os)
+            self.config.save_config()
             return jsonify({"success": True})
 
         # ---- Toolbox file management ----
@@ -1449,6 +1468,113 @@ class FlaskChatApp:
                 # Fallback to regular notepad
                 subprocess.Popen(['notepad.exe', fpath])
                 return jsonify({"success": True, "fallback": "notepad"})
+            except Exception as e:
+                return jsonify({"success": False, "error": str(e)}), 500
+
+        # ---- Toolbelt (per-chat script runner) ----
+
+        @app.route('/api/toolbelt/run', methods=['POST'])
+        def run_toolbelt_script():
+            """Execute a toolbelt script as a subprocess."""
+            body = request.get_json() or {}
+            script = body.get("script", "").strip()
+            chat_file = body.get("chat_file", "").strip()
+            if not script or not chat_file:
+                return jsonify({"success": False, "error": "Need script and chat_file"}), 400
+
+            script_path = os.path.join(TOOLBOX_DIR, script)
+            if not os.path.isfile(script_path):
+                return jsonify({"success": False, "error": f"Script '{script}' not found in toolbox"}), 404
+
+            chat_path = os.path.join(self.chat_manager.chats_directory, chat_file)
+            if not os.path.isfile(chat_path):
+                return jsonify({"success": False, "error": f"Chat file '{chat_file}' not found"}), 404
+
+            # Verify script is in the chat's toolbelt
+            if self.chat_manager.current_chat_file == chat_file:
+                tb = self.chat_manager.current_chat.get("toolbelt", [])
+            else:
+                try:
+                    with open(chat_path, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                    tb = data.get("toolbelt", []) if isinstance(data, dict) else []
+                except Exception:
+                    tb = []
+            if script not in tb:
+                return jsonify({"success": False, "error": f"Script '{script}' is not in this chat's toolbelt"}), 400
+
+            # Run the script
+            project_root = os.path.dirname(os.path.abspath(__file__))
+            try:
+                result = subprocess.run(
+                    ["python", script_path, chat_path],
+                    capture_output=True, text=True,
+                    timeout=60, cwd=project_root,
+                )
+                return jsonify({
+                    "success": result.returncode == 0,
+                    "output": result.stdout,
+                    "error": result.stderr,
+                    "returncode": result.returncode,
+                })
+            except subprocess.TimeoutExpired:
+                return jsonify({"success": False, "error": "Script timed out (60s limit)"}), 504
+            except Exception as e:
+                return jsonify({"success": False, "error": str(e)}), 500
+
+        @app.route('/api/toolbelt/<path:filename>', methods=['GET'])
+        def get_toolbelt(filename):
+            """Get the toolbelt (assigned scripts) for a chat."""
+            if self.chat_manager.current_chat_file == filename:
+                toolbelt = self.chat_manager.current_chat.get("toolbelt", [])
+                return jsonify({"success": True, "toolbelt": toolbelt})
+            chat_path = os.path.join(self.chat_manager.chats_directory, filename)
+            if not os.path.isfile(chat_path):
+                return jsonify({"success": False, "error": "Chat not found"}), 404
+            try:
+                with open(chat_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                toolbelt = data.get("toolbelt", []) if isinstance(data, dict) else []
+                return jsonify({"success": True, "toolbelt": toolbelt})
+            except Exception as e:
+                return jsonify({"success": False, "error": str(e)}), 500
+
+        @app.route('/api/toolbelt/<path:filename>', methods=['POST'])
+        def update_toolbelt(filename):
+            """Add or remove a script from a chat's toolbelt."""
+            body = request.get_json() or {}
+            script = body.get("script", "").strip()
+            action = body.get("action", "")
+            if not script or action not in ("add", "remove"):
+                return jsonify({"success": False, "error": "Need script and action (add/remove)"}), 400
+            if action == "add":
+                script_path = os.path.join(TOOLBOX_DIR, script)
+                if not os.path.isfile(script_path):
+                    return jsonify({"success": False, "error": f"Script '{script}' not found in toolbox"}), 404
+            if self.chat_manager.current_chat_file == filename:
+                tb = self.chat_manager.current_chat.setdefault("toolbelt", [])
+                if action == "add" and script not in tb:
+                    tb.append(script)
+                elif action == "remove" and script in tb:
+                    tb.remove(script)
+                self.chat_manager.save_current_chat(force_save=True)
+                return jsonify({"success": True, "toolbelt": tb})
+            chat_path = os.path.join(self.chat_manager.chats_directory, filename)
+            if not os.path.isfile(chat_path):
+                return jsonify({"success": False, "error": "Chat not found"}), 404
+            try:
+                with open(chat_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if not isinstance(data, dict):
+                    return jsonify({"success": False, "error": "Invalid chat format"}), 400
+                tb = data.setdefault("toolbelt", [])
+                if action == "add" and script not in tb:
+                    tb.append(script)
+                elif action == "remove" and script in tb:
+                    tb.remove(script)
+                with open(chat_path, "w", encoding="utf-8") as f:
+                    json.dump(data, f, indent=2, ensure_ascii=False)
+                return jsonify({"success": True, "toolbelt": tb})
             except Exception as e:
                 return jsonify({"success": False, "error": str(e)}), 500
 
@@ -2115,7 +2241,13 @@ class FlaskChatApp:
                     # Also update the title in the current chat if it's loaded
                     if isinstance(self.chat_manager.current_chat, dict):
                         self.chat_manager.current_chat["title"] = new_title
-                
+
+                # Update folder mapping if the chat was in a folder
+                folder_id = self.folder_manager.get_chat_folder(filename)
+                if folder_id:
+                    self.folder_manager.remove_chat_from_folder(filename)
+                    self.folder_manager.assign_chat_to_folder(new_fn, folder_id)
+
                 return jsonify({"success": True, "filename": new_fn, "title": new_title})
             except Exception as e:
                 return jsonify({"success": False, "error": str(e)}), 500

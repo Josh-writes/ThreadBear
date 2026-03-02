@@ -45,7 +45,8 @@ class ChatManager:
             "chat_history": [],
             "conversation_summary": "",
             "token_count": 0,
-            "title": title
+            "title": title,
+            "toolbelt": [],
         }
         self.current_chat_file = fn
         self.save_current_chat(force_save=True)
@@ -80,6 +81,7 @@ class ChatManager:
                 if "parent_chat_id" not in data:
                     data["parent_chat_id"] = ""
                 self.current_chat = data
+            self.current_chat.setdefault("toolbelt", [])
             self.current_chat_file = filename
             return True
         except Exception as e:

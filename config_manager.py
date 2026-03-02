@@ -97,6 +97,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "require_tool_confirmation": True,         # Ask user before destructive tools
     "blocked_commands": ['rm -rf', 'del /f /s', 'format', 'shutdown'],
     "tool_workspace": None,                    # Restrict file access (None = unrestricted)
+    "tool_os": "windows",                       # OS hint for tool commands (windows/linux/macos)
 
     # Custom OpenAI-compatible endpoints
     "custom_endpoints": {},

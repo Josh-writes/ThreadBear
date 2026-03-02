@@ -686,6 +686,133 @@
             border-color: #adb5bd;
         }
 
+        /* Toolbelt Controls */
+        .toolbelt-controls {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 24px;
+            background: var(--bg-primary);
+            border-bottom: 1px solid var(--border-color);
+            font-size: 13px;
+            flex-wrap: wrap;
+        }
+        .toolbelt-list {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+            align-items: center;
+        }
+        .toolbelt-item {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            padding: 4px 10px;
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            font-size: 12px;
+        }
+        .toolbelt-item .script-name {
+            font-family: monospace;
+        }
+        .toolbelt-item .run-btn {
+            background: #10a37f;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            padding: 2px 8px;
+            cursor: pointer;
+            font-size: 11px;
+        }
+        .toolbelt-item .run-btn:hover { background: #0d8c6d; }
+        .toolbelt-item .run-btn:disabled {
+            background: #999;
+            cursor: wait;
+        }
+        .toolbelt-item .remove-btn {
+            background: none;
+            border: none;
+            color: #999;
+            cursor: pointer;
+            font-size: 14px;
+            padding: 0 2px;
+            line-height: 1;
+        }
+        .toolbelt-item .remove-btn:hover { color: #dc3545; }
+        .toolbelt-actions {
+            margin-left: auto;
+        }
+        .toolbelt-empty {
+            color: #888;
+            font-style: italic;
+            font-size: 12px;
+        }
+        .toolbelt-add-menu {
+            position: absolute;
+            bottom: 100%;
+            right: 0;
+            background: var(--bg-primary);
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+            min-width: 200px;
+            max-height: 200px;
+            overflow-y: auto;
+            z-index: 100;
+        }
+        .toolbelt-add-menu .add-menu-item {
+            padding: 6px 12px;
+            cursor: pointer;
+            font-size: 12px;
+            font-family: monospace;
+        }
+        .toolbelt-add-menu .add-menu-item:hover {
+            background: var(--bg-secondary);
+        }
+        .toolbelt-add-menu .add-menu-empty {
+            padding: 8px 12px;
+            color: #888;
+            font-style: italic;
+            font-size: 12px;
+        }
+        .toolbelt-result {
+            margin: 8px 24px;
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            overflow: hidden;
+            font-size: 13px;
+        }
+        .toolbelt-result-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 6px 12px;
+            background: var(--bg-secondary);
+            cursor: pointer;
+        }
+        .toolbelt-result-header .script-label {
+            font-family: monospace;
+            font-weight: 500;
+        }
+        .toolbelt-result-status {
+            font-size: 11px;
+            padding: 2px 6px;
+            border-radius: 4px;
+        }
+        .toolbelt-result-status.success { color: #10a37f; }
+        .toolbelt-result-status.error { color: #dc3545; }
+        .toolbelt-result-output {
+            padding: 8px 12px;
+            margin: 0;
+            font-size: 12px;
+            white-space: pre-wrap;
+            word-break: break-word;
+            max-height: 300px;
+            overflow-y: auto;
+            background: var(--bg-primary);
+        }
+
         /* Document Attachments Bar */
         .document-attachments-bar {
             background: #f8f9fa;
@@ -2828,6 +2955,19 @@
                 </div>
             </div>
 
+            <!-- Toolbelt Controls -->
+            <div class="toolbelt-controls" id="toolbeltControls" style="display: none;">
+                <div class="toolbelt-list" id="toolbeltList">
+                    <!-- Rendered by JS -->
+                </div>
+                <div class="toolbelt-actions" style="position: relative;">
+                    <button class="context-action-btn" id="toolbeltAddBtn">+ Add Script</button>
+                    <div class="toolbelt-add-menu" id="toolbeltAddMenu" style="display: none;">
+                        <!-- Rendered by JS -->
+                    </div>
+                </div>
+            </div>
+
             <!-- Upload Progress Bar -->
             <div class="upload-progress-bar" id="uploadProgressBar">
                 <div class="upload-progress-container">
@@ -2876,6 +3016,7 @@
                             <span class="tools-toggle-label" id="toolsToggleLabel">Tools</span>
                         </div>
                         <button class="control-btn input-context-btn" id="contextSelectionBtn">Select Context</button>
+                        <button class="control-btn input-context-btn" id="toolbeltBtn">Toolbelt</button>
                         <div class="input-field-wrap">
                             <textarea
                                 class="message-input"
@@ -3115,6 +3256,20 @@
                     <span id="toolsProviderHint" style="font-size: 12px; color: var(--text-muted); margin-left: auto;"></span>
                 </div>
                 <span id="toolsStatus" style="font-size: 12px; color: var(--text-muted); margin-top: 4px; display: block;"></span>
+            </div>
+
+            <div class="settings-section">
+                <div class="setting-group" style="display: flex; align-items: center; gap: 10px;">
+                    <label class="setting-label" style="margin: 0; flex-shrink: 0;" for="toolOsSelect">Operating System</label>
+                    <select id="toolOsSelect" style="padding: 4px 8px; border: 1px solid var(--border-color); border-radius: 4px; background: var(--bg-secondary); color: var(--text-primary); font-size: 13px;">
+                        <option value="windows">Windows</option>
+                        <option value="linux">Linux</option>
+                        <option value="macos">macOS</option>
+                    </select>
+                </div>
+                <p style="font-size: 11px; color: var(--text-muted); margin-top: 4px;">
+                    Tells the model which OS commands to use (e.g. PowerShell vs Bash).
+                </p>
             </div>
 
             <div class="settings-section" id="toolsListSection">
@@ -3452,6 +3607,11 @@
         <div class="context-menu-item" id="menuViewUsageDetails" style="display: none;">
             <span>📊</span>
             <span>View Usage Details</span>
+        </div>
+        <div class="context-menu-separator"></div>
+        <div class="context-menu-item" id="resendMessageMenuItem" style="display: none;">
+            <span>🔁</span>
+            <span>Resend Message</span>
         </div>
         <div class="context-menu-separator"></div>
         <div class="context-menu-item danger" id="deleteResponseMenuItem">
