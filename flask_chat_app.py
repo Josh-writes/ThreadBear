@@ -908,6 +908,17 @@ class FlaskChatApp:
                             "For command output, include the relevant output directly in your reply "
                             "rather than just saying 'done'."
                         )
+
+                        # Deep search instruction (only if web_search is available)
+                        if 'web_search' in tool_names:
+                            tool_hint += (
+                                "\n\nWEB SEARCH STRATEGY: For complex or multi-faceted questions, "
+                                "break the question into 2-4 focused sub-queries and search each separately. "
+                                "After each search, evaluate whether you have enough information to answer comprehensively. "
+                                "If not, refine your query or search for missing aspects. "
+                                "Synthesize information from all searches into a thorough answer with source attribution."
+                            )
+
                         system_prompt = (system_prompt or "") + tool_hint
                         # Update merged_cfg so API clients use the combined prompt
                         merged_cfg["system_prompt"] = system_prompt

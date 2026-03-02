@@ -12,3 +12,7 @@ python-docx==1.1.0
 
 # For handling various file types in context_documents
 Werkzeug==3.0.3
+
+# Web search tool
+ddgs>=9.0.0
+beautifulsoup4>=4.12.0

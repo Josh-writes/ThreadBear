@@ -16,3 +16,6 @@ from . import agent_tools
 
 # Import artifact tools (Phase 5)
 from . import artifact_tools
+
+# Import web search tool
+from . import web_search

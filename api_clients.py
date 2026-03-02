@@ -24,21 +24,149 @@ def estimate_tokens(text: str) -> int:
 
 
 def _repair_json(s: str) -> str:
-    """Fix common JSON issues from streaming: missing closing braces/brackets."""
+    """
+    Multi-strategy JSON repair for tool call arguments from streaming.
+
+    Strategies (tried in order):
+    1. Direct parse — already valid JSON
+    2. Brace completion — missing closing braces/brackets (original logic)
+    3. Extract from wrapping — JSON embedded in markdown fences or text
+    4. Fix common syntax issues — unquoted keys, trailing commas
+    5. Fallback — return '{}'
+
+    Returns valid JSON string or '{}' if all strategies fail.
+    """
     s = s.strip()
     if not s:
         return '{}'
-    # Count open/close braces
-    opens = s.count('{') - s.count('}')
-    s += '}' * max(0, opens)
-    # Count open/close brackets
-    opens = s.count('[') - s.count(']')
-    s += ']' * max(0, opens)
+
+    # Strategy 1: Direct parse
     try:
         json.loads(s)
         return s
     except json.JSONDecodeError:
-        return '{}'
+        pass
+
+    # Strategy 2: Brace/bracket completion (original logic)
+    repaired = _try_brace_completion(s)
+    if repaired:
+        return repaired
+
+    # Strategy 3: Extract JSON from wrapping text
+    extracted = _try_extract_json(s)
+    if extracted:
+        return extracted
+
+    # Strategy 4: Fix common syntax issues
+    fixed = _try_fix_syntax(s)
+    if fixed:
+        return fixed
+
+    # Fallback
+    return '{}'
+
+
+def _try_brace_completion(s: str) -> str | None:
+    """Fix missing closing braces/brackets from streaming truncation."""
+    candidate = s
+    opens = candidate.count('{') - candidate.count('}')
+    candidate += '}' * max(0, opens)
+    opens = candidate.count('[') - candidate.count(']')
+    candidate += ']' * max(0, opens)
+    try:
+        json.loads(candidate)
+        return candidate
+    except json.JSONDecodeError:
+        return None
+
+
+def _try_extract_json(s: str) -> str | None:
+    """
+    Extract JSON object from surrounding text.
+
+    Handles:
+    - Markdown code fences: ```json\n{...}\n```
+    - JSON buried in explanatory text: "Here are the args: {...}"
+    - Multiple JSON objects (takes the first valid one)
+    """
+    import re
+
+    # Try markdown code fence extraction first
+    fence_match = re.search(r'```(?:json)?\s*\n?(\{.*?\})\s*\n?```', s, re.DOTALL)
+    if fence_match:
+        candidate = fence_match.group(1).strip()
+        try:
+            json.loads(candidate)
+            return candidate
+        except json.JSONDecodeError:
+            # Try brace completion on extracted content
+            completed = _try_brace_completion(candidate)
+            if completed:
+                return completed
+
+    # Try to find a JSON object anywhere in the string
+    # Look for the first { and find its matching }
+    start = s.find('{')
+    if start == -1:
+        return None
+
+    # Try progressively from each } working backwards
+    for end in range(len(s) - 1, start, -1):
+        if s[end] == '}':
+            candidate = s[start:end + 1]
+            try:
+                json.loads(candidate)
+                return candidate
+            except json.JSONDecodeError:
+                continue
+
+    # Try brace completion on substring from first {
+    candidate = s[start:]
+    completed = _try_brace_completion(candidate)
+    if completed:
+        return completed
+
+    return None
+
+
+def _try_fix_syntax(s: str) -> str | None:
+    """
+    Fix common JSON syntax issues from weak models.
+
+    Handles:
+    - Trailing commas: {"a": 1,}
+    - Unquoted keys: {path: "/tmp/foo"}
+    - Single quotes: {'path': '/tmp/foo'}
+    """
+    import re
+
+    candidate = s
+
+    # Fix single quotes to double quotes (careful: don't break apostrophes in values)
+    # Only do this if there are no double quotes at all (model used all single quotes)
+    if "'" in candidate and '"' not in candidate:
+        candidate = candidate.replace("'", '"')
+
+    # Fix unquoted keys: {path: "value"} -> {"path": "value"}
+    candidate = re.sub(
+        r'(?<=[\{,])\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*:',
+        r' "\1":',
+        candidate
+    )
+
+    # Fix trailing commas before closing brace/bracket
+    candidate = re.sub(r',\s*([}\]])', r'\1', candidate)
+
+    # Try brace completion + parse
+    completed = _try_brace_completion(candidate)
+    if completed:
+        return completed
+
+    try:
+        json.loads(candidate)
+        return candidate
+    except json.JSONDecodeError:
+        return None
 
 
 # --- Groq ---

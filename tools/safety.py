@@ -48,7 +48,7 @@ class ToolSafetyManager:
             return self._validate_path(args.get('path', ''))
         if tool_name == 'run_command':
             return self._validate_command(args.get('command', ''))
-        if tool_name == 'web_request':
+        if tool_name in ('web_request', 'web_search'):
             return self._validate_url(args.get('url', ''))
         return None
 
