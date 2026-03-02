@@ -24,7 +24,7 @@ USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTM
 MAX_RESULTS = 10          # DuckDuckGo results to fetch
 MAX_SCRAPE = 3            # Pages to actually scrape
 SCRAPE_TIMEOUT = 10       # Per-page timeout (seconds)
-MAX_CONTENT_PER_PAGE = 3000  # Characters per scraped page
+MAX_CONTENT_PER_PAGE = 6000  # Characters per scraped page (after relevance filtering)
 RATE_LIMIT_SECONDS = 1.0  # Min delay between requests to same domain
 _last_request_times: Dict[str, float] = {}
 
@@ -60,17 +60,55 @@ def _respect_rate_limit(url: str):
 
 
 # ---------------------------------------------------------------------------
-# Content extraction (BeautifulSoup)
+# Query-aware relevance scoring
 # ---------------------------------------------------------------------------
-def _extract_content(html: str, url: str) -> Dict:
+_STOP_WORDS = {
+    'a', 'an', 'the', 'is', 'are', 'was', 'were', 'be', 'been', 'being',
+    'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could',
+    'should', 'may', 'might', 'can', 'shall', 'to', 'of', 'in', 'for',
+    'on', 'with', 'at', 'by', 'from', 'as', 'into', 'about', 'between',
+    'through', 'during', 'before', 'after', 'and', 'but', 'or', 'nor',
+    'not', 'so', 'yet', 'both', 'either', 'neither', 'each', 'every',
+    'this', 'that', 'these', 'those', 'it', 'its', 'i', 'me', 'my',
+    'we', 'our', 'you', 'your', 'he', 'she', 'they', 'them', 'what',
+    'which', 'who', 'whom', 'how', 'when', 'where', 'why',
+}
+
+
+def _query_terms(query: str) -> List[str]:
+    """Extract meaningful lowercase terms from a query, removing stop words."""
+    words = re.findall(r'[a-z0-9]+', query.lower())
+    return [w for w in words if w not in _STOP_WORDS and len(w) > 1]
+
+
+def _score_block(text: str, terms: List[str]) -> float:
+    """Score a text block by how many query terms it contains, with bonus for density."""
+    if not terms or not text:
+        return 0.0
+    text_lower = text.lower()
+    hits = sum(1 for t in terms if t in text_lower)
+    if hits == 0:
+        return 0.0
+    # Base score: fraction of query terms matched
+    coverage = hits / len(terms)
+    # Density bonus: shorter blocks with the same hits score higher
+    density = hits / max(len(text.split()), 1)
+    return coverage + (density * 0.5)
+
+
+# ---------------------------------------------------------------------------
+# Content extraction (BeautifulSoup) — query-aware
+# ---------------------------------------------------------------------------
+def _extract_content(html: str, url: str, query: str = "") -> Dict:
     """
-    Extract clean text content from HTML.
+    Extract content from HTML, filtered by relevance to the search query.
 
     Strategy:
     1. Remove non-content elements (script, style, nav, footer, header, aside)
-    2. Find main content container (main, article, content div)
-    3. Extract paragraphs; fall back to all text
-    4. Clean whitespace
+    2. Find main content container
+    3. Extract structured blocks: headings, paragraphs, list items, table rows
+    4. Score each block against query terms
+    5. Keep intro context + top-scoring blocks within budget
     """
     soup = BeautifulSoup(html, 'html.parser')
 
@@ -83,51 +121,120 @@ def _extract_content(html: str, url: str) -> Dict:
     if soup.title and soup.title.string:
         title = soup.title.string.strip()
 
-    # Try to find main content container
-    # Use word-boundary patterns to avoid matching e.g. 'header-main__container'
+    # Find main content container
     main = (
         soup.find('main') or
         soup.find('article') or
         soup.find('div', class_=re.compile(r'(?:^|\s|-)(?:content|article|post|entry)(?:\s|-|$)', re.I)) or
         soup.find('div', id=re.compile(r'(?:^|-)(?:content|article|post|entry|main-content)(?:-|$)', re.I))
     )
-
-    # Try container first, fall back to whole soup if container has little text
     container = main if main else soup
-    paragraphs = container.find_all('p')
-    text = ' '.join(p.get_text().strip() for p in paragraphs if p.get_text().strip())
 
-    # If container gave us very little, try the whole document
-    if len(text) < 100 and container is not soup:
-        paragraphs = soup.find_all('p')
-        text = ' '.join(p.get_text().strip() for p in paragraphs if p.get_text().strip())
+    # Extract structured blocks with their type
+    blocks = []
+    seen_texts = set()
+    for tag in container.find_all(['h1', 'h2', 'h3', 'h4', 'h5', 'h6',
+                                    'p', 'li', 'tr', 'blockquote', 'pre']):
+        text = tag.get_text(separator=' ', strip=True)
+        text = re.sub(r'\s+', ' ', text).strip()
+        if not text or len(text) < 10:
+            continue
+        # Deduplicate
+        sig = text[:80]
+        if sig in seen_texts:
+            continue
+        seen_texts.add(sig)
 
-    # Fallback: all text
-    if len(text) < 100:
-        text = soup.get_text(separator=' ', strip=True)
+        tag_name = tag.name
+        # Table rows: reconstruct as pipe-delimited for readability
+        if tag_name == 'tr':
+            cells = [c.get_text(strip=True) for c in tag.find_all(['th', 'td'])]
+            if cells:
+                text = ' | '.join(cells)
 
-    # Clean whitespace
-    text = re.sub(r'\s+', ' ', text).strip()
+        blocks.append({
+            'text': text,
+            'tag': tag_name,
+            'is_heading': tag_name.startswith('h'),
+        })
 
-    # Truncate
-    truncated = len(text) > MAX_CONTENT_PER_PAGE
-    text = text[:MAX_CONTENT_PER_PAGE]
+    # Fallback: if structured extraction got very little, grab all text
+    if sum(len(b['text']) for b in blocks) < 200:
+        fallback = container.get_text(separator=' ', strip=True)
+        fallback = re.sub(r'\s+', ' ', fallback).strip()
+        if fallback:
+            return {
+                'url': url,
+                'title': title,
+                'content': fallback[:MAX_CONTENT_PER_PAGE],
+                'truncated': len(fallback) > MAX_CONTENT_PER_PAGE,
+            }
+
+    # If no query, just concatenate blocks up to budget (old behavior)
+    terms = _query_terms(query) if query else []
+    if not terms:
+        text = '\n'.join(b['text'] for b in blocks)
+        return {
+            'url': url,
+            'title': title,
+            'content': text[:MAX_CONTENT_PER_PAGE],
+            'truncated': len(text) > MAX_CONTENT_PER_PAGE,
+        }
+
+    # --- Query-aware filtering ---
+
+    # Score each block
+    for b in blocks:
+        b['score'] = _score_block(b['text'], terms)
+        # Headings get a bonus — they provide structure even if low-scoring
+        if b['is_heading']:
+            b['score'] += 0.3
+
+    # Always keep: first few blocks as intro context (up to 800 chars)
+    intro_blocks = []
+    intro_chars = 0
+    for b in blocks:
+        if intro_chars >= 800:
+            break
+        intro_blocks.append(b)
+        intro_chars += len(b['text']) + 1
+
+    # Sort remaining blocks by score, keep the best ones
+    remaining = [b for b in blocks if b not in intro_blocks]
+    remaining.sort(key=lambda b: b['score'], reverse=True)
+
+    # Build output: intro + top-scoring blocks, maintaining original order
+    selected = set(id(b) for b in intro_blocks)
+    budget = MAX_CONTENT_PER_PAGE - intro_chars
+    for b in remaining:
+        if b['score'] <= 0 and budget < MAX_CONTENT_PER_PAGE * 0.3:
+            continue  # Skip zero-score blocks unless we have lots of budget left
+        if budget <= 0:
+            break
+        selected.add(id(b))
+        budget -= len(b['text']) + 1
+
+    # Reassemble in document order
+    output_blocks = [b for b in blocks if id(b) in selected]
+    text = '\n'.join(b['text'] for b in output_blocks)
+    total_chars = sum(len(b['text']) for b in blocks)
 
     return {
         'url': url,
         'title': title,
-        'content': text,
-        'truncated': truncated,
+        'content': text[:MAX_CONTENT_PER_PAGE],
+        'truncated': total_chars > len(text),
     }
 
 
 # ---------------------------------------------------------------------------
 # Page scraping
 # ---------------------------------------------------------------------------
-def _scrape_page(url: str) -> Optional[Dict]:
+def _scrape_page(url: str, query: str = "") -> Optional[Dict]:
     """
     Scrape a single page with robots.txt respect and rate limiting.
     Returns extracted content dict or None on failure.
+    Query is used for relevance-aware content filtering.
     """
     if not _can_fetch(url):
         logger.info(f"robots.txt disallows: {url}")
@@ -148,7 +255,7 @@ def _scrape_page(url: str) -> Optional[Dict]:
         if 'html' not in content_type.lower() and 'text' not in content_type.lower():
             return {'url': url, 'title': '', 'content': f'[Non-HTML content: {content_type}]', 'truncated': False}
 
-        return _extract_content(resp.text, url)
+        return _extract_content(resp.text, url, query=query)
 
     except requests.RequestException as e:
         logger.warning(f"Failed to scrape {url}: {e}")
@@ -227,13 +334,13 @@ def web_search(args: dict) -> dict:
             'url': r.get('href', ''),
         })
 
-    # Step 2: Scrape top results (if enabled)
+    # Step 2: Scrape top results (if enabled) — query-aware filtering
     scraped = []
     if scrape:
         urls_to_scrape = [r['url'] for r in formatted_results[:num_results] if r['url']]
         for url in urls_to_scrape:
             try:
-                page = _scrape_page(url)
+                page = _scrape_page(url, query=query)
                 if page and page.get('content'):
                     scraped.append(page)
             except Exception as e:

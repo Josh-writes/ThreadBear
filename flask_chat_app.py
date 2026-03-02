@@ -1030,7 +1030,11 @@ class FlaskChatApp:
                                 "break the question into 2-4 focused sub-queries and search each separately. "
                                 "After each search, evaluate whether you have enough information to answer comprehensively. "
                                 "If not, refine your query or search for missing aspects. "
-                                "Synthesize information from all searches into a thorough answer with source attribution."
+                                "Synthesize information from all searches into a thorough answer."
+                                "\n\nSOURCE CITATION: ALWAYS include sources in your final response. "
+                                "Format each source as a markdown link: [Page Title](https://url). "
+                                "Place a 'Sources' section at the end of your response listing all URLs you retrieved information from. "
+                                "When referencing specific facts, use inline links like [source](url) in the text."
                             )
 
                         system_prompt = (system_prompt or "") + tool_hint
@@ -1054,6 +1058,7 @@ class FlaskChatApp:
                             time.sleep(2)
                             # Slim messages: keep system + last user msg + tool pairs only
                             # This dramatically reduces token count on iterations 1+
+                            # Also drop empty/failed tool results to save tokens
                             slim_messages = []
                             for m in api_messages:
                                 if m.get('role') == 'system':
@@ -1066,9 +1071,29 @@ class FlaskChatApp:
                                     last_user = m
                             if last_user:
                                 slim_messages.append(last_user)
+                            # Track which tool_call_ids had empty results so we can drop their pairs
+                            empty_tool_ids = set()
                             for m in api_messages:
-                                if m.get('role') == 'tool' or m.get('tool_calls'):
+                                if m.get('role') == 'tool':
+                                    try:
+                                        content = json.loads(m.get('content', '{}'))
+                                        if content.get('no_results'):
+                                            empty_tool_ids.add(m.get('tool_call_id', ''))
+                                            continue
+                                    except (json.JSONDecodeError, AttributeError):
+                                        pass
                                     slim_messages.append(m)
+                                elif m.get('tool_calls'):
+                                    # Filter out tool_calls whose results were empty
+                                    if empty_tool_ids:
+                                        kept = [tc for tc in m['tool_calls'] if tc.get('id', '') not in empty_tool_ids]
+                                        if kept:
+                                            trimmed = dict(m)
+                                            trimmed['tool_calls'] = kept
+                                            slim_messages.append(trimmed)
+                                        # If all tool_calls in this msg were empty, drop the whole msg
+                                    else:
+                                        slim_messages.append(m)
                             api_messages = slim_messages
 
                         tool_calls_this_round = []
@@ -1145,22 +1170,55 @@ class FlaskChatApp:
                                     break
 
                             # Add tool result to messages for next LLM call
-                            # Budget: 30% of context window for tool results,
-                            # ~4 chars per token, split across tool calls this round
-                            try:
-                                ctx_window = self.config.get_context_window(provider, model)
-                            except Exception:
-                                ctx_window = 8192
-                            budget_chars = int(ctx_window * 0.3 * 4) // max(len(tool_calls_this_round), 1)
-                            budget_chars = max(budget_chars, 500)  # floor
-                            llm_result = _truncate_tool_result(result, max_chars=budget_chars)
-                            api_messages.append({
-                                'role': 'tool',
-                                'tool_call_id': tc.get('id', ''),
-                                'content': json.dumps(llm_result)
-                            })
+                            # Compact empty/failed results to a minimal stub
+                            is_empty = (
+                                result.get('error')
+                                or (name == 'web_search' and not result.get('scraped') and not result.get('results'))
+                            )
+                            if is_empty:
+                                stub = {'no_results': True}
+                                if result.get('error'):
+                                    stub['error'] = result['error']
+                                if result.get('message'):
+                                    stub['message'] = result['message']
+                                api_messages.append({
+                                    'role': 'tool',
+                                    'tool_call_id': tc.get('id', ''),
+                                    'content': json.dumps(stub)
+                                })
+                            else:
+                                # Budget: 40% of context window for tool results,
+                                # ~4 chars per token, split across tool calls this round
+                                try:
+                                    ctx_window = self.config.get_context_window(provider, model)
+                                except Exception:
+                                    ctx_window = 8192
+                                budget_chars = int(ctx_window * 0.4 * 4) // max(len(tool_calls_this_round), 1)
+                                budget_chars = max(budget_chars, 2000)  # floor
+                                llm_result = _truncate_tool_result(result, max_chars=budget_chars)
+                                api_messages.append({
+                                    'role': 'tool',
+                                    'tool_call_id': tc.get('id', ''),
+                                    'content': json.dumps(llm_result)
+                                })
 
                         # Loop continues — LLM gets tool results and generates next response
+                    else:
+                        # Loop exhausted max_iterations while model was still calling tools.
+                        # Force one final LLM call WITHOUT tools so it synthesizes a response.
+                        try:
+                            yield f"data: {json.dumps({'type':'status','content':'Synthesizing final response...'})}\n\n"
+                            for chunk in stream_func(api_messages, merged_cfg, tools=None):
+                                if isinstance(chunk, dict) and chunk.get('type') == 'usage':
+                                    stream_usage = chunk
+                                elif isinstance(chunk, str):
+                                    full_response += chunk
+                                    yield f"data: {json.dumps({'type':'content','content':chunk})}\n\n"
+                                    time.sleep(0.005)
+                        except Exception as synth_err:
+                            print(f"Synthesis call failed: {synth_err}")
+                            if not full_response:
+                                full_response = "\n\n".join(working_texts) if working_texts else "(Tool results above — model did not generate a summary)"
 
                     if not self.temporary_mode and not self.incognito_mode:
                         self.chat_manager.add_message("assistant", full_response, model)

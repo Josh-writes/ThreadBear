@@ -48,8 +48,12 @@ class ToolSafetyManager:
             return self._validate_path(args.get('path', ''))
         if tool_name == 'run_command':
             return self._validate_command(args.get('command', ''))
-        if tool_name in ('web_request', 'web_search'):
+        if tool_name == 'web_request':
             return self._validate_url(args.get('url', ''))
+        if tool_name == 'web_search':
+            if not args.get('query', '').strip():
+                return 'Empty search query'
+            return None
         return None
 
     def _validate_path(self, path: str) -> Optional[str]:
