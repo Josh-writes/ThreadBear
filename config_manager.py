@@ -74,6 +74,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
 
     # llama.cpp server
     "llamacpp_url": "http://localhost:8080",
+    "llamacpp_saved_urls": [],
     "llamacpp_model": "",
     "llamacpp_temperature": 0.7,
     "llamacpp_system_prompt": "",
@@ -218,11 +219,37 @@ class ConfigManager:
 
     # ---------- llama.cpp URL ----------
     def get_llamacpp_url(self) -> str:
-        """Get llama.cpp server URL, prioritizing LLAMACPP_URL env var."""
-        env_url = os.getenv("LLAMACPP_URL", "").strip()
-        if env_url:
-            return env_url
+        """Get llama.cpp server URL from config."""
         return self.config.get("llamacpp_url", "http://localhost:8080")
+
+    def get_llamacpp_saved_urls(self) -> List[Dict[str, str]]:
+        """Get saved llama.cpp server URLs."""
+        return self.config.get("llamacpp_saved_urls", [])
+
+    def set_llamacpp_saved_urls(self, urls: List[Dict[str, str]]) -> None:
+        """Set saved llama.cpp server URLs."""
+        self.config["llamacpp_saved_urls"] = urls
+        self.save_config()
+
+    def migrate_llamacpp_saved_urls(self) -> None:
+        """One-time migration: seed saved_urls from current config."""
+        saved = self.config.get("llamacpp_saved_urls", [])
+        if saved:
+            return  # Already migrated
+
+        urls = []
+        current = self.config.get("llamacpp_url", "http://localhost:8080")
+        if current:
+            urls.append({"label": "Default", "url": current})
+
+        # Check for zerotier URL if it exists
+        zt = self.config.get("llamacpp_zerotier_url", "")
+        if zt and zt != current:
+            urls.append({"label": "ZeroTier", "url": zt})
+
+        if urls:
+            self.config["llamacpp_saved_urls"] = urls
+            self.save_config()
 
     # ---------- Per-model settings ----------
     def _ensure_model_settings(self) -> None:

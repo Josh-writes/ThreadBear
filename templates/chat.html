@@ -3027,11 +3027,21 @@
                     URL of a running llama-server. Start llama-server manually and point ThreadBear at it.
                 </p>
                 <div class="setting-group">
+                    <label class="setting-label">Saved Addresses</label>
+                    <select class="setting-input" id="llamacppUrlSelect" style="margin-bottom: 6px;">
+                        <option value="__custom__">Custom...</option>
+                    </select>
+                </div>
+                <div class="setting-group">
                     <label class="setting-label">Server URL</label>
                     <input type="text" class="setting-input" id="llamacppUrlInput" placeholder="http://localhost:8080">
                 </div>
-                <button class="control-btn" id="llamacppUrlSaveBtn" style="margin-top: 8px; padding: 6px 16px;">Save</button>
-                <span id="llamacppUrlStatus" style="margin-left: 8px; font-size: 12px; color: var(--text-muted);"></span>
+                <div style="margin-top: 8px; display: flex; gap: 6px; align-items: center; flex-wrap: wrap;">
+                    <button class="control-btn" id="llamacppUrlSaveBtn" style="padding: 6px 16px;">Use</button>
+                    <button class="control-btn" id="llamacppUrlAddBtn" style="padding: 6px 16px;">Add</button>
+                    <button class="control-btn" id="llamacppUrlRemoveBtn" style="padding: 6px 16px;">Remove</button>
+                    <span id="llamacppUrlStatus" style="margin-left: 4px; font-size: 12px; color: var(--text-muted);"></span>
+                </div>
             </div>
 
             <!-- Privacy Section (placeholder) -->

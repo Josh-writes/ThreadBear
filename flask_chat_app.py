@@ -153,6 +153,7 @@ class FlaskChatApp:
         CORS(self.app)
 
         self.config = ConfigManager()
+        self.config.migrate_llamacpp_saved_urls()
         # No longer auto-saves API keys to config.json - they're read from environment variables
         self.chat_manager = ChatManager()
         self.compactor = MessageCompactor(config_manager=self.config)
@@ -919,11 +920,31 @@ class FlaskChatApp:
 
                     full_response = ""
                     stream_usage = None  # Capture real token usage from provider
+                    tool_events_log = []  # Persist tool events for reload
+                    working_texts = []   # Capture intermediate LLM text (working text)
                     max_overflow_retries = 2
                     for iteration in range(max_iterations):
                         # Rate-limit protection: pause between tool loop iterations
                         if iteration > 0:
                             time.sleep(2)
+                            # Slim messages: keep system + last user msg + tool pairs only
+                            # This dramatically reduces token count on iterations 1+
+                            slim_messages = []
+                            for m in api_messages:
+                                if m.get('role') == 'system':
+                                    slim_messages.append(m)
+                                else:
+                                    break
+                            last_user = None
+                            for m in api_messages:
+                                if m.get('role') == 'user':
+                                    last_user = m
+                            if last_user:
+                                slim_messages.append(last_user)
+                            for m in api_messages:
+                                if m.get('role') == 'tool' or m.get('tool_calls'):
+                                    slim_messages.append(m)
+                            api_messages = slim_messages
 
                         tool_calls_this_round = []
                         content_buffer = ""
@@ -964,6 +985,10 @@ class FlaskChatApp:
                             full_response = content_buffer
                             break  # No tools called — LLM gave final response
 
+                        # Capture intermediate text as working text
+                        if content_buffer and content_buffer.strip():
+                            working_texts.append(content_buffer.strip())
+
                         # Add assistant message with tool calls to history
                         assistant_msg = {'role': 'assistant', 'content': content_buffer or None}
                         if tool_calls_this_round:
@@ -980,12 +1005,19 @@ class FlaskChatApp:
 
                             # Yield tool start event
                             yield f"data: {json.dumps({'type':'tool_start', 'name': name, 'args': args})}\n\n"
+                            tool_events_log.append({'name': name, 'args': args, 'status': 'running', 'result': None})
 
                             # Execute with safety check
                             result = tool_registry.execute_tool(name, args, safety_mgr)
 
                             # Yield tool end event
                             yield f"data: {json.dumps({'type':'tool_end', 'name': name, 'result': result})}\n\n"
+                            # Update the matching log entry
+                            for te in reversed(tool_events_log):
+                                if te['name'] == name and te['status'] == 'running':
+                                    te['status'] = 'success' if result.get('success', True) else 'error'
+                                    te['result'] = result
+                                    break
 
                             # Add tool result to messages for next LLM call
                             # Budget: 30% of context window for tool results,
@@ -1007,10 +1039,15 @@ class FlaskChatApp:
 
                     if not self.temporary_mode and not self.incognito_mode:
                         self.chat_manager.add_message("assistant", full_response, model)
-                        # Store usage data on the message if available
-                        if stream_usage:
-                            msgs = self.chat_manager.current_chat.get("chat_history", [])
-                            if msgs:
+                        msgs = self.chat_manager.current_chat.get("chat_history", [])
+                        if msgs:
+                            # Persist tool events and working text for reload
+                            if tool_events_log:
+                                msgs[-1]["tool_events"] = tool_events_log
+                            if working_texts:
+                                msgs[-1]["workingText"] = "\n\n".join(working_texts)
+                            # Store usage data on the message if available
+                            if stream_usage:
                                 msgs[-1]["usage"] = {
                                     "input_tokens": stream_usage.get("input_tokens", 0),
                                     "output_tokens": stream_usage.get("output_tokens", 0),
@@ -1023,7 +1060,7 @@ class FlaskChatApp:
                                 )
                                 msgs[-1]["cost"] = msg_cost
                                 msgs[-1]["provider"] = provider
-                                self.chat_manager.save_current_chat()
+                            self.chat_manager.save_current_chat()
 
                     # --- Auto-title generation after first exchange ---
                     # Works for: new chats, branched chats, folder chats (all treated the same)
@@ -1786,6 +1823,23 @@ class FlaskChatApp:
             if url:
                 self.config.set("llamacpp_url", url)
                 self.config.save_config()
+            return jsonify({"success": True})
+
+        @app.route('/api/llamacpp/saved-urls', methods=['GET'])
+        def llamacpp_saved_urls_get():
+            """Get saved llama.cpp server URLs."""
+            return jsonify({
+                "success": True,
+                "saved_urls": self.config.get_llamacpp_saved_urls(),
+                "active_url": self.config.get_llamacpp_url(),
+            })
+
+        @app.route('/api/llamacpp/saved-urls', methods=['POST'])
+        def llamacpp_saved_urls_set():
+            """Save llama.cpp server URLs list."""
+            data = request.get_json() or {}
+            urls = data.get("saved_urls", [])
+            self.config.set_llamacpp_saved_urls(urls)
             return jsonify({"success": True})
 
         # --- Context: token summary (used by the context bar) ---

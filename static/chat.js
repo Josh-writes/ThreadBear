@@ -3447,42 +3447,151 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
       if (t) setTheme(t);
     } catch {}
 
-    // --- llama.cpp URL setting ---
+    // --- llama.cpp URL setting (multi-address dropdown) ---
+    const llamacppUrlSelect = $('llamacppUrlSelect');
     const llamacppUrlInput = $('llamacppUrlInput');
     const llamacppUrlSaveBtn = $('llamacppUrlSaveBtn');
+    const llamacppUrlAddBtn = $('llamacppUrlAddBtn');
+    const llamacppUrlRemoveBtn = $('llamacppUrlRemoveBtn');
     const llamacppUrlStatus = $('llamacppUrlStatus');
 
-    if (llamacppUrlInput) {
-      // Load URL when system settings panel opens
-      E.openAppearanceSettingsBtn.addEventListener('click', async () => {
-        try {
-          const resp = await fetch('/api/llamacpp/url');
-          const data = await resp.json();
-          if (data.success) {
-            llamacppUrlInput.value = data.llamacpp_url || '';
-          }
-        } catch (e) {
-          console.warn('Failed to load llama.cpp URL:', e);
+    let _llamacppSavedUrls = []; // local cache of saved URLs
+
+    function _flashStatus(msg) {
+      if (llamacppUrlStatus) {
+        llamacppUrlStatus.textContent = msg;
+        setTimeout(() => { llamacppUrlStatus.textContent = ''; }, 2000);
+      }
+    }
+
+    function _populateUrlDropdown(savedUrls, activeUrl) {
+      if (!llamacppUrlSelect) return;
+      _llamacppSavedUrls = savedUrls || [];
+      llamacppUrlSelect.innerHTML = '';
+      for (const entry of _llamacppSavedUrls) {
+        const opt = document.createElement('option');
+        opt.value = entry.url;
+        opt.textContent = `${entry.label} (${entry.url})`;
+        llamacppUrlSelect.appendChild(opt);
+      }
+      // Custom option always at the end
+      const customOpt = document.createElement('option');
+      customOpt.value = '__custom__';
+      customOpt.textContent = 'Custom...';
+      llamacppUrlSelect.appendChild(customOpt);
+
+      // Select matching entry or custom
+      const match = _llamacppSavedUrls.find(e => e.url === activeUrl);
+      if (match) {
+        llamacppUrlSelect.value = match.url;
+        llamacppUrlInput.value = match.url;
+        llamacppUrlInput.readOnly = true;
+      } else {
+        llamacppUrlSelect.value = '__custom__';
+        llamacppUrlInput.value = activeUrl || '';
+        llamacppUrlInput.readOnly = false;
+      }
+    }
+
+    async function _loadLlamacppUrls() {
+      try {
+        const resp = await fetch('/api/llamacpp/saved-urls');
+        const data = await resp.json();
+        if (data.success) {
+          _populateUrlDropdown(data.saved_urls, data.active_url);
+        }
+      } catch (e) {
+        console.warn('Failed to load llama.cpp URLs:', e);
+      }
+    }
+
+    async function _saveLlamacppUrlList() {
+      try {
+        await fetch('/api/llamacpp/saved-urls', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ saved_urls: _llamacppSavedUrls }),
+        });
+      } catch (e) {
+        console.error('Failed to save llama.cpp URL list:', e);
+      }
+    }
+
+    if (llamacppUrlSelect) {
+      // Load URLs when system settings panel opens
+      E.openAppearanceSettingsBtn.addEventListener('click', _loadLlamacppUrls);
+
+      // Dropdown change
+      llamacppUrlSelect.addEventListener('change', () => {
+        const val = llamacppUrlSelect.value;
+        if (val === '__custom__') {
+          llamacppUrlInput.value = '';
+          llamacppUrlInput.readOnly = false;
+          llamacppUrlInput.focus();
+        } else {
+          llamacppUrlInput.value = val;
+          llamacppUrlInput.readOnly = true;
         }
       });
 
+      // Use button — set active URL
       if (llamacppUrlSaveBtn) {
         llamacppUrlSaveBtn.addEventListener('click', async () => {
+          const url = llamacppUrlInput.value.trim();
+          if (!url) return;
           try {
             const resp = await fetch('/api/llamacpp/url', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ llamacpp_url: llamacppUrlInput.value.trim() }),
+              body: JSON.stringify({ llamacpp_url: url }),
             });
             const json = await resp.json();
-            if (llamacppUrlStatus) {
-              llamacppUrlStatus.textContent = json.success ? 'Saved' : 'Error';
-              setTimeout(() => { llamacppUrlStatus.textContent = ''; }, 2000);
-            }
+            _flashStatus(json.success ? 'Active' : 'Error');
           } catch (e) {
             console.error('Failed to save llama.cpp URL:', e);
-            if (llamacppUrlStatus) llamacppUrlStatus.textContent = 'Error';
+            _flashStatus('Error');
           }
+        });
+      }
+
+      // Add button — prompt for label, save to list
+      if (llamacppUrlAddBtn) {
+        llamacppUrlAddBtn.addEventListener('click', async () => {
+          const url = llamacppUrlInput.value.trim();
+          if (!url) { _flashStatus('Enter a URL first'); return; }
+          const label = prompt('Label for this address:', '');
+          if (label === null) return; // cancelled
+          const finalLabel = label.trim() || url;
+          // Check for duplicate URL
+          if (_llamacppSavedUrls.some(e => e.url === url)) {
+            _flashStatus('Already saved');
+            return;
+          }
+          _llamacppSavedUrls.push({ label: finalLabel, url });
+          await _saveLlamacppUrlList();
+          _populateUrlDropdown(_llamacppSavedUrls, url);
+          llamacppUrlSelect.value = url;
+          llamacppUrlInput.readOnly = true;
+          _flashStatus('Added');
+        });
+      }
+
+      // Remove button — remove selected entry
+      if (llamacppUrlRemoveBtn) {
+        llamacppUrlRemoveBtn.addEventListener('click', async () => {
+          const val = llamacppUrlSelect.value;
+          if (val === '__custom__') { _flashStatus('Nothing to remove'); return; }
+          _llamacppSavedUrls = _llamacppSavedUrls.filter(e => e.url !== val);
+          await _saveLlamacppUrlList();
+          // Re-fetch active URL to keep dropdown in sync
+          try {
+            const resp = await fetch('/api/llamacpp/url');
+            const data = await resp.json();
+            _populateUrlDropdown(_llamacppSavedUrls, data.success ? data.llamacpp_url : '');
+          } catch {
+            _populateUrlDropdown(_llamacppSavedUrls, '');
+          }
+          _flashStatus('Removed');
         });
       }
     }
