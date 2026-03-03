@@ -46,7 +46,7 @@ class ChatManager:
             "conversation_summary": "",
             "token_count": 0,
             "title": title,
-            "toolbelt": [],
+            "toolbelt": {},
         }
         self.current_chat_file = fn
         self.save_current_chat(force_save=True)
@@ -81,7 +81,20 @@ class ChatManager:
                 if "parent_chat_id" not in data:
                     data["parent_chat_id"] = ""
                 self.current_chat = data
-            self.current_chat.setdefault("toolbelt", [])
+            # Migrate toolbelt: list -> dict with permissive defaults
+            raw_tb = self.current_chat.get("toolbelt")
+            if isinstance(raw_tb, list):
+                migrated = {}
+                for item in raw_tb:
+                    if isinstance(item, str):
+                        migrated[item] = {
+                            "allow_env": [], "allow_paths": [],
+                            "allow_network": True, "allow_subprocess": True,
+                            "timeout": 60, "scanned": False, "scan_result": None,
+                        }
+                self.current_chat["toolbelt"] = migrated
+            elif not isinstance(raw_tb, dict):
+                self.current_chat["toolbelt"] = {}
             self.current_chat_file = filename
             return True
         except Exception as e:

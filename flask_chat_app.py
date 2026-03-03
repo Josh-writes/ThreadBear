@@ -63,6 +63,7 @@ from context_documents import (
 from readers import reader_registry
 from error_classifier import LLMApiError, classify_error, friendly_message, ErrorClass
 from content_security import wrap_external_content, truncate_head_tail
+from tools.script_sandbox import ScriptScanner, SandboxedRunner, default_permissions, permissive_defaults
 
 # =============================================================================
 # Request-context safety: per-request state with thread-safe access
@@ -1569,9 +1570,86 @@ class FlaskChatApp:
 
         # ---- Toolbelt (per-chat script runner) ----
 
+        _script_scanner = ScriptScanner()
+        _sandboxed_runner = SandboxedRunner()
+
+        def _normalize_toolbelt(raw):
+            """Convert list-format toolbelt to dict format."""
+            if isinstance(raw, list):
+                return {s: permissive_defaults() for s in raw if isinstance(s, str)}
+            if isinstance(raw, dict):
+                return raw
+            return {}
+
+        def _get_toolbelt_for_chat(chat_file):
+            """Get toolbelt dict for a chat, handling current vs on-disk."""
+            if self.chat_manager.current_chat_file == chat_file:
+                raw = self.chat_manager.current_chat.get("toolbelt", {})
+                return _normalize_toolbelt(raw)
+            chat_path = os.path.join(self.chat_manager.chats_directory, chat_file)
+            if not os.path.isfile(chat_path):
+                return None
+            try:
+                with open(chat_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                return _normalize_toolbelt(data.get("toolbelt", {}) if isinstance(data, dict) else {})
+            except Exception:
+                return {}
+
+        @app.route('/api/toolbelt/scan', methods=['POST'])
+        def scan_toolbelt_script():
+            """Scan a toolbox script for capabilities."""
+            body = request.get_json() or {}
+            script = body.get("script", "").strip()
+            if not script:
+                return jsonify({"success": False, "error": "Need script name"}), 400
+            script_path = os.path.join(TOOLBOX_DIR, script)
+            if not os.path.isfile(script_path):
+                return jsonify({"success": False, "error": f"Script '{script}' not found"}), 404
+            scan_result = _script_scanner.scan(script_path)
+            return jsonify({"success": True, "scan_result": scan_result})
+
+        @app.route('/api/toolbelt/permissions/<path:filename>', methods=['POST'])
+        def update_toolbelt_permissions(filename):
+            """Update permissions for a script in a chat's toolbelt."""
+            body = request.get_json() or {}
+            script = body.get("script", "").strip()
+            permissions = body.get("permissions", {})
+            if not script:
+                return jsonify({"success": False, "error": "Need script name"}), 400
+
+            if self.chat_manager.current_chat_file == filename:
+                tb = self.chat_manager.current_chat.setdefault("toolbelt", {})
+                tb = _normalize_toolbelt(tb)
+                self.chat_manager.current_chat["toolbelt"] = tb
+                if script not in tb:
+                    return jsonify({"success": False, "error": f"Script '{script}' not in toolbelt"}), 400
+                tb[script].update(permissions)
+                self.chat_manager.save_current_chat(force_save=True)
+                return jsonify({"success": True, "toolbelt": tb})
+
+            chat_path = os.path.join(self.chat_manager.chats_directory, filename)
+            if not os.path.isfile(chat_path):
+                return jsonify({"success": False, "error": "Chat not found"}), 404
+            try:
+                with open(chat_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if not isinstance(data, dict):
+                    return jsonify({"success": False, "error": "Invalid chat format"}), 400
+                tb = _normalize_toolbelt(data.get("toolbelt", {}))
+                data["toolbelt"] = tb
+                if script not in tb:
+                    return jsonify({"success": False, "error": f"Script '{script}' not in toolbelt"}), 400
+                tb[script].update(permissions)
+                with open(chat_path, "w", encoding="utf-8") as f:
+                    json.dump(data, f, indent=2, ensure_ascii=False)
+                return jsonify({"success": True, "toolbelt": tb})
+            except Exception as e:
+                return jsonify({"success": False, "error": str(e)}), 500
+
         @app.route('/api/toolbelt/run', methods=['POST'])
         def run_toolbelt_script():
-            """Execute a toolbelt script as a subprocess."""
+            """Execute a toolbelt script in a sandboxed subprocess."""
             body = request.get_json() or {}
             script = body.get("script", "").strip()
             chat_file = body.get("chat_file", "").strip()
@@ -1586,54 +1664,27 @@ class FlaskChatApp:
             if not os.path.isfile(chat_path):
                 return jsonify({"success": False, "error": f"Chat file '{chat_file}' not found"}), 404
 
-            # Verify script is in the chat's toolbelt
-            if self.chat_manager.current_chat_file == chat_file:
-                tb = self.chat_manager.current_chat.get("toolbelt", [])
-            else:
-                try:
-                    with open(chat_path, "r", encoding="utf-8") as f:
-                        data = json.load(f)
-                    tb = data.get("toolbelt", []) if isinstance(data, dict) else []
-                except Exception:
-                    tb = []
+            # Get toolbelt and verify script is assigned
+            tb = _get_toolbelt_for_chat(chat_file)
+            if tb is None:
+                return jsonify({"success": False, "error": "Chat not found"}), 404
             if script not in tb:
                 return jsonify({"success": False, "error": f"Script '{script}' is not in this chat's toolbelt"}), 400
 
-            # Run the script
+            # Run with sandbox
+            permissions = tb[script]
             project_root = os.path.dirname(os.path.abspath(__file__))
-            try:
-                result = subprocess.run(
-                    ["python", script_path, chat_path],
-                    capture_output=True, text=True,
-                    timeout=60, cwd=project_root,
-                )
-                return jsonify({
-                    "success": result.returncode == 0,
-                    "output": result.stdout,
-                    "error": result.stderr,
-                    "returncode": result.returncode,
-                })
-            except subprocess.TimeoutExpired:
-                return jsonify({"success": False, "error": "Script timed out (60s limit)"}), 504
-            except Exception as e:
-                return jsonify({"success": False, "error": str(e)}), 500
+            result = _sandboxed_runner.run(script_path, chat_path, permissions, project_root)
+            status_code = 200 if result["success"] else (504 if result["returncode"] == -1 else 200)
+            return jsonify(result), status_code
 
         @app.route('/api/toolbelt/<path:filename>', methods=['GET'])
         def get_toolbelt(filename):
             """Get the toolbelt (assigned scripts) for a chat."""
-            if self.chat_manager.current_chat_file == filename:
-                toolbelt = self.chat_manager.current_chat.get("toolbelt", [])
-                return jsonify({"success": True, "toolbelt": toolbelt})
-            chat_path = os.path.join(self.chat_manager.chats_directory, filename)
-            if not os.path.isfile(chat_path):
+            tb = _get_toolbelt_for_chat(filename)
+            if tb is None:
                 return jsonify({"success": False, "error": "Chat not found"}), 404
-            try:
-                with open(chat_path, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                toolbelt = data.get("toolbelt", []) if isinstance(data, dict) else []
-                return jsonify({"success": True, "toolbelt": toolbelt})
-            except Exception as e:
-                return jsonify({"success": False, "error": str(e)}), 500
+            return jsonify({"success": True, "toolbelt": tb})
 
         @app.route('/api/toolbelt/<path:filename>', methods=['POST'])
         def update_toolbelt(filename):
@@ -1643,18 +1694,26 @@ class FlaskChatApp:
             action = body.get("action", "")
             if not script or action not in ("add", "remove"):
                 return jsonify({"success": False, "error": "Need script and action (add/remove)"}), 400
+
             if action == "add":
                 script_path = os.path.join(TOOLBOX_DIR, script)
                 if not os.path.isfile(script_path):
                     return jsonify({"success": False, "error": f"Script '{script}' not found in toolbox"}), 404
+                # Auto-scan on add
+                scan_result = _script_scanner.scan(script_path)
+                perms = default_permissions(scan_result)
+
             if self.chat_manager.current_chat_file == filename:
-                tb = self.chat_manager.current_chat.setdefault("toolbelt", [])
-                if action == "add" and script not in tb:
-                    tb.append(script)
+                tb = self.chat_manager.current_chat.setdefault("toolbelt", {})
+                tb = _normalize_toolbelt(tb)
+                self.chat_manager.current_chat["toolbelt"] = tb
+                if action == "add":
+                    tb[script] = perms
                 elif action == "remove" and script in tb:
-                    tb.remove(script)
+                    del tb[script]
                 self.chat_manager.save_current_chat(force_save=True)
                 return jsonify({"success": True, "toolbelt": tb})
+
             chat_path = os.path.join(self.chat_manager.chats_directory, filename)
             if not os.path.isfile(chat_path):
                 return jsonify({"success": False, "error": "Chat not found"}), 404
@@ -1663,11 +1722,12 @@ class FlaskChatApp:
                     data = json.load(f)
                 if not isinstance(data, dict):
                     return jsonify({"success": False, "error": "Invalid chat format"}), 400
-                tb = data.setdefault("toolbelt", [])
-                if action == "add" and script not in tb:
-                    tb.append(script)
+                tb = _normalize_toolbelt(data.get("toolbelt", {}))
+                data["toolbelt"] = tb
+                if action == "add":
+                    tb[script] = perms
                 elif action == "remove" and script in tb:
-                    tb.remove(script)
+                    del tb[script]
                 with open(chat_path, "w", encoding="utf-8") as f:
                     json.dump(data, f, indent=2, ensure_ascii=False)
                 return jsonify({"success": True, "toolbelt": tb})

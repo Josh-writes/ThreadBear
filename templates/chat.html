@@ -802,6 +802,187 @@
             border-top: none;
         }
 
+        /* Permissions badge on toolbelt items */
+        .perm-badge {
+            display: inline-block;
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            margin-right: 2px;
+            flex-shrink: 0;
+        }
+        .perm-badge.safe { background: #22c55e; }
+        .perm-badge.warning { background: #eab308; }
+        .perm-badge.danger { background: #ef4444; }
+        .perm-badge.unscanned { background: #888; }
+        .perm-btn {
+            background: none;
+            border: none;
+            cursor: pointer;
+            font-size: 13px;
+            padding: 0 2px;
+            color: #888;
+            line-height: 1;
+        }
+        .perm-btn:hover { color: var(--text-primary); }
+
+        /* Permissions dialog */
+        .permissions-overlay {
+            display: none;
+            position: fixed;
+            top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0,0,0,0.5);
+            z-index: 1100;
+            justify-content: center;
+            align-items: center;
+        }
+        .permissions-overlay.open {
+            display: flex;
+        }
+        .permissions-dialog {
+            background: var(--bg-primary);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            width: 520px;
+            max-height: 80vh;
+            overflow-y: auto;
+            padding: 24px;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.3);
+        }
+        .permissions-dialog h3 {
+            margin: 0 0 6px 0;
+            font-size: 16px;
+        }
+        .permissions-dialog .perm-script-name {
+            font-family: monospace;
+            font-size: 13px;
+            color: #888;
+            margin-bottom: 16px;
+        }
+        .perm-section {
+            margin-bottom: 14px;
+        }
+        .perm-section label {
+            display: block;
+            font-size: 12px;
+            font-weight: 600;
+            margin-bottom: 4px;
+            color: var(--text-secondary);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        .perm-scan-results {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            padding: 10px;
+            font-size: 12px;
+            max-height: 150px;
+            overflow-y: auto;
+        }
+        .perm-scan-item {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            padding: 3px 0;
+        }
+        .perm-scan-item .cap-name {
+            font-weight: 600;
+            min-width: 80px;
+        }
+        .perm-scan-item .cap-evidence {
+            color: #888;
+            font-family: monospace;
+            font-size: 11px;
+        }
+        .perm-tags {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 4px;
+            margin-top: 4px;
+        }
+        .perm-tag {
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            padding: 2px 8px;
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            font-size: 11px;
+            font-family: monospace;
+        }
+        .perm-tag .tag-remove {
+            cursor: pointer;
+            color: #999;
+            font-size: 13px;
+            line-height: 1;
+        }
+        .perm-tag .tag-remove:hover { color: #dc3545; }
+        .perm-tag-input {
+            border: 1px solid var(--border-color);
+            background: var(--bg-secondary);
+            color: var(--text-primary);
+            border-radius: 4px;
+            padding: 4px 8px;
+            font-size: 12px;
+            font-family: monospace;
+            width: 200px;
+        }
+        .perm-toggle-row {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 4px 0;
+        }
+        .perm-toggle-row input[type="checkbox"] {
+            margin: 0;
+        }
+        .perm-toggle-row .toggle-label {
+            font-size: 13px;
+        }
+        .perm-toggle-row .toggle-warn {
+            font-size: 11px;
+            color: #eab308;
+            margin-left: auto;
+        }
+        .perm-timeout-input {
+            border: 1px solid var(--border-color);
+            background: var(--bg-secondary);
+            color: var(--text-primary);
+            border-radius: 4px;
+            padding: 4px 8px;
+            font-size: 12px;
+            width: 80px;
+        }
+        .perm-dialog-actions {
+            display: flex;
+            gap: 8px;
+            justify-content: flex-end;
+            margin-top: 18px;
+        }
+        .perm-dialog-actions button {
+            padding: 6px 16px;
+            border-radius: 6px;
+            border: 1px solid var(--border-color);
+            cursor: pointer;
+            font-size: 13px;
+        }
+        .perm-dialog-actions .perm-save-btn {
+            background: #10a37f;
+            color: white;
+            border: none;
+        }
+        .perm-dialog-actions .perm-save-btn:hover { background: #0d8c6d; }
+        .perm-dialog-actions .perm-rescan-btn {
+            background: var(--bg-secondary);
+            color: var(--text-primary);
+        }
+        .perm-dialog-actions .perm-close-btn {
+            background: none;
+            color: var(--text-secondary);
+        }
+
         /* Document Attachments Bar */
         .document-attachments-bar {
             background: #f8f9fa;
@@ -3033,6 +3214,60 @@
 
     <!-- Overlay for click-outside-to-close settings panels -->
     <div class="settings-overlay" id="settingsOverlay"></div>
+
+    <!-- Permissions dialog overlay -->
+    <div class="permissions-overlay" id="permissionsOverlay">
+        <div class="permissions-dialog">
+            <h3>Script Permissions</h3>
+            <div class="perm-script-name" id="permScriptName"></div>
+
+            <div class="perm-section">
+                <label>Scan Results</label>
+                <div class="perm-scan-results" id="permScanResults">
+                    <em style="color:#888">Not scanned yet</em>
+                </div>
+            </div>
+
+            <div class="perm-section">
+                <label>Allowed Environment Variables</label>
+                <input type="text" class="perm-tag-input" id="permEnvInput"
+                       placeholder="Type var name, press Enter">
+                <div class="perm-tags" id="permEnvTags"></div>
+            </div>
+
+            <div class="perm-section">
+                <label>Allowed Paths (advisory)</label>
+                <input type="text" class="perm-tag-input" id="permPathInput"
+                       placeholder="Type path, press Enter" style="width:300px">
+                <div class="perm-tags" id="permPathTags"></div>
+            </div>
+
+            <div class="perm-section">
+                <div class="perm-toggle-row">
+                    <input type="checkbox" id="permNetwork">
+                    <span class="toggle-label">Allow network access</span>
+                    <span class="toggle-warn">(advisory)</span>
+                </div>
+                <div class="perm-toggle-row">
+                    <input type="checkbox" id="permSubprocess">
+                    <span class="toggle-label">Allow subprocess execution</span>
+                    <span class="toggle-warn">(advisory)</span>
+                </div>
+            </div>
+
+            <div class="perm-section">
+                <label>Timeout (seconds)</label>
+                <input type="number" class="perm-timeout-input" id="permTimeout"
+                       min="5" max="600" value="60">
+            </div>
+
+            <div class="perm-dialog-actions">
+                <button class="perm-rescan-btn" id="permRescan">Rescan</button>
+                <button class="perm-close-btn" id="permClose">Cancel</button>
+                <button class="perm-save-btn" id="permSave">Save</button>
+            </div>
+        </div>
+    </div>
 
     <!-- Model Settings Panel -->
     <div class="settings-panel" id="settingsPanel">

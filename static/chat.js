@@ -53,7 +53,7 @@
 
     // toolbelt
     toolbeltOpen: false,
-    toolbelt: [],
+    toolbelt: {},
 
     // folders
     folders: [],
@@ -132,6 +132,20 @@
     toolbeltList: $('toolbeltList'),
     toolbeltAddBtn: $('toolbeltAddBtn'),
     toolboxAssignToChat: $('toolboxAssignToChat'),
+    // Permissions dialog
+    permissionsOverlay: $('permissionsOverlay'),
+    permScriptName: $('permScriptName'),
+    permScanResults: $('permScanResults'),
+    permEnvInput: $('permEnvInput'),
+    permEnvTags: $('permEnvTags'),
+    permPathInput: $('permPathInput'),
+    permPathTags: $('permPathTags'),
+    permNetwork: $('permNetwork'),
+    permSubprocess: $('permSubprocess'),
+    permTimeout: $('permTimeout'),
+    permRescan: $('permRescan'),
+    permSave: $('permSave'),
+    permClose: $('permClose'),
 
     // Messages
     messages: $('messages'),
@@ -4079,34 +4093,46 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
 
   // ====== Toolbelt ======
   async function loadToolbelt() {
-    if (!state.currentChatFile) { state.toolbelt = []; renderToolbelt(); return; }
+    if (!state.currentChatFile) { state.toolbelt = {}; renderToolbelt(); return; }
     try {
       const js = await getJSON(`/api/toolbelt/${encodeURIComponent(state.currentChatFile)}`);
-      state.toolbelt = js.success ? (js.toolbelt || []) : [];
-    } catch { state.toolbelt = []; }
+      state.toolbelt = js.success ? (js.toolbelt || {}) : {};
+    } catch { state.toolbelt = {}; }
     renderToolbelt();
+  }
+
+  function riskBadgeClass(perms) {
+    if (!perms || !perms.scanned) return 'unscanned';
+    const sr = perms.scan_result;
+    return sr ? sr.risk_level : 'unscanned';
   }
 
   function renderToolbelt() {
     if (!E.toolbeltList) return;
-    if (state.toolbelt.length === 0) {
+    const entries = Object.entries(state.toolbelt);
+    if (entries.length === 0) {
       E.toolbeltList.innerHTML = '<span class="toolbelt-empty">No scripts assigned. Click + Add Script.</span>';
       return;
     }
-    E.toolbeltList.innerHTML = state.toolbelt.map(s => `
+    E.toolbeltList.innerHTML = entries.map(([name, perms]) => {
+      const badge = riskBadgeClass(perms);
+      return `
       <div class="toolbelt-item">
-        <span class="script-name">${s}</span>
-        <button class="run-btn" data-script="${s}">&#9654; Run</button>
-        <button class="remove-btn" data-script="${s}" title="Remove">&times;</button>
-      </div>
-    `).join('');
-    // Bind run buttons
+        <span class="perm-badge ${badge}" title="${badge}"></span>
+        <span class="script-name">${escapeHTML(name)}</span>
+        <button class="perm-btn" data-script="${escapeHTML(name)}" title="Permissions">&#9881;</button>
+        <button class="run-btn" data-script="${escapeHTML(name)}">&#9654; Run</button>
+        <button class="remove-btn" data-script="${escapeHTML(name)}" title="Remove">&times;</button>
+      </div>`;
+    }).join('');
     E.toolbeltList.querySelectorAll('.run-btn').forEach(btn => {
       btn.addEventListener('click', () => runToolbeltScript(btn.dataset.script, btn));
     });
-    // Bind remove buttons
     E.toolbeltList.querySelectorAll('.remove-btn').forEach(btn => {
       btn.addEventListener('click', () => removeFromToolbelt(btn.dataset.script));
+    });
+    E.toolbeltList.querySelectorAll('.perm-btn').forEach(btn => {
+      btn.addEventListener('click', () => openPermissionsDialog(btn.dataset.script));
     });
   }
 
@@ -4114,9 +4140,13 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
     const js = await postJSON(`/api/toolbelt/${encodeURIComponent(state.currentChatFile)}`, {
       script: scriptName, action: 'add'
     });
-    if (js.success) { state.toolbelt = js.toolbelt; renderToolbelt(); }
-    else alert(js.error || 'Failed to add script');
-    E.toolbeltAddMenu.style.display = 'none';
+    if (js.success) {
+      state.toolbelt = js.toolbelt;
+      renderToolbelt();
+      openPermissionsDialog(scriptName);
+    } else {
+      alert(js.error || 'Failed to add script');
+    }
   }
 
   async function removeFromToolbelt(scriptName) {
@@ -4138,6 +4168,118 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
       showToolbeltResult(scriptName, { success: false, error: String(e) });
     }
     if (btn) { btn.disabled = false; btn.innerHTML = '&#9654; Run'; }
+  }
+
+  // ---- Permissions dialog ----
+  let _permCurrentScript = '';
+  let _permEnvList = [];
+  let _permPathList = [];
+
+  function openPermissionsDialog(scriptName) {
+    _permCurrentScript = scriptName;
+    const perms = state.toolbelt[scriptName] || {};
+    E.permScriptName.textContent = scriptName;
+
+    // Populate scan results
+    if (perms.scanned && perms.scan_result) {
+      renderScanResults(perms.scan_result);
+    } else {
+      E.permScanResults.innerHTML = '<em style="color:#888">Not scanned yet. Click Rescan.</em>';
+    }
+
+    // Populate fields
+    _permEnvList = [...(perms.allow_env || [])];
+    _permPathList = [...(perms.allow_paths || [])];
+    renderPermTags(E.permEnvTags, _permEnvList);
+    renderPermTags(E.permPathTags, _permPathList);
+    E.permNetwork.checked = perms.allow_network !== false;
+    E.permSubprocess.checked = perms.allow_subprocess !== false;
+    E.permTimeout.value = perms.timeout || 60;
+
+    E.permissionsOverlay.classList.add('open');
+  }
+
+  function closePermissionsDialog() {
+    E.permissionsOverlay.classList.remove('open');
+    _permCurrentScript = '';
+  }
+
+  function renderScanResults(sr) {
+    if (!sr || !sr.details || sr.details.length === 0) {
+      E.permScanResults.innerHTML = '<em style="color:#22c55e">No capabilities detected (safe)</em>';
+      return;
+    }
+    E.permScanResults.innerHTML = sr.details.map(d => `
+      <div class="perm-scan-item">
+        <span class="perm-badge ${d.capability === 'dangerous' ? 'danger' : 'warning'}"></span>
+        <span class="cap-name">${escapeHTML(d.capability)}</span>
+        <span class="cap-evidence">${escapeHTML(d.evidence)}</span>
+      </div>
+    `).join('');
+  }
+
+  function renderPermTags(container, values) {
+    container.innerHTML = values.map((v, i) => `
+      <span class="perm-tag">${escapeHTML(v)}<span class="tag-remove" data-idx="${i}">&times;</span></span>
+    `).join('');
+    container.querySelectorAll('.tag-remove').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const idx = parseInt(btn.dataset.idx);
+        values.splice(idx, 1);
+        renderPermTags(container, values);
+      });
+    });
+  }
+
+  function addPermTag(input, container, arr) {
+    const val = input.value.trim();
+    if (val && !arr.includes(val)) {
+      arr.push(val);
+      renderPermTags(container, arr);
+    }
+    input.value = '';
+  }
+
+  async function savePermissions() {
+    if (!_permCurrentScript || !state.currentChatFile) return;
+    const permissions = {
+      allow_env: [..._permEnvList],
+      allow_paths: [..._permPathList],
+      allow_network: E.permNetwork.checked,
+      allow_subprocess: E.permSubprocess.checked,
+      timeout: parseInt(E.permTimeout.value) || 60,
+    };
+    const js = await postJSON(`/api/toolbelt/permissions/${encodeURIComponent(state.currentChatFile)}`, {
+      script: _permCurrentScript, permissions
+    });
+    if (js.success) {
+      state.toolbelt = js.toolbelt;
+      renderToolbelt();
+      closePermissionsDialog();
+    } else {
+      alert(js.error || 'Failed to save permissions');
+    }
+  }
+
+  async function rescanScript() {
+    if (!_permCurrentScript) return;
+    const js = await postJSON('/api/toolbelt/scan', { script: _permCurrentScript });
+    if (js.success && js.scan_result) {
+      renderScanResults(js.scan_result);
+      // Update local state with scan result
+      if (state.toolbelt[_permCurrentScript]) {
+        state.toolbelt[_permCurrentScript].scanned = true;
+        state.toolbelt[_permCurrentScript].scan_result = js.scan_result;
+        // Suggest env vars from scan
+        const detected = js.scan_result.env_vars || [];
+        for (const v of detected) {
+          if (!_permEnvList.includes(v)) _permEnvList.push(v);
+        }
+        renderPermTags(E.permEnvTags, _permEnvList);
+      }
+    } else {
+      alert(js.error || 'Scan failed');
+    }
   }
 
   function escapeHTML(str) {
@@ -4207,6 +4349,25 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
         const name = state.toolboxTarget;
         if (!name || !state.currentChatFile) return;
         await addToToolbelt(name);
+      });
+    }
+    // Permissions dialog bindings
+    if (E.permClose) E.permClose.addEventListener('click', closePermissionsDialog);
+    if (E.permSave) E.permSave.addEventListener('click', savePermissions);
+    if (E.permRescan) E.permRescan.addEventListener('click', rescanScript);
+    if (E.permissionsOverlay) {
+      E.permissionsOverlay.addEventListener('click', (e) => {
+        if (e.target === E.permissionsOverlay) closePermissionsDialog();
+      });
+    }
+    if (E.permEnvInput) {
+      E.permEnvInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') { e.preventDefault(); addPermTag(E.permEnvInput, E.permEnvTags, _permEnvList); }
+      });
+    }
+    if (E.permPathInput) {
+      E.permPathInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') { e.preventDefault(); addPermTag(E.permPathInput, E.permPathTags, _permPathList); }
       });
     }
   }
