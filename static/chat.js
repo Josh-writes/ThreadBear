@@ -131,7 +131,7 @@
     toolbeltControls: $('toolbeltControls'),
     toolbeltList: $('toolbeltList'),
     toolbeltAddBtn: $('toolbeltAddBtn'),
-    toolbeltAddMenu: $('toolbeltAddMenu'),
+    toolboxAssignToChat: $('toolboxAssignToChat'),
 
     // Messages
     messages: $('messages'),
@@ -191,6 +191,7 @@
     openToolsSettingsBtn: $('openToolsSettingsBtn'),
     toolOsSelect: $('toolOsSelect'),
     toolsEnabledCheckbox: $('toolsEnabledCheckbox'),
+    preferredEditorSelect: $('preferredEditorSelect'),
     toolsProviderHint: $('toolsProviderHint'),
     toolsStatus: $('toolsStatus'),
     toolsToggle: $('toolsToggle'),
@@ -200,6 +201,8 @@
     toolboxContextMenu: $('toolboxContextMenu'),
     toolboxCopyContents: $('toolboxCopyContents'),
     toolboxOpenNotepad: $('toolboxOpenNotepad'),
+    toolboxOpenExplorer: $('toolboxOpenExplorer'),
+    toolboxCopyPath: $('toolboxCopyPath'),
     toolboxEditInChat: $('toolboxEditInChat'),
     toolboxDeleteFile: $('toolboxDeleteFile'),
 
@@ -2973,6 +2976,7 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
       openSettingsPanel(E.toolsSettingsPanel);
       updateToolsUI();
       loadToolbox();
+      loadEditorConfig();
     });
 
     E.closeToolsSettingsBtn.addEventListener('click', () => closeAllSettingsPanels());
@@ -3920,6 +3924,32 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
     });
   }
 
+  if (E.toolboxOpenExplorer) {
+    E.toolboxOpenExplorer.addEventListener('click', async () => {
+      E.toolboxContextMenu.style.display = 'none';
+      const name = state.toolboxTarget;
+      if (!name) return;
+      try {
+        await fetch('/api/toolbox/explore/' + encodeURIComponent(name), { method: 'POST' });
+      } catch (e) { console.warn('Open in explorer failed:', e); }
+    });
+  }
+
+  if (E.toolboxCopyPath) {
+    E.toolboxCopyPath.addEventListener('click', async () => {
+      E.toolboxContextMenu.style.display = 'none';
+      const name = state.toolboxTarget;
+      if (!name) return;
+      try {
+        const res = await fetch('/api/toolbox/path/' + encodeURIComponent(name));
+        const data = await res.json();
+        if (data.success) {
+          await navigator.clipboard.writeText(data.path);
+        }
+      } catch (e) { console.warn('Copy path failed:', e); }
+    });
+  }
+
   if (E.toolboxEditInChat) {
     E.toolboxEditInChat.addEventListener('click', async () => {
       E.toolboxContextMenu.style.display = 'none';
@@ -3995,6 +4025,51 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
       } catch (e) {
         console.error('Failed to save OS setting:', e);
       }
+    });
+  }
+
+  // ====== Editor preference ======
+  async function loadEditorConfig() {
+    if (!E.preferredEditorSelect) return;
+    try {
+      const res = await fetch('/api/config/editor');
+      const data = await res.json();
+      if (!data.success) return;
+      E.preferredEditorSelect.innerHTML = data.editors.map(e =>
+        `<option value="${e.id}" ${!e.available ? 'disabled' : ''}>${e.name}${e.available ? '' : ' (not found)'}</option>`
+      ).join('') + '<option value="__custom">Custom...</option>';
+      E.preferredEditorSelect.value = data.preferred;
+      // If preferred isn't in list, it's a custom command
+      if (E.preferredEditorSelect.value !== data.preferred) {
+        const opt = document.createElement('option');
+        opt.value = data.preferred;
+        opt.textContent = data.preferred;
+        E.preferredEditorSelect.insertBefore(opt, E.preferredEditorSelect.lastChild);
+        E.preferredEditorSelect.value = data.preferred;
+      }
+    } catch (e) { console.warn('Failed to load editor config:', e); }
+  }
+
+  if (E.preferredEditorSelect) {
+    E.preferredEditorSelect.addEventListener('change', async () => {
+      let value = E.preferredEditorSelect.value;
+      if (value === '__custom') {
+        const cmd = prompt('Enter the editor command (e.g., vim, gedit, code):');
+        if (!cmd) { loadEditorConfig(); return; }
+        value = cmd.trim();
+        const opt = document.createElement('option');
+        opt.value = value;
+        opt.textContent = value;
+        E.preferredEditorSelect.insertBefore(opt, E.preferredEditorSelect.lastChild);
+        E.preferredEditorSelect.value = value;
+      }
+      try {
+        await fetch('/api/config/editor', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ editor: value }),
+        });
+      } catch (e) { console.warn('Failed to save editor pref:', e); }
     });
   }
 
@@ -4088,49 +4163,28 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
     container.scrollTop = container.scrollHeight;
   }
 
-  async function showToolbeltAddMenu() {
-    try {
-      const js = await getJSON('/api/toolbox/files');
-      const files = (js.files || []).map(f => f.name);
-      const available = files.filter(f => !state.toolbelt.includes(f));
-      if (available.length === 0) {
-        E.toolbeltAddMenu.innerHTML = '<div class="add-menu-empty">No scripts available</div>';
-      } else {
-        E.toolbeltAddMenu.innerHTML = available.map(f =>
-          `<div class="add-menu-item" data-script="${f}">${f}</div>`
-        ).join('');
-        E.toolbeltAddMenu.querySelectorAll('.add-menu-item').forEach(item => {
-          item.addEventListener('click', () => addToToolbelt(item.dataset.script));
-        });
-      }
-      E.toolbeltAddMenu.style.display = 'block';
-    } catch (e) {
-      alert('Failed to load toolbox files: ' + String(e));
-    }
-  }
-
   function bindToolbelt() {
     if (!E.toolbeltBtn) return;
     E.toolbeltBtn.addEventListener('click', () => {
       state.toolbeltOpen = !state.toolbeltOpen;
       E.toolbeltControls.style.display = state.toolbeltOpen ? 'flex' : 'none';
       if (state.toolbeltOpen) loadToolbelt();
-      E.toolbeltAddMenu.style.display = 'none';
     });
-    E.toolbeltAddBtn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      if (E.toolbeltAddMenu.style.display === 'block') {
-        E.toolbeltAddMenu.style.display = 'none';
-      } else {
-        showToolbeltAddMenu();
-      }
+    // "+ Tool" opens the tools settings panel (which contains the toolbox)
+    E.toolbeltAddBtn.addEventListener('click', () => {
+      openSettingsPanel(E.toolsSettingsPanel);
+      loadToolbox();
+      loadEditorConfig();
     });
-    // Close add menu when clicking outside
-    document.addEventListener('click', (e) => {
-      if (!E.toolbeltAddMenu.contains(e.target) && e.target !== E.toolbeltAddBtn) {
-        E.toolbeltAddMenu.style.display = 'none';
-      }
-    });
+    // "Assign to Chat" in toolbox context menu
+    if (E.toolboxAssignToChat) {
+      E.toolboxAssignToChat.addEventListener('click', async () => {
+        E.toolboxContextMenu.style.display = 'none';
+        const name = state.toolboxTarget;
+        if (!name || !state.currentChatFile) return;
+        await addToToolbelt(name);
+      });
+    }
   }
   bindToolbelt();
 

@@ -748,34 +748,6 @@
             font-style: italic;
             font-size: 12px;
         }
-        .toolbelt-add-menu {
-            position: absolute;
-            bottom: 100%;
-            right: 0;
-            background: var(--bg-primary);
-            border: 1px solid var(--border-color);
-            border-radius: 6px;
-            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
-            min-width: 200px;
-            max-height: 200px;
-            overflow-y: auto;
-            z-index: 100;
-        }
-        .toolbelt-add-menu .add-menu-item {
-            padding: 6px 12px;
-            cursor: pointer;
-            font-size: 12px;
-            font-family: monospace;
-        }
-        .toolbelt-add-menu .add-menu-item:hover {
-            background: var(--bg-secondary);
-        }
-        .toolbelt-add-menu .add-menu-empty {
-            padding: 8px 12px;
-            color: #888;
-            font-style: italic;
-            font-size: 12px;
-        }
         .toolbelt-result {
             margin: 8px 24px;
             border: 1px solid var(--border-color);
@@ -2960,11 +2932,8 @@
                 <div class="toolbelt-list" id="toolbeltList">
                     <!-- Rendered by JS -->
                 </div>
-                <div class="toolbelt-actions" style="position: relative;">
-                    <button class="context-action-btn" id="toolbeltAddBtn">+ Add Script</button>
-                    <div class="toolbelt-add-menu" id="toolbeltAddMenu" style="display: none;">
-                        <!-- Rendered by JS -->
-                    </div>
+                <div class="toolbelt-actions">
+                    <button class="context-action-btn" id="toolbeltAddBtn">+ Tool</button>
                 </div>
             </div>
 
@@ -3015,8 +2984,12 @@
                             <span class="tools-toggle-icon">🔧</span>
                             <span class="tools-toggle-label" id="toolsToggleLabel">Tools</span>
                         </div>
-                        <button class="control-btn input-context-btn" id="contextSelectionBtn">Select Context</button>
-                        <button class="control-btn input-context-btn" id="toolbeltBtn">Toolbelt</button>
+                        <div class="tools-toggle" id="contextSelectionBtn">
+                            <span class="tools-toggle-label">Select Context</span>
+                        </div>
+                        <div class="tools-toggle" id="toolbeltBtn">
+                            <span class="tools-toggle-label">Toolbelt</span>
+                        </div>
                         <div class="input-field-wrap">
                             <textarea
                                 class="message-input"
@@ -3269,6 +3242,18 @@
                 </div>
                 <p style="font-size: 11px; color: var(--text-muted); margin-top: 4px;">
                     Tells the model which OS commands to use (e.g. PowerShell vs Bash).
+                </p>
+            </div>
+
+            <div class="settings-section">
+                <div class="setting-group" style="display: flex; align-items: center; gap: 10px;">
+                    <label class="setting-label" style="margin: 0; flex-shrink: 0;">Editor</label>
+                    <select id="preferredEditorSelect" style="padding: 4px 8px; border: 1px solid var(--border-color); border-radius: 4px; background: var(--bg-secondary); color: var(--text-primary); font-size: 13px; flex: 1;">
+                        <!-- Populated by JS -->
+                    </select>
+                </div>
+                <p style="font-size: 11px; color: var(--text-muted); margin-top: 4px;">
+                    Used for "Open in Editor" in the toolbox context menu.
                 </p>
             </div>
 
@@ -3546,13 +3531,26 @@
 
     <!-- Toolbox context menu -->
     <div class="context-menu" id="toolboxContextMenu">
+        <div class="context-menu-item" id="toolboxAssignToChat">
+            <span>🔗</span>
+            <span>Assign to Chat</span>
+        </div>
+        <div class="context-menu-separator"></div>
         <div class="context-menu-item" id="toolboxCopyContents">
             <span>📋</span>
             <span>Copy Contents</span>
         </div>
         <div class="context-menu-item" id="toolboxOpenNotepad">
             <span>📝</span>
-            <span>Open in Notepad++</span>
+            <span>Open in Editor</span>
+        </div>
+        <div class="context-menu-item" id="toolboxOpenExplorer">
+            <span>📂</span>
+            <span>Open in File Explorer</span>
+        </div>
+        <div class="context-menu-item" id="toolboxCopyPath">
+            <span>📎</span>
+            <span>Copy as Path</span>
         </div>
         <div class="context-menu-item" id="toolboxEditInChat">
             <span>💬</span>

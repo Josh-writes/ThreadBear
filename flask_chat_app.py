@@ -12,6 +12,7 @@ except ImportError:
     pass
 
 import json
+import shutil
 import sqlite3
 import subprocess
 import threading
@@ -1408,6 +1409,40 @@ class FlaskChatApp:
             self.config.save_config()
             return jsonify({"success": True})
 
+        # ---- Editor preference ----
+
+        KNOWN_EDITORS = [
+            {"id": "code", "name": "VS Code", "cmd": "code"},
+            {"id": "notepad++", "name": "Notepad++", "cmd": "notepad++.exe"},
+            {"id": "sublime", "name": "Sublime Text", "cmd": "sublime_text.exe"},
+            {"id": "notepad", "name": "Notepad", "cmd": "notepad.exe"},
+        ]
+
+        @app.route('/api/config/editor', methods=['GET'])
+        def get_editor_config():
+            """Return available editors and the current preference."""
+            available = []
+            for ed in KNOWN_EDITORS:
+                found = shutil.which(ed["cmd"]) is not None
+                available.append({**ed, "available": found})
+            current = self.config.get("preferred_editor", "")
+            # If no preference set, default to first available
+            if not current:
+                first = next((e["id"] for e in available if e["available"]), "notepad")
+                current = first
+            return jsonify({"success": True, "editors": available, "preferred": current})
+
+        @app.route('/api/config/editor', methods=['POST'])
+        def set_editor_config():
+            """Set the preferred editor (id or custom command)."""
+            data = request.get_json() or {}
+            editor = data.get("editor", "").strip()
+            if not editor:
+                return jsonify({"success": False, "error": "No editor specified"}), 400
+            self.config.set("preferred_editor", editor)
+            self.config.save_config()
+            return jsonify({"success": True, "preferred": editor})
+
         # ---- Toolbox file management ----
 
         TOOLBOX_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'toolbox')
@@ -1457,19 +1492,48 @@ class FlaskChatApp:
 
         @app.route('/api/toolbox/open/<path:filename>', methods=['POST'])
         def open_toolbox_file(filename):
-            """Open a toolbox file in Notepad++."""
+            """Open a toolbox file in the user's preferred editor."""
+            fpath = os.path.join(TOOLBOX_DIR, filename)
+            if not os.path.isfile(fpath):
+                return jsonify({"success": False, "error": "File not found"}), 404
+            pref = self.config.get("preferred_editor", "")
+            # Resolve the command from known editors or use as custom command
+            cmd = None
+            for ed in KNOWN_EDITORS:
+                if ed["id"] == pref:
+                    cmd = ed["cmd"]
+                    break
+            if not cmd:
+                cmd = pref or "notepad.exe"
+            try:
+                subprocess.Popen([cmd, os.path.abspath(fpath)])
+                return jsonify({"success": True})
+            except FileNotFoundError:
+                subprocess.Popen(['notepad.exe', os.path.abspath(fpath)])
+                return jsonify({"success": True, "fallback": "notepad"})
+            except Exception as e:
+                return jsonify({"success": False, "error": str(e)}), 500
+
+        @app.route('/api/toolbox/explore/<path:filename>', methods=['POST'])
+        def explore_toolbox_file(filename):
+            """Open File Explorer with the toolbox file selected."""
             fpath = os.path.join(TOOLBOX_DIR, filename)
             if not os.path.isfile(fpath):
                 return jsonify({"success": False, "error": "File not found"}), 404
             try:
-                subprocess.Popen(['notepad++.exe', fpath])
+                abs_path = os.path.abspath(fpath)
+                subprocess.Popen(['explorer', '/select,', abs_path])
                 return jsonify({"success": True})
-            except FileNotFoundError:
-                # Fallback to regular notepad
-                subprocess.Popen(['notepad.exe', fpath])
-                return jsonify({"success": True, "fallback": "notepad"})
             except Exception as e:
                 return jsonify({"success": False, "error": str(e)}), 500
+
+        @app.route('/api/toolbox/path/<path:filename>', methods=['GET'])
+        def get_toolbox_path(filename):
+            """Return the absolute path of a toolbox file."""
+            fpath = os.path.join(TOOLBOX_DIR, filename)
+            if not os.path.isfile(fpath):
+                return jsonify({"success": False, "error": "File not found"}), 404
+            return jsonify({"success": True, "path": os.path.abspath(fpath)})
 
         # ---- Toolbelt (per-chat script runner) ----
 
