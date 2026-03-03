@@ -749,40 +749,57 @@
             font-size: 12px;
         }
         .toolbelt-result {
-            margin: 8px 24px;
+            margin: 12px 24px;
             border: 1px solid var(--border-color);
             border-radius: 8px;
             overflow: hidden;
             font-size: 13px;
+            box-shadow: 0 1px 4px rgba(0,0,0,0.08);
         }
         .toolbelt-result-header {
             display: flex;
             justify-content: space-between;
             align-items: center;
-            padding: 6px 12px;
+            padding: 8px 14px;
             background: var(--bg-secondary);
+            border-bottom: 1px solid var(--border-color);
             cursor: pointer;
+            user-select: none;
+        }
+        .toolbelt-result-header:hover {
+            background: var(--bg-primary);
         }
         .toolbelt-result-header .script-label {
             font-family: monospace;
-            font-weight: 500;
+            font-weight: 600;
+            font-size: 13px;
         }
         .toolbelt-result-status {
             font-size: 11px;
-            padding: 2px 6px;
+            padding: 2px 8px;
             border-radius: 4px;
+            font-weight: 500;
         }
-        .toolbelt-result-status.success { color: #10a37f; }
-        .toolbelt-result-status.error { color: #dc3545; }
+        .toolbelt-result-status.success {
+            color: #10a37f;
+            background: rgba(16,163,127,0.1);
+        }
+        .toolbelt-result-status.error {
+            color: #dc3545;
+            background: rgba(220,53,69,0.1);
+        }
         .toolbelt-result-output {
-            padding: 8px 12px;
+            padding: 12px 14px;
             margin: 0;
             font-size: 12px;
+            font-family: monospace;
+            line-height: 1.5;
             white-space: pre-wrap;
             word-break: break-word;
             max-height: 300px;
             overflow-y: auto;
             background: var(--bg-primary);
+            border-top: none;
         }
 
         /* Document Attachments Bar */

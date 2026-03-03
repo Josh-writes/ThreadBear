@@ -4140,18 +4140,42 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
     if (btn) { btn.disabled = false; btn.innerHTML = '&#9654; Run'; }
   }
 
+  function escapeHTML(str) {
+    const d = document.createElement('div');
+    d.textContent = str;
+    return d.innerHTML;
+  }
+
   function showToolbeltResult(scriptName, result) {
     const container = E.messages;
     const div = document.createElement('div');
     div.className = 'toolbelt-result';
     const ok = result.success;
-    const output = (result.output || '') + (result.error || '');
+    const stdout = result.output || '';
+    const stderr = result.error || '';
+    const rc = result.returncode;
+
+    // Build output sections
+    let outputHTML = '';
+    if (stdout) {
+      outputHTML += escapeHTML(stdout);
+    }
+    if (stderr) {
+      outputHTML += (stdout ? '\n' : '') + '<span style="color: #dc3545;">' + escapeHTML(stderr) + '</span>';
+    }
+    if (rc !== undefined && rc !== null && rc !== 0) {
+      outputHTML += (outputHTML ? '\n' : '') + '<span style="color: #888;">Exit code: ' + rc + '</span>';
+    }
+    if (!outputHTML) {
+      outputHTML = '<span style="color: #888;">(no output)</span>';
+    }
+
     div.innerHTML = `
       <div class="toolbelt-result-header">
-        <span class="script-label">${scriptName}</span>
-        <span class="toolbelt-result-status ${ok ? 'success' : 'error'}">${ok ? '\u2713 Done' : '\u2717 Error'}</span>
+        <span class="script-label">${escapeHTML(scriptName)}</span>
+        <span class="toolbelt-result-status ${ok ? 'success' : 'error'}">${ok ? '\u2713 Done' : '\u2717 Error (exit ' + (rc ?? '?') + ')'}</span>
       </div>
-      <pre class="toolbelt-result-output">${output || '(no output)'}</pre>
+      <pre class="toolbelt-result-output">${outputHTML}</pre>
     `;
     // Toggle collapse on header click
     const header = div.querySelector('.toolbelt-result-header');

@@ -1045,6 +1045,16 @@ class FlaskChatApp:
                                 "When referencing specific facts, use inline links like [source](url) in the text."
                             )
 
+                        # Project paths for tool awareness
+                        project_root = os.path.dirname(os.path.abspath(__file__))
+                        tool_hint += (
+                            f"\n\nPROJECT PATHS:"
+                            f"\n- Project root: {project_root}"
+                            f"\n- Toolbox: {os.path.join(project_root, 'toolbox')}"
+                            f"\nWhen the user asks you to write a script or tool, save it to the "
+                            f"toolbox directory listed above. Always use absolute paths."
+                        )
+
                         system_prompt = (system_prompt or "") + tool_hint
                         # Update merged_cfg so API clients use the combined prompt
                         merged_cfg["system_prompt"] = system_prompt
@@ -1411,6 +1421,27 @@ class FlaskChatApp:
 
         # ---- Editor preference ----
 
+        # Common install paths to check beyond PATH
+        _EDITOR_SEARCH_PATHS = [
+            os.path.join(os.environ.get("ProgramFiles", ""), "Notepad++", "notepad++.exe"),
+            os.path.join(os.environ.get("ProgramFiles(x86)", ""), "Notepad++", "notepad++.exe"),
+            os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs", "Microsoft VS Code", "Code.exe"),
+            os.path.join(os.environ.get("ProgramFiles", ""), "Microsoft VS Code", "Code.exe"),
+            os.path.join(os.environ.get("ProgramFiles", ""), "Sublime Text", "sublime_text.exe"),
+            os.path.join(os.environ.get("ProgramFiles", ""), "Sublime Text 3", "sublime_text.exe"),
+        ]
+
+        def _find_editor(cmd):
+            """Find an editor: check PATH first, then common install locations."""
+            found = shutil.which(cmd)
+            if found:
+                return found
+            # Check common install paths
+            for p in _EDITOR_SEARCH_PATHS:
+                if os.path.basename(p).lower() == cmd.lower() and os.path.isfile(p):
+                    return p
+            return None
+
         KNOWN_EDITORS = [
             {"id": "code", "name": "VS Code", "cmd": "code"},
             {"id": "notepad++", "name": "Notepad++", "cmd": "notepad++.exe"},
@@ -1423,8 +1454,8 @@ class FlaskChatApp:
             """Return available editors and the current preference."""
             available = []
             for ed in KNOWN_EDITORS:
-                found = shutil.which(ed["cmd"]) is not None
-                available.append({**ed, "available": found})
+                path = _find_editor(ed["cmd"])
+                available.append({**ed, "available": path is not None, "path": path or ""})
             current = self.config.get("preferred_editor", "")
             # If no preference set, default to first available
             if not current:
@@ -1501,7 +1532,8 @@ class FlaskChatApp:
             cmd = None
             for ed in KNOWN_EDITORS:
                 if ed["id"] == pref:
-                    cmd = ed["cmd"]
+                    resolved = _find_editor(ed["cmd"])
+                    cmd = resolved or ed["cmd"]
                     break
             if not cmd:
                 cmd = pref or "notepad.exe"
