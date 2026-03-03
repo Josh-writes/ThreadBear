@@ -1674,7 +1674,11 @@ class FlaskChatApp:
             # Run with sandbox
             permissions = tb[script]
             project_root = os.path.dirname(os.path.abspath(__file__))
+            print(f"[toolbelt] Running '{script}' with permissions: env={permissions.get('allow_env', [])}, timeout={permissions.get('timeout', 60)}")
             result = _sandboxed_runner.run(script_path, chat_path, permissions, project_root)
+            print(f"[toolbelt] Result: success={result['success']}, rc={result['returncode']}, stdout={len(result.get('output',''))} chars, stderr={len(result.get('error',''))} chars")
+            if result.get('error'):
+                print(f"[toolbelt] stderr: {result['error'][:500]}")
             status_code = 200 if result["success"] else (504 if result["returncode"] == -1 else 200)
             return jsonify(result), status_code
 

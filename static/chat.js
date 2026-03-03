@@ -4159,13 +4159,15 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
 
   async function runToolbeltScript(scriptName, btn) {
     if (btn) { btn.disabled = true; btn.textContent = '...'; }
+    // Show a "running" bubble immediately
+    const bubble = createToolbeltBubble(scriptName);
     try {
       const js = await postJSON('/api/toolbelt/run', {
         script: scriptName, chat_file: state.currentChatFile
       });
-      showToolbeltResult(scriptName, js);
+      updateToolbeltBubble(bubble, scriptName, js);
     } catch (e) {
-      showToolbeltResult(scriptName, { success: false, error: String(e) });
+      updateToolbeltBubble(bubble, scriptName, { success: false, error: String(e), returncode: -1 });
     }
     if (btn) { btn.disabled = false; btn.innerHTML = '&#9654; Run'; }
   }
@@ -4288,20 +4290,33 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
     return d.innerHTML;
   }
 
-  function showToolbeltResult(scriptName, result) {
+  function createToolbeltBubble(scriptName) {
     const container = E.messages;
     const div = document.createElement('div');
     div.className = 'toolbelt-result';
+    div.innerHTML = `
+      <div class="toolbelt-result-header">
+        <span class="script-icon">&#9881;</span>
+        <span class="script-label">${escapeHTML(scriptName)}</span>
+        <span class="toolbelt-result-status running">&#9654; Running...</span>
+        <span class="toolbelt-result-expand">&#9654;</span>
+      </div>
+      <pre class="toolbelt-result-output"></pre>
+    `;
+    container.appendChild(div);
+    container.scrollTop = container.scrollHeight;
+    return div;
+  }
+
+  function updateToolbeltBubble(div, scriptName, result) {
     const ok = result.success;
     const stdout = result.output || '';
     const stderr = result.error || '';
     const rc = result.returncode;
 
-    // Build output sections
+    // Build output
     let outputHTML = '';
-    if (stdout) {
-      outputHTML += escapeHTML(stdout);
-    }
+    if (stdout) outputHTML += escapeHTML(stdout);
     if (stderr) {
       outputHTML += (stdout ? '\n' : '') + '<span style="color: #dc3545;">' + escapeHTML(stderr) + '</span>';
     }
@@ -4312,20 +4327,34 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
       outputHTML = '<span style="color: #888;">(no output)</span>';
     }
 
-    div.innerHTML = `
-      <div class="toolbelt-result-header">
-        <span class="script-label">${escapeHTML(scriptName)}</span>
-        <span class="toolbelt-result-status ${ok ? 'success' : 'error'}">${ok ? '\u2713 Done' : '\u2717 Error (exit ' + (rc ?? '?') + ')'}</span>
-      </div>
-      <pre class="toolbelt-result-output">${outputHTML}</pre>
-    `;
-    // Toggle collapse on header click
-    const header = div.querySelector('.toolbelt-result-header');
+    // Update status badge
+    const statusEl = div.querySelector('.toolbelt-result-status');
+    statusEl.className = 'toolbelt-result-status ' + (ok ? 'success' : 'error');
+    statusEl.innerHTML = ok
+      ? '&#10003; Done'
+      : '&#10007; Error' + (rc != null ? ' (exit ' + rc + ')' : '');
+
+    // Fill output
     const pre = div.querySelector('.toolbelt-result-output');
+    pre.innerHTML = outputHTML;
+
+    // Wire up expand/collapse on header click
+    const header = div.querySelector('.toolbelt-result-header');
+    const arrow = div.querySelector('.toolbelt-result-expand');
     header.addEventListener('click', () => {
-      pre.style.display = pre.style.display === 'none' ? '' : 'none';
+      const open = pre.style.display !== 'block';
+      pre.style.display = open ? 'block' : 'none';
+      arrow.classList.toggle('open', open);
     });
-    container.appendChild(div);
+
+    // Auto-expand on error so user sees what went wrong
+    if (!ok) {
+      pre.style.display = 'block';
+      arrow.classList.add('open');
+    }
+
+    // Scroll to show result
+    const container = E.messages;
     container.scrollTop = container.scrollHeight;
   }
 
