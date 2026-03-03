@@ -633,10 +633,10 @@
       E.menuBranchSelected.style.display = sel ? '' : 'none';
       E.menuCopySelected.style.display = sel ? '' : 'none';
       // Show "Resend Message" only for user messages
+      const msgRole = state.messages[index] && state.messages[index].role;
       E.menuResend.style.display = (msgRole === 'user') ? '' : 'none';
       // Show folder actions only when chat is in a folder
       const inFolder = state.chatFolderMap[state.currentChatFile];
-      const msgRole = state.messages[index] && state.messages[index].role;
       E.menuAddToFolderMemory.style.display = inFolder ? '' : 'none';
       // Show "Save as Folder Prompt" for assistant messages when chat is in a folder
       E.menuSaveAsFolderPrompt.style.display = (inFolder && msgRole === 'assistant') ? '' : 'none';
@@ -4161,15 +4161,40 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
     if (btn) { btn.disabled = true; btn.textContent = '...'; }
     // Show a "running" bubble immediately
     const bubble = createToolbeltBubble(scriptName);
+    let result;
     try {
-      const js = await postJSON('/api/toolbelt/run', {
+      result = await postJSON('/api/toolbelt/run', {
         script: scriptName, chat_file: state.currentChatFile
       });
-      updateToolbeltBubble(bubble, scriptName, js);
+      updateToolbeltBubble(bubble, scriptName, result);
     } catch (e) {
-      updateToolbeltBubble(bubble, scriptName, { success: false, error: String(e), returncode: -1 });
+      result = { success: false, error: String(e), output: '', returncode: -1 };
+      updateToolbeltBubble(bubble, scriptName, result);
     }
     if (btn) { btn.disabled = false; btn.innerHTML = '&#9654; Run'; }
+
+    // Feed the result into the chat so the AI can respond
+    sendToolResultToChat(scriptName, result);
+  }
+
+  function sendToolResultToChat(scriptName, result) {
+    const ok = result.success;
+    const stdout = (result.output || '').trim();
+    const stderr = (result.error || '').trim();
+
+    let toolMsg = `[Tool: ${scriptName}] `;
+    if (ok) {
+      toolMsg += stdout ? `ran successfully:\n${stdout}` : 'ran successfully (no output).';
+    } else {
+      toolMsg += 'failed';
+      if (stderr) toolMsg += `:\n${stderr}`;
+      if (stdout) toolMsg += `\nOutput:\n${stdout}`;
+      if (!stderr && !stdout) toolMsg += ' with no output.';
+    }
+
+    // Inject as a user message and trigger AI response
+    E.userInput.value = toolMsg;
+    sendMessage();
   }
 
   // ---- Permissions dialog ----
@@ -4299,9 +4324,9 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
         <span class="script-icon">&#9881;</span>
         <span class="script-label">${escapeHTML(scriptName)}</span>
         <span class="toolbelt-result-status running">&#9654; Running...</span>
-        <span class="toolbelt-result-expand">&#9654;</span>
+        <span class="toolbelt-result-expand open">&#9654;</span>
       </div>
-      <pre class="toolbelt-result-output"></pre>
+      <pre class="toolbelt-result-output" style="display:block;color:#888;">Waiting for script to finish...</pre>
     `;
     container.appendChild(div);
     container.scrollTop = container.scrollHeight;
@@ -4314,17 +4339,20 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
     const stderr = result.error || '';
     const rc = result.returncode;
 
+    // Update border color for errors
+    if (!ok) div.classList.add('result-error');
+
     // Build output
     let outputHTML = '';
     if (stdout) outputHTML += escapeHTML(stdout);
     if (stderr) {
-      outputHTML += (stdout ? '\n' : '') + '<span style="color: #dc3545;">' + escapeHTML(stderr) + '</span>';
+      outputHTML += (stdout ? '\n' : '') + '<span style="color:#dc3545;font-weight:600;">stderr: </span><span style="color:#dc3545;">' + escapeHTML(stderr) + '</span>';
     }
     if (rc !== undefined && rc !== null && rc !== 0) {
-      outputHTML += (outputHTML ? '\n' : '') + '<span style="color: #888;">Exit code: ' + rc + '</span>';
+      outputHTML += (outputHTML ? '\n' : '') + '<span style="color:#888;">Exit code: ' + rc + '</span>';
     }
     if (!outputHTML) {
-      outputHTML = '<span style="color: #888;">(no output)</span>';
+      outputHTML = '<span style="color:#888;">(no output)</span>';
     }
 
     // Update status badge
@@ -4334,24 +4362,21 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
       ? '&#10003; Done'
       : '&#10007; Error' + (rc != null ? ' (exit ' + rc + ')' : '');
 
-    // Fill output
+    // Fill output — always visible
     const pre = div.querySelector('.toolbelt-result-output');
+    pre.style.display = 'block';
+    pre.style.color = '';  // reset to CSS default
     pre.innerHTML = outputHTML;
 
     // Wire up expand/collapse on header click
     const header = div.querySelector('.toolbelt-result-header');
     const arrow = div.querySelector('.toolbelt-result-expand');
+    arrow.classList.add('open');
     header.addEventListener('click', () => {
-      const open = pre.style.display !== 'block';
-      pre.style.display = open ? 'block' : 'none';
-      arrow.classList.toggle('open', open);
+      const isOpen = pre.style.display !== 'none';
+      pre.style.display = isOpen ? 'none' : 'block';
+      arrow.classList.toggle('open', !isOpen);
     });
-
-    // Auto-expand on error so user sees what went wrong
-    if (!ok) {
-      pre.style.display = 'block';
-      arrow.classList.add('open');
-    }
 
     // Scroll to show result
     const container = E.messages;
@@ -4363,6 +4388,7 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
     E.toolbeltBtn.addEventListener('click', () => {
       state.toolbeltOpen = !state.toolbeltOpen;
       E.toolbeltControls.style.display = state.toolbeltOpen ? 'flex' : 'none';
+      E.toolbeltBtn.classList.toggle('active', state.toolbeltOpen);
       if (state.toolbeltOpen) loadToolbelt();
     });
     // "+ Tool" opens the tools settings panel (which contains the toolbox)
@@ -4408,6 +4434,7 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
     E.contextSelectionBtn.addEventListener('click', () => {
       state.contextBarOpen = !state.contextBarOpen;
       E.contextControls.style.display = state.contextBarOpen ? 'flex' : 'none';
+      E.contextSelectionBtn.classList.toggle('active', state.contextBarOpen);
 
       if (state.contextBarOpen) {
         // Default: select ALL messages when opening the bar

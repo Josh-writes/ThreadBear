@@ -275,14 +275,24 @@ class SandboxedRunner:
             if val is not None:
                 filtered_env[var] = val
 
+        # Ensure Python uses UTF-8 in the subprocess
+        filtered_env["PYTHONIOENCODING"] = "utf-8"
+        filtered_env["PYTHONUTF8"] = "1"
+
+        # Pass chat path as env var so it doesn't interfere with script's own argv
+        filtered_env["THREADBEAR_CHAT_PATH"] = chat_path
+        filtered_env["THREADBEAR_CHAT_FILE"] = os.path.basename(chat_path)
+
         try:
             result = subprocess.run(
-                [sys.executable, script_path, chat_path],
+                [sys.executable, script_path],
                 env=filtered_env,
                 timeout=timeout,
                 cwd=project_root,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
             )
             return {
                 "success": result.returncode == 0,
