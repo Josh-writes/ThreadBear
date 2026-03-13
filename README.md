@@ -188,4 +188,4 @@ All configuration is stored in `config.json` (auto-created, gitignored). You can
 
 ## License
 
-This project is provided as-is for personal use. See [LICENSE](LICENSE) for details.
+This project is licensed under the [MIT License](LICENSE).
