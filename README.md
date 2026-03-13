@@ -28,7 +28,7 @@ A local-first, multi-provider LLM chat application built with Flask and vanilla 
 1. **Clone the repository**
 
    ```bash
-   git clone https://github.com/YOUR_USERNAME/ThreadBear.git
+   git clone https://github.com/josh-writes/ThreadBear.git
    cd ThreadBear
    ```
 
