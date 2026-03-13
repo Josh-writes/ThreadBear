@@ -1477,45 +1477,81 @@ class FlaskChatApp:
 
         # ---- Toolbox file management ----
 
-        TOOLBOX_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'toolbox')
+        _APP_ROOT = os.path.dirname(os.path.abspath(__file__))
+        TOOLBOX_DIR = os.path.join(_APP_ROOT, 'toolbox')
+        DEFAULT_TOOLBOX_DIR = os.path.join(_APP_ROOT, 'default_toolbox')
+
+        def _resolve_toolbox_file(filename):
+            """Resolve a toolbox filename to its absolute path.
+
+            Custom (toolbox/) takes priority over default (default_toolbox/).
+            Returns (abs_path, is_default) or (None, False) if not found.
+            """
+            custom = os.path.join(TOOLBOX_DIR, filename)
+            if os.path.isfile(custom):
+                return custom, False
+            default = os.path.join(DEFAULT_TOOLBOX_DIR, filename)
+            if os.path.isfile(default):
+                return default, True
+            return None, False
 
         @app.route('/api/toolbox/files', methods=['GET'])
         def list_toolbox_files():
-            """List all files in the toolbox/ directory."""
+            """List files from both default_toolbox/ and toolbox/ directories."""
             os.makedirs(TOOLBOX_DIR, exist_ok=True)
-            files = []
+            seen = {}
+            # Custom scripts first (override defaults with same name)
             for name in sorted(os.listdir(TOOLBOX_DIR)):
                 if name.startswith('.'):
                     continue
                 fpath = os.path.join(TOOLBOX_DIR, name)
                 if os.path.isfile(fpath):
                     stat = os.stat(fpath)
-                    files.append({
+                    seen[name] = {
                         'name': name,
                         'size': stat.st_size,
                         'modified': stat.st_mtime,
-                    })
+                        'source': 'custom',
+                    }
+            # Default scripts (only if not overridden)
+            if os.path.isdir(DEFAULT_TOOLBOX_DIR):
+                for name in sorted(os.listdir(DEFAULT_TOOLBOX_DIR)):
+                    if name.startswith('.') or name in seen:
+                        continue
+                    fpath = os.path.join(DEFAULT_TOOLBOX_DIR, name)
+                    if os.path.isfile(fpath):
+                        stat = os.stat(fpath)
+                        seen[name] = {
+                            'name': name,
+                            'size': stat.st_size,
+                            'modified': stat.st_mtime,
+                            'source': 'default',
+                        }
+            files = sorted(seen.values(), key=lambda f: f['name'])
             return jsonify({"success": True, "files": files})
 
         @app.route('/api/toolbox/files/<path:filename>', methods=['GET'])
         def read_toolbox_file(filename):
-            """Read contents of a toolbox file."""
-            fpath = os.path.join(TOOLBOX_DIR, filename)
-            if not os.path.isfile(fpath):
+            """Read contents of a toolbox file (custom or default)."""
+            fpath, is_default = _resolve_toolbox_file(filename)
+            if not fpath:
                 return jsonify({"success": False, "error": "File not found"}), 404
             try:
                 with open(fpath, 'r', encoding='utf-8', errors='replace') as f:
                     content = f.read()
-                return jsonify({"success": True, "content": content, "name": filename})
+                return jsonify({"success": True, "content": content, "name": filename,
+                                "source": "default" if is_default else "custom"})
             except Exception as e:
                 return jsonify({"success": False, "error": str(e)}), 500
 
         @app.route('/api/toolbox/files/<path:filename>', methods=['DELETE'])
         def delete_toolbox_file(filename):
-            """Delete a file from toolbox/."""
-            fpath = os.path.join(TOOLBOX_DIR, filename)
-            if not os.path.isfile(fpath):
+            """Delete a file from toolbox/ (cannot delete defaults)."""
+            fpath, is_default = _resolve_toolbox_file(filename)
+            if not fpath:
                 return jsonify({"success": False, "error": "File not found"}), 404
+            if is_default:
+                return jsonify({"success": False, "error": "Cannot delete a default toolbox script"}), 400
             try:
                 os.remove(fpath)
                 return jsonify({"success": True})
@@ -1525,8 +1561,8 @@ class FlaskChatApp:
         @app.route('/api/toolbox/open/<path:filename>', methods=['POST'])
         def open_toolbox_file(filename):
             """Open a toolbox file in the user's preferred editor."""
-            fpath = os.path.join(TOOLBOX_DIR, filename)
-            if not os.path.isfile(fpath):
+            fpath, _ = _resolve_toolbox_file(filename)
+            if not fpath:
                 return jsonify({"success": False, "error": "File not found"}), 404
             pref = self.config.get("preferred_editor", "")
             # Resolve the command from known editors or use as custom command
@@ -1550,8 +1586,8 @@ class FlaskChatApp:
         @app.route('/api/toolbox/explore/<path:filename>', methods=['POST'])
         def explore_toolbox_file(filename):
             """Open File Explorer with the toolbox file selected."""
-            fpath = os.path.join(TOOLBOX_DIR, filename)
-            if not os.path.isfile(fpath):
+            fpath, _ = _resolve_toolbox_file(filename)
+            if not fpath:
                 return jsonify({"success": False, "error": "File not found"}), 404
             try:
                 abs_path = os.path.abspath(fpath)
@@ -1563,8 +1599,8 @@ class FlaskChatApp:
         @app.route('/api/toolbox/path/<path:filename>', methods=['GET'])
         def get_toolbox_path(filename):
             """Return the absolute path of a toolbox file."""
-            fpath = os.path.join(TOOLBOX_DIR, filename)
-            if not os.path.isfile(fpath):
+            fpath, _ = _resolve_toolbox_file(filename)
+            if not fpath:
                 return jsonify({"success": False, "error": "File not found"}), 404
             return jsonify({"success": True, "path": os.path.abspath(fpath)})
 
@@ -1603,8 +1639,8 @@ class FlaskChatApp:
             script = body.get("script", "").strip()
             if not script:
                 return jsonify({"success": False, "error": "Need script name"}), 400
-            script_path = os.path.join(TOOLBOX_DIR, script)
-            if not os.path.isfile(script_path):
+            script_path, _ = _resolve_toolbox_file(script)
+            if not script_path:
                 return jsonify({"success": False, "error": f"Script '{script}' not found"}), 404
             scan_result = _script_scanner.scan(script_path)
             return jsonify({"success": True, "scan_result": scan_result})
@@ -1656,8 +1692,8 @@ class FlaskChatApp:
             if not script or not chat_file:
                 return jsonify({"success": False, "error": "Need script and chat_file"}), 400
 
-            script_path = os.path.join(TOOLBOX_DIR, script)
-            if not os.path.isfile(script_path):
+            script_path, _ = _resolve_toolbox_file(script)
+            if not script_path:
                 return jsonify({"success": False, "error": f"Script '{script}' not found in toolbox"}), 404
 
             chat_path = os.path.join(self.chat_manager.chats_directory, chat_file)
@@ -1700,8 +1736,8 @@ class FlaskChatApp:
                 return jsonify({"success": False, "error": "Need script and action (add/remove)"}), 400
 
             if action == "add":
-                script_path = os.path.join(TOOLBOX_DIR, script)
-                if not os.path.isfile(script_path):
+                script_path, _ = _resolve_toolbox_file(script)
+                if not script_path:
                     return jsonify({"success": False, "error": f"Script '{script}' not found in toolbox"}), 404
                 # Auto-scan on add
                 scan_result = _script_scanner.scan(script_path)
@@ -2534,31 +2570,66 @@ class FlaskChatApp:
             return jsonify({"success": True})
 
         # --- System Prompts Management ---
+
+        def _prompts_dir(self_=None):
+            return os.path.join(os.path.dirname(__file__), 'prompts')
+
+        def _read_jsonl(path):
+            """Read a JSONL file and return list of parsed objects."""
+            items = []
+            if os.path.exists(path):
+                with open(path, 'r', encoding='utf-8') as f:
+                    for line in f:
+                        line = line.strip()
+                        if line:
+                            try:
+                                items.append(json.loads(line))
+                            except json.JSONDecodeError:
+                                continue
+            return items
+
+        def _write_jsonl(path, items):
+            """Write a list of objects to a JSONL file."""
+            with open(path, 'w', encoding='utf-8') as f:
+                for item in items:
+                    f.write(json.dumps(item, ensure_ascii=False) + '\n')
+
+        def _default_prompts_path():
+            return os.path.join(_prompts_dir(), 'default_prompts.jsonl')
+
+        def _custom_prompts_path():
+            return os.path.join(_prompts_dir(), 'custom_prompts.jsonl')
+
+        def _load_all_prompts():
+            """Load defaults then overlay with custom prompts (custom overrides by id)."""
+            defaults = _read_jsonl(_default_prompts_path())
+            customs = _read_jsonl(_custom_prompts_path())
+            # Build ordered dict: defaults first, customs override or append
+            by_id = {}
+            order = []
+            for p in defaults:
+                pid = p.get('id')
+                by_id[pid] = p
+                order.append(pid)
+            for p in customs:
+                pid = p.get('id')
+                if pid not in by_id:
+                    order.append(pid)
+                by_id[pid] = p
+            return [by_id[pid] for pid in order]
+
         @app.route('/api/prompts', methods=['GET'])
         def get_prompts():
-            """Get all system prompts from prompts.jsonl"""
+            """Get all system prompts (defaults + custom)"""
             try:
-                prompts_file = os.path.join(os.path.dirname(__file__), 'prompts', 'prompts.jsonl')
-                prompts = []
-                
-                if os.path.exists(prompts_file):
-                    with open(prompts_file, 'r', encoding='utf-8') as f:
-                        for line in f:
-                            line = line.strip()
-                            if line:
-                                try:
-                                    prompt = json.loads(line)
-                                    prompts.append(prompt)
-                                except json.JSONDecodeError:
-                                    continue
-                
+                prompts = _load_all_prompts()
                 return jsonify({"success": True, "prompts": prompts})
             except Exception as e:
                 return jsonify({"success": False, "error": str(e)}), 500
 
         @app.route('/api/prompts', methods=['POST'])
         def create_prompt():
-            """Create a new system prompt"""
+            """Create a new custom system prompt"""
             try:
                 data = request.get_json() or {}
                 prompt_id = data.get('id', '').strip()
@@ -2572,22 +2643,14 @@ class FlaskChatApp:
                 if not re.match(r'^[a-z0-9_]+$', prompt_id):
                     return jsonify({"success": False, "error": "ID must be lowercase letters, numbers, and underscores only"}), 400
 
-                prompts_file = os.path.join(os.path.dirname(__file__), 'prompts', 'prompts.jsonl')
-                
-                # Check if ID already exists
-                if os.path.exists(prompts_file):
-                    with open(prompts_file, 'r', encoding='utf-8') as f:
-                        for line in f:
-                            try:
-                                existing = json.loads(line.strip())
-                                if existing.get('id') == prompt_id:
-                                    return jsonify({"success": False, "error": "A prompt with this ID already exists"}), 400
-                            except:
-                                continue
+                # Check if ID already exists in either file
+                all_prompts = _load_all_prompts()
+                if any(p.get('id') == prompt_id for p in all_prompts):
+                    return jsonify({"success": False, "error": "A prompt with this ID already exists"}), 400
 
-                # Append new prompt
+                # Append to custom prompts
                 new_prompt = {"id": prompt_id, "title": title, "body": body}
-                with open(prompts_file, 'a', encoding='utf-8') as f:
+                with open(_custom_prompts_path(), 'a', encoding='utf-8') as f:
                     f.write(json.dumps(new_prompt, ensure_ascii=False) + '\n')
 
                 return jsonify({"success": True, "prompt": new_prompt})
@@ -2596,7 +2659,7 @@ class FlaskChatApp:
 
         @app.route('/api/prompts/<prompt_id>', methods=['PUT'])
         def update_prompt(prompt_id):
-            """Update an existing system prompt"""
+            """Update an existing system prompt (writes override to custom file)"""
             try:
                 data = request.get_json() or {}
                 title = data.get('title', '').strip()
@@ -2605,69 +2668,46 @@ class FlaskChatApp:
                 if not title or not body:
                     return jsonify({"success": False, "error": "title and body are required"}), 400
 
-                prompts_file = os.path.join(os.path.dirname(__file__), 'prompts', 'prompts.jsonl')
-                
-                if not os.path.exists(prompts_file):
-                    return jsonify({"success": False, "error": "Prompts file not found"}), 404
-
-                # Read all prompts
-                prompts = []
-                found = False
-                with open(prompts_file, 'r', encoding='utf-8') as f:
-                    for line in f:
-                        try:
-                            prompt = json.loads(line.strip())
-                            if prompt.get('id') == prompt_id:
-                                prompt['title'] = title
-                                prompt['body'] = body
-                                found = True
-                            prompts.append(prompt)
-                        except:
-                            continue
-
-                if not found:
+                # Check prompt exists somewhere
+                all_prompts = _load_all_prompts()
+                if not any(p.get('id') == prompt_id for p in all_prompts):
                     return jsonify({"success": False, "error": "Prompt not found"}), 404
 
-                # Write back all prompts
-                with open(prompts_file, 'w', encoding='utf-8') as f:
-                    for prompt in prompts:
-                        f.write(json.dumps(prompt, ensure_ascii=False) + '\n')
+                # Update or add override in custom file
+                customs = _read_jsonl(_custom_prompts_path())
+                found_in_custom = False
+                for p in customs:
+                    if p.get('id') == prompt_id:
+                        p['title'] = title
+                        p['body'] = body
+                        found_in_custom = True
+                        break
 
+                if not found_in_custom:
+                    # Overriding a default — add to custom file
+                    customs.append({"id": prompt_id, "title": title, "body": body})
+
+                _write_jsonl(_custom_prompts_path(), customs)
                 return jsonify({"success": True})
             except Exception as e:
                 return jsonify({"success": False, "error": str(e)}), 500
 
         @app.route('/api/prompts/<prompt_id>', methods=['DELETE'])
         def delete_prompt(prompt_id):
-            """Delete a system prompt"""
+            """Delete a system prompt (only from custom file)"""
             try:
-                prompts_file = os.path.join(os.path.dirname(__file__), 'prompts', 'prompts.jsonl')
-                
-                if not os.path.exists(prompts_file):
-                    return jsonify({"success": False, "error": "Prompts file not found"}), 404
+                # Check if it's a default prompt
+                defaults = _read_jsonl(_default_prompts_path())
+                if any(p.get('id') == prompt_id for p in defaults):
+                    return jsonify({"success": False, "error": "Cannot delete a default prompt"}), 400
 
-                # Read all prompts except the one to delete
-                prompts = []
-                found = False
-                with open(prompts_file, 'r', encoding='utf-8') as f:
-                    for line in f:
-                        try:
-                            prompt = json.loads(line.strip())
-                            if prompt.get('id') == prompt_id:
-                                found = True
-                                continue  # Skip this one
-                            prompts.append(prompt)
-                        except:
-                            continue
+                customs = _read_jsonl(_custom_prompts_path())
+                new_customs = [p for p in customs if p.get('id') != prompt_id]
 
-                if not found:
+                if len(new_customs) == len(customs):
                     return jsonify({"success": False, "error": "Prompt not found"}), 404
 
-                # Write back remaining prompts
-                with open(prompts_file, 'w', encoding='utf-8') as f:
-                    for prompt in prompts:
-                        f.write(json.dumps(prompt, ensure_ascii=False) + '\n')
-
+                _write_jsonl(_custom_prompts_path(), new_customs)
                 return jsonify({"success": True})
             except Exception as e:
                 return jsonify({"success": False, "error": str(e)}), 500

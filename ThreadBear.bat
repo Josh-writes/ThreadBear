@@ -2,24 +2,17 @@
 echo Starting AI Chat Application...
 echo.
 
-REM Force Python 3.11
-set PYTHON311="C:\Users\Josh\AppData\Local\Programs\Python\Python311\python.exe"
+cd /d "%~dp0"
 
-if not exist %PYTHON311% (
-    echo ERROR: Python 3.11 not found:
-    echo   %PYTHON311%
+REM Try python from PATH first
+where python >nul 2>&1
+if %errorlevel%==0 (
+    echo Using Python from PATH
+    python flask_chat_app.py
+) else (
+    echo ERROR: Python not found in PATH.
+    echo Please install Python 3.10+ and ensure it is added to your PATH.
     pause
     exit /b 1
 )
-
-echo Using Python interpreter:
-echo   %PYTHON311%
-echo.
-
-cd /d "%~dp0"
-
-echo Starting ThreadBear...
-echo.
-
-%PYTHON311% flask_chat_app.py
 pause

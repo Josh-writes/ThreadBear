@@ -14,6 +14,9 @@ threadbear_docs.db
 threadbear.db
 folders.json
 
+# Custom / user prompts (personal data)
+prompts/custom_prompts.jsonl
+
 # Tool configs
 .claude/
 

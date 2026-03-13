@@ -17,11 +17,14 @@ def read_file(args: dict) -> dict:
     max_size = args.get('max_size', 100_000)  # 100KB default
 
     p = Path(path)
-    # Relative paths resolve to toolbox/ first
+    # Relative paths resolve to toolbox/ first, then default_toolbox/
     if not p.is_absolute():
         toolbox_path = Path('toolbox') / p
+        default_path = Path('default_toolbox') / p
         if toolbox_path.exists():
             p = toolbox_path
+        elif default_path.exists():
+            p = default_path
     if not p.exists():
         return {'error': f'File not found: {path}'}
     

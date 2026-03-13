@@ -758,26 +758,46 @@ def _llamacpp_sanitize_messages(api_messages: List[Dict]) -> List[Dict]:
     if not api_messages:
         return api_messages
 
-    # Step 0: Separate tool-related messages (pass through unchanged)
-    # assistant messages with tool_calls and role='tool' messages are part of
-    # the tool loop and must not be mangled by sanitization.
-    tool_messages = []
-    regular_messages = []
-    for msg in api_messages:
-        if msg.get("role") == "tool" or msg.get("tool_calls"):
-            tool_messages.append(msg)
-        else:
-            regular_messages.append(msg)
-
-    # If we have tool messages, pass everything through unchanged —
-    # the model needs the exact tool call/response structure
-    if tool_messages:
-        return api_messages
+    # Step 0: Convert tool-related messages into user/assistant format
+    # llama.cpp doesn't understand role="tool" or tool_calls — convert them
+    # so the model sees tool results as user context and tool-calling assistant
+    # messages as plain assistant text.
+    has_tool_msgs = any(
+        msg.get("role") == "tool" or msg.get("tool_calls")
+        for msg in api_messages
+    )
+    if has_tool_msgs:
+        converted = []
+        for msg in api_messages:
+            if msg.get("role") == "tool":
+                # Convert tool result into a user message
+                tool_id = msg.get("tool_call_id", "")
+                content = msg.get("content", "")
+                converted.append({
+                    "role": "user",
+                    "content": f"[Tool result ({tool_id})]: {content}",
+                })
+            elif msg.get("tool_calls"):
+                # Convert assistant tool-call message into plain assistant text
+                calls = msg.get("tool_calls", [])
+                parts = []
+                if msg.get("content"):
+                    parts.append(msg["content"])
+                for tc in calls:
+                    fn = tc.get("function", {})
+                    parts.append(f"[Calling tool: {fn.get('name', '?')}({fn.get('arguments', '')})]")
+                converted.append({
+                    "role": "assistant",
+                    "content": "\n".join(parts),
+                })
+            else:
+                converted.append(msg)
+        api_messages = converted
 
     # Step 1: Separate leading system messages from the rest
     system_parts = []
     rest = []
-    for msg in regular_messages:
+    for msg in api_messages:
         if msg["role"] == "system" and not rest:
             system_parts.append(msg["content"])
         else:

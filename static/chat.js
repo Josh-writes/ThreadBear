@@ -1,7 +1,7 @@
 /* ThreadBear front-end wiring (keeps current HTML/CSS exactly as-is)
    Features:
    - Provider/model loading + model settings panel
-   - System prompt dropdown populated from prompts.jsonl
+   - System prompt dropdown populated from default_prompts.jsonl + custom_prompts.jsonl
    - Chat history (load/rename/delete) + New Chat
    - Context bar toggle; document upload/list/select/delete; chips in attachments bar
    - Token summary + basic utilization
