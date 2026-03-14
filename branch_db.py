@@ -310,6 +310,40 @@ class BranchDatabase:
                 results.extend(self._row_to_dict(r) for r in rows)
         return results
 
+    def delete_edge(self, edge_id: int) -> bool:
+        """Delete an edge by its ID."""
+        with self._get_connection() as conn:
+            cursor = conn.execute(
+                "DELETE FROM edges WHERE id = ?", (edge_id,)
+            )
+            return cursor.rowcount > 0
+
+    def list_edges(self, from_branch: Optional[str] = None,
+                   to_branch: Optional[str] = None,
+                   edge_type: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Query edges with optional filters."""
+        conditions = []
+        params: List[Any] = []
+
+        if from_branch:
+            conditions.append("from_branch = ?")
+            params.append(from_branch)
+        if to_branch:
+            conditions.append("to_branch = ?")
+            params.append(to_branch)
+        if edge_type:
+            conditions.append("type = ?")
+            params.append(edge_type)
+
+        where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+
+        with self._get_connection() as conn:
+            rows = conn.execute(
+                f"SELECT * FROM edges {where} ORDER BY created_at",
+                params
+            ).fetchall()
+            return [self._row_to_dict(r) for r in rows]
+
     def delete_branch(self, branch_id: str) -> bool:
         """Delete a branch and its edges (CASCADE)."""
         with self._get_connection() as conn:

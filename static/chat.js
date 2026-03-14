@@ -62,6 +62,10 @@
     expandedFolders: new Set(),
     activeFolder: null,  // Currently selected folder for overview view
 
+    // branches (Phase 2 DAG)
+    branches: [],
+    expandedBranches: new Set(),
+
     // prompts
     prompts: [],
 
@@ -283,6 +287,13 @@
     menuFolderContextSettings: $('folderContextSettingsMenuItem'),
     menuDeleteFolder: $('deleteFolderMenuItem'),
     moveToFolderMenu: $('moveToFolderMenu'),
+
+    branchContextMenu: $('branchContextMenu'),
+    menuNewWorkOrder: $('newWorkOrderMenuItem'),
+    menuSetActive: $('setActiveMenuItem'),
+    menuSetReview: $('setReviewMenuItem'),
+    menuSetArchived: $('setArchivedMenuItem'),
+    menuDeleteBranch: $('deleteBranchMenuItem'),
 
     msgContextMenu: $('messageContextMenu'),
     menuBranchFull: $('branchFullMenuItem'),
@@ -1441,8 +1452,202 @@
     });
   }
 
+  // ====== Branch DAG (Phase 2) ======
+
+  async function loadBranches() {
+    try {
+      const data = await getJSON('/api/branches?type=domain');
+      const domains = data.branches || [];
+      // For each domain, load its children tree
+      for (const domain of domains) {
+        const treeData = await getJSON(`/api/branches/${domain.id}/tree`);
+        domain.children = (treeData.tree || [])[0]?.children || [];
+      }
+      state.branches = domains;
+    } catch (e) {
+      console.warn('Failed to load branches:', e);
+      state.branches = [];
+    }
+  }
+
+  async function createDomainBranch(name, description) {
+    try {
+      const res = await postJSON('/api/branches', { type: 'domain', name, description });
+      await loadBranches();
+      renderHistory();
+      return res.branch;
+    } catch (e) {
+      console.error('Failed to create domain:', e);
+    }
+  }
+
+  async function createWorkOrder(parentId, name, goal) {
+    try {
+      const res = await postJSON('/api/branches', { type: 'work_order', parent_id: parentId, name, goal });
+      await loadBranches();
+      renderHistory();
+      return res.branch;
+    } catch (e) {
+      console.error('Failed to create work order:', e);
+    }
+  }
+
+  async function transitionBranchStatus(branchId, newStatus) {
+    try {
+      const res = await postJSON(`/api/branches/${branchId}/status`, { status: newStatus });
+      await loadBranches();
+      renderHistory();
+      return res.branch;
+    } catch (e) {
+      console.error('Failed to transition status:', e);
+      alert(e.message || 'Status transition failed');
+    }
+  }
+
+  async function deleteBranch(branchId, hard) {
+    try {
+      await fetch(`/api/branches/${branchId}`, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ hard_delete: !!hard })
+      });
+      await loadBranches();
+      renderHistory();
+    } catch (e) {
+      console.error('Failed to delete branch:', e);
+    }
+  }
+
+  function branchStatusColor(status) {
+    switch (status) {
+      case 'active': return '#34a853';
+      case 'review': return '#f9ab00';
+      case 'merged': return '#4285f4';
+      case 'archived': return '#9e9e9e';
+      default: return '#9e9e9e';
+    }
+  }
+
+  function renderBranchNode(branch, container, depth) {
+    const isExpanded = state.expandedBranches.has(branch.id);
+    const children = branch.children || [];
+    const hasChildren = children.length > 0;
+
+    const div = el('div', 'branch-item');
+    div.setAttribute('data-branch-id', branch.id);
+    div.style.paddingLeft = (12 + depth * 16) + 'px';
+
+    // Chevron (only if has children)
+    const chevron = el('span', 'folder-chevron' + (isExpanded ? ' expanded' : ''));
+    chevron.textContent = hasChildren ? '\u25B6' : '';
+    chevron.style.width = '14px';
+    chevron.style.visibility = hasChildren ? 'visible' : 'hidden';
+    div.appendChild(chevron);
+
+    // Type icon
+    const icon = el('span', 'branch-icon');
+    icon.textContent = branch.type === 'domain' ? '\uD83C\uDF10' : '\uD83D\uDCCB';
+    div.appendChild(icon);
+
+    // Name
+    const nameSpan = el('span', 'folder-name');
+    nameSpan.textContent = branch.name || branch.title || 'Untitled';
+    div.appendChild(nameSpan);
+
+    // Status badge
+    const badge = el('span', 'branch-status branch-status-' + (branch.status || 'active'));
+    badge.textContent = branch.status || 'active';
+    badge.style.background = branchStatusColor(branch.status) + '22';
+    badge.style.color = branchStatusColor(branch.status);
+    div.appendChild(badge);
+
+    // Click to expand/collapse
+    div.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (hasChildren) {
+        if (state.expandedBranches.has(branch.id)) {
+          state.expandedBranches.delete(branch.id);
+        } else {
+          state.expandedBranches.add(branch.id);
+        }
+        renderHistory();
+      }
+    });
+
+    // Right-click for branch context menu
+    div.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      showBranchContextMenu(branch, e.pageX, e.pageY);
+    });
+
+    container.appendChild(div);
+
+    // Render children if expanded
+    if (isExpanded && hasChildren) {
+      children.forEach(child => {
+        renderBranchNode(child, container, depth + 1);
+      });
+    }
+  }
+
+  function showBranchContextMenu(branch, x, y) {
+    state.ctxMenuTarget = { type: 'branch', branchId: branch.id, branchType: branch.type, branchStatus: branch.status };
+    const menu = E.branchContextMenu;
+    if (!menu) return;
+
+    // Show/hide items based on branch type and status
+    const isD = branch.type === 'domain';
+    E.menuNewWorkOrder.style.display = isD ? '' : 'none';
+
+    // Status transitions
+    const validNext = {
+      'active': ['review', 'archived'],
+      'review': ['active', 'merged', 'archived'],
+      'merged': ['archived'],
+      'archived': ['active']
+    };
+    const allowed = validNext[branch.status] || [];
+    E.menuSetActive.style.display = allowed.includes('active') ? '' : 'none';
+    E.menuSetReview.style.display = allowed.includes('review') ? '' : 'none';
+    E.menuSetArchived.style.display = allowed.includes('archived') ? '' : 'none';
+
+    openMenuAt(menu, x, y);
+  }
+
   function renderHistory() {
     clearNode(E.chatHistory);
+
+    // Render branches section FIRST (Phase 2 DAG)
+    if (state.branches.length > 0) {
+      const branchHeader = el('div', 'folder-section-label');
+      branchHeader.style.display = 'flex';
+      branchHeader.style.alignItems = 'center';
+      branchHeader.style.justifyContent = 'space-between';
+
+      const labelSpan = el('span');
+      labelSpan.textContent = 'Branches';
+      branchHeader.appendChild(labelSpan);
+
+      const addBtn = el('button', 'branch-add-btn');
+      addBtn.textContent = '+';
+      addBtn.title = 'New Domain Branch';
+      addBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const name = prompt('Domain name:');
+        if (name && name.trim()) {
+          const desc = prompt('Description (optional):') || '';
+          createDomainBranch(name.trim(), desc.trim());
+        }
+      });
+      branchHeader.appendChild(addBtn);
+
+      E.chatHistory.appendChild(branchHeader);
+
+      state.branches.forEach(domain => {
+        renderBranchNode(domain, E.chatHistory, 0);
+      });
+    }
 
     // Build set of chats that are in folders
     const chatsInFolders = new Set(Object.keys(state.chatFolderMap));
@@ -1453,7 +1658,7 @@
       if (chat.parent_chat_id) childChats.add(chat.filename);
     });
 
-    // Render folders section FIRST
+    // Render folders section
     if (state.folders.length > 0) {
       state.folders.forEach(folder => {
         renderFolderNode(folder, E.chatHistory, 0);
@@ -5091,8 +5296,8 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
   async function init() {
     console.time('TB:init');
     // Close menus when scrolling/resizing
-    window.addEventListener('scroll', () => { E.chatContextMenu.style.display = 'none'; E.msgContextMenu.style.display = 'none'; E.inputContextMenu.style.display = 'none'; E.folderContextMenu.style.display = 'none'; E.moveToFolderMenu.style.display = 'none'; });
-    window.addEventListener('resize', () => { E.chatContextMenu.style.display = 'none'; E.msgContextMenu.style.display = 'none'; E.inputContextMenu.style.display = 'none'; E.folderContextMenu.style.display = 'none'; E.moveToFolderMenu.style.display = 'none'; });
+    window.addEventListener('scroll', () => { E.chatContextMenu.style.display = 'none'; E.msgContextMenu.style.display = 'none'; E.inputContextMenu.style.display = 'none'; E.folderContextMenu.style.display = 'none'; E.moveToFolderMenu.style.display = 'none'; if (E.branchContextMenu) E.branchContextMenu.style.display = 'none'; });
+    window.addEventListener('resize', () => { E.chatContextMenu.style.display = 'none'; E.msgContextMenu.style.display = 'none'; E.inputContextMenu.style.display = 'none'; E.folderContextMenu.style.display = 'none'; E.moveToFolderMenu.style.display = 'none'; if (E.branchContextMenu) E.branchContextMenu.style.display = 'none'; });
 
     // Bind UI immediately so app feels responsive
     bindMenus();
@@ -5112,7 +5317,7 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
     console.time('TB:parallelLoad');
 
     // Load all critical data in parallel
-    const [configResult, promptsResult, historyResult, docsResult, messagesResult, foldersResult, _toolsResult, _endpointsResult] = await Promise.allSettled([
+    const [configResult, promptsResult, historyResult, docsResult, messagesResult, foldersResult, _toolsResult, _endpointsResult, _branchesResult] = await Promise.allSettled([
       loadConfigAndModels(),
       loadPrompts(),
       loadHistory(),
@@ -5120,7 +5325,8 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
       loadMessages(),
       loadFolders(),
       loadToolsConfig(),
-      loadCustomEndpoints()
+      loadCustomEndpoints(),
+      loadBranches()
     ]);
 
     console.timeEnd('TB:parallelLoad');
@@ -5187,6 +5393,47 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
         loadChat(folder.prompt_branch_filename);
       }
     });
+
+    // Branch context menu handlers
+    if (E.menuNewWorkOrder) {
+      E.menuNewWorkOrder.addEventListener('click', () => {
+        E.branchContextMenu.style.display = 'none';
+        if (state.ctxMenuTarget.type !== 'branch') return;
+        const name = prompt('Work order name:');
+        if (name && name.trim()) {
+          const goal = prompt('Goal:') || '';
+          createWorkOrder(state.ctxMenuTarget.branchId, name.trim(), goal.trim());
+        }
+      });
+    }
+    if (E.menuSetActive) {
+      E.menuSetActive.addEventListener('click', () => {
+        E.branchContextMenu.style.display = 'none';
+        if (state.ctxMenuTarget.type === 'branch') transitionBranchStatus(state.ctxMenuTarget.branchId, 'active');
+      });
+    }
+    if (E.menuSetReview) {
+      E.menuSetReview.addEventListener('click', () => {
+        E.branchContextMenu.style.display = 'none';
+        if (state.ctxMenuTarget.type === 'branch') transitionBranchStatus(state.ctxMenuTarget.branchId, 'review');
+      });
+    }
+    if (E.menuSetArchived) {
+      E.menuSetArchived.addEventListener('click', () => {
+        E.branchContextMenu.style.display = 'none';
+        if (state.ctxMenuTarget.type === 'branch') transitionBranchStatus(state.ctxMenuTarget.branchId, 'archived');
+      });
+    }
+    if (E.menuDeleteBranch) {
+      E.menuDeleteBranch.addEventListener('click', () => {
+        E.branchContextMenu.style.display = 'none';
+        if (state.ctxMenuTarget.type === 'branch') {
+          if (confirm('Delete this branch? This cannot be undone.')) {
+            deleteBranch(state.ctxMenuTarget.branchId, true);
+          }
+        }
+      });
+    }
 
     // Message context menu: Add to Folder Memory
     E.menuAddToFolderMemory.addEventListener('click', async () => {

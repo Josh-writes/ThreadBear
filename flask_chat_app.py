@@ -2062,6 +2062,208 @@ class FlaskChatApp:
             self.folder_manager._save()
             return jsonify({"success": True})
 
+        # ---- Branch DAG (Phase 2) ----
+
+        @app.route('/api/branches', methods=['GET'])
+        def list_branches():
+            """List/search branches with optional filters."""
+            branch_type = request.args.get('type')
+            status = request.args.get('status')
+            query = request.args.get('q')
+            limit = int(request.args.get('limit', 100))
+            offset = int(request.args.get('offset', 0))
+
+            if query:
+                results = self.branch_manager.search_branches(
+                    query=query, status=status, branch_type=branch_type,
+                    limit=limit, offset=offset
+                )
+            else:
+                results = self.branch_db.list_branches(
+                    type=branch_type, status=status
+                )
+            return jsonify({"branches": results})
+
+        @app.route('/api/branches', methods=['POST'])
+        def create_branch():
+            """Create a branch. Dispatches by type field."""
+            data = request.get_json() or {}
+            branch_type = data.get('type', 'chat')
+            try:
+                if branch_type == 'domain':
+                    branch = self.branch_manager.create_domain_branch(
+                        name=data.get('name', 'New Domain'),
+                        description=data.get('description', ''),
+                        context_pack_id=data.get('context_pack_id'),
+                        policy=data.get('policy')
+                    )
+                elif branch_type == 'work_order':
+                    parent_id = data.get('parent_id')
+                    if not parent_id:
+                        return jsonify({"error": "parent_id required for work_order"}), 400
+                    branch = self.branch_manager.create_work_order(
+                        parent_id=parent_id,
+                        name=data.get('name', 'New Work Order'),
+                        goal=data.get('goal', ''),
+                        tools_allowed=data.get('tools_allowed')
+                    )
+                else:
+                    branch = self.branch_manager.create_chat_branch(
+                        title=data.get('name', data.get('title', 'New Chat')),
+                        parent_id=data.get('parent_id'),
+                        root_id=data.get('root_id'),
+                        filename=data.get('filename')
+                    )
+                return jsonify({"branch": branch}), 201
+            except ValueError as e:
+                return jsonify({"error": str(e)}), 400
+
+        @app.route('/api/branches/<branch_id>', methods=['GET'])
+        def get_branch(branch_id):
+            """Get a branch with its edges."""
+            branch = self.branch_manager.get_branch_with_edges(branch_id)
+            if not branch:
+                return jsonify({"error": "Branch not found"}), 404
+            return jsonify({"branch": branch})
+
+        @app.route('/api/branches/<branch_id>', methods=['PUT'])
+        def update_branch(branch_id):
+            """Update branch title, goal, or policy."""
+            existing = self.branch_db.get_branch(branch_id)
+            if not existing:
+                return jsonify({"error": "Branch not found"}), 404
+
+            data = request.get_json() or {}
+            updates = {}
+            if 'title' in data:
+                updates['title'] = data['title']
+            if 'goal' in data:
+                meta = json.loads(existing.get('metadata', '{}') or '{}')
+                meta['goal'] = data['goal']
+                updates['metadata'] = json.dumps(meta)
+            if 'policy' in data:
+                updates['policy'] = json.dumps(data['policy']) if isinstance(data['policy'], dict) else data['policy']
+
+            if updates:
+                branch = self.branch_db.upsert_branch(branch_id, **updates)
+            else:
+                branch = existing
+            return jsonify({"branch": branch})
+
+        @app.route('/api/branches/<branch_id>', methods=['DELETE'])
+        def delete_branch(branch_id):
+            """Soft-archive by default, hard-delete if hard_delete: true."""
+            existing = self.branch_db.get_branch(branch_id)
+            if not existing:
+                return jsonify({"error": "Branch not found"}), 404
+
+            data = request.get_json() or {}
+            if data.get('hard_delete'):
+                self.branch_db.delete_branch(branch_id)
+                return jsonify({"success": True, "deleted": branch_id})
+            else:
+                try:
+                    branch = self.branch_manager.transition_status(branch_id, 'archived')
+                    return jsonify({"branch": branch})
+                except ValueError as e:
+                    return jsonify({"error": str(e)}), 400
+
+        @app.route('/api/branches/<branch_id>/fork', methods=['POST'])
+        def fork_branch(branch_id):
+            """Fork a branch."""
+            data = request.get_json() or {}
+            try:
+                fork = self.branch_manager.fork_branch(
+                    source_id=branch_id,
+                    at_message_index=data.get('at_message_index'),
+                    name=data.get('name')
+                )
+                return jsonify({"branch": fork}), 201
+            except ValueError as e:
+                return jsonify({"error": str(e)}), 400
+
+        @app.route('/api/branches/<branch_id>/merge', methods=['POST'])
+        def merge_branch(branch_id):
+            """Merge branch into target. Must be in review status."""
+            data = request.get_json() or {}
+            target_id = data.get('target_id')
+            if not target_id:
+                return jsonify({"error": "target_id required"}), 400
+            try:
+                branch = self.branch_manager.merge_branch(
+                    source_id=branch_id,
+                    target_id=target_id,
+                    approval_notes=data.get('approval_notes', '')
+                )
+                return jsonify({"branch": branch})
+            except ValueError as e:
+                return jsonify({"error": str(e)}), 400
+
+        @app.route('/api/branches/<branch_id>/status', methods=['POST'])
+        def transition_branch_status(branch_id):
+            """Transition branch status (lifecycle enforced)."""
+            data = request.get_json() or {}
+            new_status = data.get('status')
+            if not new_status:
+                return jsonify({"error": "status required"}), 400
+            try:
+                branch = self.branch_manager.transition_status(branch_id, new_status)
+                return jsonify({"branch": branch})
+            except ValueError as e:
+                return jsonify({"error": str(e)}), 400
+
+        @app.route('/api/branches/<branch_id>/tree', methods=['GET'])
+        def get_branch_tree(branch_id):
+            """Get subtree for rendering."""
+            tree = self.branch_manager.get_branch_tree(root_id=branch_id)
+            return jsonify({"tree": tree})
+
+        @app.route('/api/edges', methods=['POST'])
+        def create_edge():
+            """Create an edge between branches."""
+            data = request.get_json() or {}
+            from_branch = data.get('from_branch')
+            to_branch = data.get('to_branch')
+            edge_type = data.get('type')
+
+            if not all([from_branch, to_branch, edge_type]):
+                return jsonify({"error": "from_branch, to_branch, and type required"}), 400
+
+            # Validate both branches exist
+            if not self.branch_db.get_branch(from_branch):
+                return jsonify({"error": f"Branch {from_branch} not found"}), 404
+            if not self.branch_db.get_branch(to_branch):
+                return jsonify({"error": f"Branch {to_branch} not found"}), 404
+
+            self.branch_db.add_edge(
+                from_branch=from_branch,
+                to_branch=to_branch,
+                edge_type=edge_type,
+                payload=data.get('payload')
+            )
+            return jsonify({"success": True}), 201
+
+        @app.route('/api/edges', methods=['GET'])
+        def list_edges():
+            """Query edges with filters."""
+            from_branch = request.args.get('from_branch')
+            to_branch = request.args.get('to_branch')
+            edge_type = request.args.get('type')
+            edges = self.branch_db.list_edges(
+                from_branch=from_branch,
+                to_branch=to_branch,
+                edge_type=edge_type
+            )
+            return jsonify({"edges": edges})
+
+        @app.route('/api/edges/<int:edge_id>', methods=['DELETE'])
+        def delete_edge(edge_id):
+            """Delete an edge."""
+            deleted = self.branch_db.delete_edge(edge_id)
+            if not deleted:
+                return jsonify({"error": "Edge not found"}), 404
+            return jsonify({"success": True})
+
         # ---- Context documents (binary-safe) ----
         @app.route('/api/context/docs', methods=['GET'])
         def context_list_route():
