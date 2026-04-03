@@ -192,8 +192,9 @@ Screen {
 }
 
 .message-turn {
-    margin: 1 1;
-    padding: 1 1;
+    margin: 1 2;
+    padding: 0;
+    width: 1fr;
 }
 
 .message-separator {
@@ -214,6 +215,27 @@ Screen {
 
 .user-content {
     color: #e0e0e0;
+}
+
+.message-bubble-user {
+    background: #1e2f5a;
+    border: round #2f5fa7;
+    padding: 1 2;
+}
+
+.message-bubble-assistant {
+    background: #18203f;
+    border: round #365b8f;
+    padding: 1 2;
+}
+
+.assistant-content {
+    color: #e6ebff;
+}
+
+#chat-display Markdown {
+    color: #e6ebff;
+    background: transparent;
 }
 """
 
@@ -1252,30 +1274,33 @@ class ChatDisplay(VerticalScroll):
                     self.mount(Static(f"[dim]{content[:100]}...[/dim]", markup=True))
                     continue
                 if role == "user":
-                    self.mount(Static("\u2500" * 50, classes="message-separator"))
                     container = Vertical(classes="message-turn")
                     self.mount(container)
                     container.mount(Static("You", classes="user-label"))
-                    container.mount(Static(content, classes="user-content"))
+                    bubble = Vertical(classes="message-bubble-user")
+                    bubble.mount(Static(content, classes="user-content"))
+                    container.mount(bubble)
                 elif role == "assistant":
-                    self.mount(Static("\u2500" * 50, classes="message-separator"))
                     provider = tb_app.config.get("provider", "unknown")
                     model = tb_app.config.get(f"{provider}_model", "unknown")
                     label = f"{provider}/{model}"
                     container = Vertical(classes="message-turn")
                     self.mount(container)
                     container.mount(Static(label, classes="assistant-label"))
-                    container.mount(Markdown(content))
+                    bubble = Vertical(classes="message-bubble-assistant")
+                    bubble.mount(Markdown(content if content else "_(empty message)_", classes="assistant-content"))
+                    container.mount(bubble)
                 elif role == "tool":
                     # Keep tool messages from creating blank rows in history rendering.
                     continue
                 else:
                     # Legacy/unknown role: render as plain message instead of blank separators.
-                    self.mount(Static("\u2500" * 50, classes="message-separator"))
                     container = Vertical(classes="message-turn")
                     self.mount(container)
                     container.mount(Static(role or "message", classes="assistant-label"))
-                    container.mount(Static(content or "[dim](empty)[/dim]", markup=True))
+                    bubble = Vertical(classes="message-bubble-assistant")
+                    bubble.mount(Static(content or "[dim](empty)[/dim]", markup=True, classes="assistant-content"))
+                    container.mount(bubble)
         else:
             self.mount(Static("[dim]ThreadBear v1.0.0[/dim]\n[dim]Type /help for commands, /quit to exit[/dim]\n[dim]Features: branching, tools, docs, folders, endpoints[/dim]", markup=True))
         self.scroll_end()
@@ -1314,15 +1339,18 @@ class ChatDisplay(VerticalScroll):
         self._streaming_buffer = ""
         self._streaming_widget = None
         tb_app = self.app
-        self.mount(Static("\u2500" * 50, classes="message-separator"))
         container = Vertical(classes="message-turn")
         if role == "user":
             container.mount(Static("You", classes="user-label"))
-            container.mount(Static(content, classes="user-content"))
+            bubble = Vertical(classes="message-bubble-user")
+            bubble.mount(Static(content, classes="user-content"))
+            container.mount(bubble)
         elif role == "assistant":
             label = self._get_model_label()
             container.mount(Static(label, classes="assistant-label"))
-            container.mount(Markdown(content))
+            bubble = Vertical(classes="message-bubble-assistant")
+            bubble.mount(Markdown(content if content else "_(empty message)_", classes="assistant-content"))
+            container.mount(bubble)
         self.mount(container)
         self.scroll_end()
 
@@ -1333,10 +1361,11 @@ class ChatDisplay(VerticalScroll):
         self._streaming_buffer = ""
         self._streaming_widget = None
         label = self._get_model_label()
-        self.mount(Static("\u2500" * 50, classes="message-separator"))
         container = Vertical(classes="message-turn")
         container.mount(Static(label, classes="assistant-label"))
-        container.mount(Markdown(content))
+        bubble = Vertical(classes="message-bubble-assistant")
+        bubble.mount(Markdown(content if content else "_(empty message)_", classes="assistant-content"))
+        container.mount(bubble)
         self.mount(container)
         self.scroll_end()
 
