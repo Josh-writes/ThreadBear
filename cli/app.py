@@ -1278,8 +1278,8 @@ class ChatDisplay(VerticalScroll):
                     self.mount(container)
                     container.mount(Static("You", classes="user-label"))
                     bubble = Vertical(classes="message-bubble-user")
-                    bubble.mount(Static(content, classes="user-content"))
                     container.mount(bubble)
+                    bubble.mount(Static(content, classes="user-content"))
                 elif role == "assistant":
                     provider = tb_app.config.get("provider", "unknown")
                     model = tb_app.config.get(f"{provider}_model", "unknown")
@@ -1288,8 +1288,8 @@ class ChatDisplay(VerticalScroll):
                     self.mount(container)
                     container.mount(Static(label, classes="assistant-label"))
                     bubble = Vertical(classes="message-bubble-assistant")
-                    bubble.mount(Markdown(content if content else "_(empty message)_", classes="assistant-content"))
                     container.mount(bubble)
+                    bubble.mount(Markdown(content if content else "_(empty message)_", classes="assistant-content"))
                 elif role == "tool":
                     # Keep tool messages from creating blank rows in history rendering.
                     continue
@@ -1299,8 +1299,8 @@ class ChatDisplay(VerticalScroll):
                     self.mount(container)
                     container.mount(Static(role or "message", classes="assistant-label"))
                     bubble = Vertical(classes="message-bubble-assistant")
-                    bubble.mount(Static(content or "[dim](empty)[/dim]", markup=True, classes="assistant-content"))
                     container.mount(bubble)
+                    bubble.mount(Static(content or "[dim](empty)[/dim]", markup=True, classes="assistant-content"))
         else:
             self.mount(Static("[dim]ThreadBear v1.0.0[/dim]\n[dim]Type /help for commands, /quit to exit[/dim]\n[dim]Features: branching, tools, docs, folders, endpoints[/dim]", markup=True))
         self.scroll_end()
@@ -1343,14 +1343,14 @@ class ChatDisplay(VerticalScroll):
         if role == "user":
             container.mount(Static("You", classes="user-label"))
             bubble = Vertical(classes="message-bubble-user")
-            bubble.mount(Static(content, classes="user-content"))
             container.mount(bubble)
+            bubble.mount(Static(content, classes="user-content"))
         elif role == "assistant":
             label = self._get_model_label()
             container.mount(Static(label, classes="assistant-label"))
             bubble = Vertical(classes="message-bubble-assistant")
-            bubble.mount(Markdown(content if content else "_(empty message)_", classes="assistant-content"))
             container.mount(bubble)
+            bubble.mount(Markdown(content if content else "_(empty message)_", classes="assistant-content"))
         self.mount(container)
         self.scroll_end()
 
@@ -1364,8 +1364,8 @@ class ChatDisplay(VerticalScroll):
         container = Vertical(classes="message-turn")
         container.mount(Static(label, classes="assistant-label"))
         bubble = Vertical(classes="message-bubble-assistant")
-        bubble.mount(Markdown(content if content else "_(empty message)_", classes="assistant-content"))
         container.mount(bubble)
+        bubble.mount(Markdown(content if content else "_(empty message)_", classes="assistant-content"))
         self.mount(container)
         self.scroll_end()
 
