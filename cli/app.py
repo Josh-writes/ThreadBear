@@ -1188,6 +1188,51 @@ class Sidebar(VerticalScroll):
 
 
 class ChatDisplay(VerticalScroll):
+    @staticmethod
+    def _normalize_role(raw_role: str) -> str:
+        role = (raw_role or "").strip().lower()
+        if role in {"assistant", "ai", "bot", "model"}:
+            return "assistant"
+        if role in {"user", "human"}:
+            return "user"
+        if role in {"system"}:
+            return "system"
+        if role in {"tool", "function"}:
+            return "tool"
+        return role
+
+    @staticmethod
+    def _extract_text_content(content) -> str:
+        if content is None:
+            return ""
+        if isinstance(content, str):
+            return content
+        if isinstance(content, (int, float, bool)):
+            return str(content)
+        if isinstance(content, list):
+            parts = []
+            for item in content:
+                if isinstance(item, str):
+                    parts.append(item)
+                elif isinstance(item, dict):
+                    if "text" in item and isinstance(item["text"], str):
+                        parts.append(item["text"])
+                    elif item.get("type") == "text":
+                        txt = item.get("content") or item.get("value")
+                        if isinstance(txt, str):
+                            parts.append(txt)
+            return "\n".join(p for p in parts if p).strip()
+        if isinstance(content, dict):
+            for key in ("text", "content", "message", "response", "output"):
+                val = content.get(key)
+                if isinstance(val, str):
+                    return val
+            try:
+                return json.dumps(content, ensure_ascii=False, indent=2)
+            except Exception:
+                return str(content)
+        return str(content)
+
     def on_mount(self):
         self._streaming_buffer = ""
         self._streaming_widget = None
@@ -1201,18 +1246,19 @@ class ChatDisplay(VerticalScroll):
         chat = tb_app.chat_manager.current_chat
         if chat and chat.get("chat_history"):
             for msg in chat["chat_history"]:
-                role = msg.get("role", "unknown")
-                content = msg.get("content", "")
+                role = self._normalize_role(msg.get("role", "unknown"))
+                content = self._extract_text_content(msg.get("content", ""))
                 if role == "system":
                     self.mount(Static(f"[dim]{content[:100]}...[/dim]", markup=True))
                     continue
-                self.mount(Static("\u2500" * 50, classes="message-separator"))
                 if role == "user":
+                    self.mount(Static("\u2500" * 50, classes="message-separator"))
                     container = Vertical(classes="message-turn")
                     self.mount(container)
                     container.mount(Static("You", classes="user-label"))
                     container.mount(Static(content, classes="user-content"))
                 elif role == "assistant":
+                    self.mount(Static("\u2500" * 50, classes="message-separator"))
                     provider = tb_app.config.get("provider", "unknown")
                     model = tb_app.config.get(f"{provider}_model", "unknown")
                     label = f"{provider}/{model}"
@@ -1220,6 +1266,16 @@ class ChatDisplay(VerticalScroll):
                     self.mount(container)
                     container.mount(Static(label, classes="assistant-label"))
                     container.mount(Markdown(content))
+                elif role == "tool":
+                    # Keep tool messages from creating blank rows in history rendering.
+                    continue
+                else:
+                    # Legacy/unknown role: render as plain message instead of blank separators.
+                    self.mount(Static("\u2500" * 50, classes="message-separator"))
+                    container = Vertical(classes="message-turn")
+                    self.mount(container)
+                    container.mount(Static(role or "message", classes="assistant-label"))
+                    container.mount(Static(content or "[dim](empty)[/dim]", markup=True))
         else:
             self.mount(Static("[dim]ThreadBear v1.0.0[/dim]\n[dim]Type /help for commands, /quit to exit[/dim]\n[dim]Features: branching, tools, docs, folders, endpoints[/dim]", markup=True))
         self.scroll_end()
