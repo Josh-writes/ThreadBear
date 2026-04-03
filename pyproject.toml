@@ -27,6 +27,7 @@ include = [
     "agent*",
     "tools*",
     "readers*",
+    "threadbear_services*",
 ]
 
 [tool.setuptools]
