@@ -50,6 +50,7 @@ from tools import tool_registry, ToolSafetyManager
 from threadbear_services import (
     BUILTIN_PROVIDERS,
     KNOWN_OPENAI_COMPAT_PROVIDERS,
+    get_known_providers_with_api_keys,
     inject_endpoint_config,
     truncate_tool_result,
 )
@@ -310,7 +311,8 @@ class ThreadBearApp(App):
 
     @property
     def available_providers(self):
-        return self.builtin_providers + list(self.known_providers.keys()) + list(self.config.get("custom_endpoints", {}).keys())
+        keyed_known = get_known_providers_with_api_keys(self.config)
+        return self.builtin_providers + list(keyed_known.keys()) + list(self.config.get("custom_endpoints", {}).keys())
 
     def _get_stream_func(self, provider):
         builtin = {
