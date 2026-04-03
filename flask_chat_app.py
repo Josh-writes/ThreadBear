@@ -23,6 +23,12 @@ from datetime import datetime
 from typing import Dict, List
 import requests
 from api_clients import estimate_tokens, get_llamacpp_context_size
+from threadbear_services import (
+    BUILTIN_PROVIDERS,
+    KNOWN_OPENAI_COMPAT_PROVIDERS,
+    inject_endpoint_config,
+    truncate_tool_result,
+)
 
 # No-proxy session for llama.cpp LAN/local calls
 _local_session = requests.Session()
@@ -102,45 +108,6 @@ def _cancel_generation(message_id: int):
             _request_contexts[message_id]['cancel_generation'] = True
 
 
-def _truncate_text_head_tail(text: str, max_chars: int) -> str:
-    """Truncate text keeping head + tail so the LLM sees how it started and ended."""
-    if len(text) <= max_chars:
-        return text
-    half = max_chars // 2
-    # Break at newlines so we don't cut mid-line
-    head = text[:half]
-    tail = text[-half:]
-    # Snap to last newline in head
-    nl = head.rfind('\n')
-    if nl > half // 2:
-        head = head[:nl]
-    # Snap to first newline in tail
-    nl = tail.find('\n')
-    if nl != -1 and nl < half // 2:
-        tail = tail[nl + 1:]
-    omitted = len(text) - len(head) - len(tail)
-    total_lines = text.count('\n') + 1
-    return f"{head}\n\n[... {omitted} chars omitted, {total_lines} total lines ...]\n\n{tail}"
-
-
-def _truncate_tool_result(result: dict, max_chars: int = 3000) -> dict:
-    """
-    Smart-truncate a tool result dict for the LLM context.
-    Truncates individual text fields (stdout, content, etc.) using head+tail,
-    preserving structure so JSON remains valid.
-    """
-    truncated = dict(result)
-    # Fields that can be large
-    text_fields = ['stdout', 'stderr', 'content', 'data']
-    for field in text_fields:
-        if field in truncated and isinstance(truncated[field], str):
-            truncated[field] = _truncate_text_head_tail(truncated[field], max_chars)
-    # Handle nested {success, result} wrapper
-    if 'result' in truncated and isinstance(truncated['result'], dict):
-        truncated['result'] = _truncate_tool_result(truncated['result'], max_chars)
-    return truncated
-
-
 class FlaskChatApp:
     def __init__(self):
         # figure out where the repo root is (same folder that has templates/, static/, prompts/)
@@ -169,21 +136,8 @@ class FlaskChatApp:
 
         self.temporary_mode = False
         self.incognito_mode = False
-        self.builtin_providers = ["groq", "google", "mistral", "openrouter", "llamacpp"]
-
-        # Known OpenAI-compatible providers: name slug → base_url + context_window defaults
-        self.known_providers = {
-            "cerebras":   {"base_url": "https://api.cerebras.ai/v1",              "context_window": 131072},
-            "together":   {"base_url": "https://api.together.xyz/v1",             "context_window": 131072},
-            "togetherai": {"base_url": "https://api.together.xyz/v1",             "context_window": 131072},
-            "deepseek":   {"base_url": "https://api.deepseek.com/v1",             "context_window": 65536},
-            "xai":        {"base_url": "https://api.x.ai/v1",                    "context_window": 131072},
-            "fireworks":  {"base_url": "https://api.fireworks.ai/inference/v1",   "context_window": 131072},
-            "perplexity": {"base_url": "https://api.perplexity.ai",               "context_window": 131072},
-            "nvidia":     {"base_url": "https://integrate.api.nvidia.com/v1",     "context_window": 32768},
-            "ollama":     {"base_url": "http://localhost:11434/v1",               "context_window": 8192},
-            "lmstudio":   {"base_url": "http://localhost:1234/v1",                "context_window": 8192},
-        }
+        self.builtin_providers = list(BUILTIN_PROVIDERS)
+        self.known_providers = dict(KNOWN_OPENAI_COMPAT_PROVIDERS)
 
         self.pending_messages: Dict[int, Dict[str, str]] = {}
 
@@ -210,14 +164,8 @@ class FlaskChatApp:
         return None
 
     def _inject_endpoint_config(self, provider, merged_cfg):
-        """For custom endpoints, inject base_url and api_key into the config dict."""
-        endpoints = self.config.get("custom_endpoints", {})
-        if provider in endpoints:
-            ep = endpoints[provider]
-            api_key = self.config.get_api_key(provider)
-            merged_cfg["_endpoint_base_url"] = ep["base_url"]
-            merged_cfg["_endpoint_api_key"] = api_key
-            merged_cfg["_endpoint_provider"] = provider
+        """Inject base URL + API key for known/custom OpenAI-compatible endpoints."""
+        inject_endpoint_config(provider, merged_cfg, self.config)
 
     # ---------------- Routes ----------------
     def setup_routes(self):
@@ -1244,7 +1192,7 @@ class FlaskChatApp:
                                     ctx_window = 8192
                                 budget_chars = int(ctx_window * 0.4 * 4) // max(len(tool_calls_this_round), 1)
                                 budget_chars = max(budget_chars, 2000)  # floor
-                                llm_result = _truncate_tool_result(result, max_chars=budget_chars)
+                                llm_result = truncate_tool_result(result, max_chars=budget_chars)
                                 api_messages.append({
                                     'role': 'tool',
                                     'tool_call_id': tc.get('id', ''),

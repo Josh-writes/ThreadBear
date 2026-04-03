@@ -47,6 +47,12 @@ from api_clients import (
 )
 
 from tools import tool_registry, ToolSafetyManager
+from threadbear_services import (
+    BUILTIN_PROVIDERS,
+    KNOWN_OPENAI_COMPAT_PROVIDERS,
+    inject_endpoint_config,
+    truncate_tool_result,
+)
 
 from cli.themes import get_theme_css
 
@@ -255,12 +261,8 @@ class ThreadBearApp(App):
         self.chat_manager.branch_db = self.branch_db
         self.branch_db.migrate_from_json(self.chat_manager.chats_directory)
 
-        self.builtin_providers = ["groq", "google", "mistral", "openrouter", "llamacpp"]
-
-        # Known OpenAI-compatible providers: name slug → base_url + context_window defaults
-        self.known_providers = {
-            "cerebras": {"base_url": "https://api.cerebras.ai/v1", "context_window": 131072},
-        }
+        self.builtin_providers = list(BUILTIN_PROVIDERS)
+        self.known_providers = dict(KNOWN_OPENAI_COMPAT_PROVIDERS)
         
         self._show_left = True
         self._show_right = False
@@ -327,19 +329,7 @@ class ThreadBearApp(App):
         return None
 
     def _inject_endpoint_config(self, provider, merged_cfg):
-        if provider in self.known_providers:
-            ep = self.known_providers[provider]
-            api_key = self.config.get_api_key(provider)
-            merged_cfg["_endpoint_base_url"] = ep["base_url"]
-            merged_cfg["_endpoint_api_key"] = api_key
-            merged_cfg["_endpoint_provider"] = provider
-        endpoints = self.config.get("custom_endpoints", {})
-        if provider in endpoints:
-            ep = endpoints[provider]
-            api_key = self.config.get_api_key(provider)
-            merged_cfg["_endpoint_base_url"] = ep["base_url"]
-            merged_cfg["_endpoint_api_key"] = api_key
-            merged_cfg["_endpoint_provider"] = provider
+        inject_endpoint_config(provider, merged_cfg, self.config)
 
     def _get_llamacpp_url(self):
         return self.config.get("llamacpp_url", "http://localhost:8080")
@@ -582,7 +572,7 @@ class ThreadBearApp(App):
                             ctx_window = 8192
                         budget_chars = int(ctx_window * 0.4 * 4) // max(len(tool_calls_this_round), 1)
                         budget_chars = max(budget_chars, 2000)
-                        llm_result = self._truncate_tool_result(result, max_chars=budget_chars)
+                        llm_result = truncate_tool_result(result, max_chars=budget_chars)
                         api_messages.append({
                             'role': 'tool',
                             'tool_call_id': tc.get('id', ''),
@@ -807,30 +797,6 @@ class ThreadBearApp(App):
                     pass
         except Exception as e:
             print(f"Failed to rename chat: {e}")
-
-    def _truncate_tool_result(self, result: dict, max_chars: int = 3000) -> dict:
-        truncated = dict(result)
-        text_fields = ['stdout', 'stderr', 'content', 'data']
-        for field in text_fields:
-            if field in truncated and isinstance(truncated[field], str):
-                val = truncated[field]
-                if len(val) > max_chars:
-                    half = max_chars // 2
-                    head = val[:half]
-                    tail = val[-half:]
-                    nl = head.rfind('\n')
-                    if nl > half // 2:
-                        head = head[:nl]
-                    nl = tail.find('\n')
-                    if nl != -1 and nl < half // 2:
-                        tail = tail[nl + 1:]
-                    omitted = len(val) - len(head) - len(tail)
-                    total_lines = val.count('\n') + 1
-                    truncated[field] = f"{head}\n\n[... {omitted} chars omitted, {total_lines} total lines ...]\n\n{tail}"
-        if 'result' in truncated and isinstance(truncated['result'], dict):
-            truncated['result'] = self._truncate_tool_result(truncated['result'], max_chars)
-        return truncated
-
 
 class HeaderBar(Horizontal):
     DEFAULT_CSS = """
