@@ -17,7 +17,7 @@ os.chdir(_project_root)
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.screen import Screen
-from textual.widgets import Static, Input, Markdown, Select, Tree
+from textual.widgets import Static, Input, Select, Tree
 from textual.containers import VerticalScroll, Horizontal, Container, Vertical
 from textual import on, work
 from textual.events import Click
@@ -80,6 +80,7 @@ Screen {
 
 #chat-display {
     height: 1fr;
+    background: #0b0b0f;
 }
 
 #right-sidebar {
@@ -192,7 +193,7 @@ Screen {
 }
 
 .message-turn {
-    margin: 1 2;
+    margin: 1 2 0 2;
     padding: 0;
     width: 1fr;
 }
@@ -215,22 +216,12 @@ Screen {
 
 .user-content {
     color: #e0e0e0;
-}
-
-.message-bubble-user {
-    background: #1e2f5a;
-    border: round #2f5fa7;
-    padding: 1 2;
-}
-
-.message-bubble-assistant {
-    background: #18203f;
-    border: round #365b8f;
-    padding: 1 2;
+    margin: 0 0 1 0;
 }
 
 .assistant-content {
     color: #e6ebff;
+    margin: 0 0 1 0;
 }
 
 #chat-display Markdown {
@@ -1277,9 +1268,7 @@ class ChatDisplay(VerticalScroll):
                     container = Vertical(classes="message-turn")
                     self.mount(container)
                     container.mount(Static("You", classes="user-label"))
-                    bubble = Vertical(classes="message-bubble-user")
-                    container.mount(bubble)
-                    bubble.mount(Static(content, classes="user-content"))
+                    container.mount(Static(content or "", classes="user-content"))
                 elif role == "assistant":
                     provider = tb_app.config.get("provider", "unknown")
                     model = tb_app.config.get(f"{provider}_model", "unknown")
@@ -1287,9 +1276,7 @@ class ChatDisplay(VerticalScroll):
                     container = Vertical(classes="message-turn")
                     self.mount(container)
                     container.mount(Static(label, classes="assistant-label"))
-                    bubble = Vertical(classes="message-bubble-assistant")
-                    container.mount(bubble)
-                    bubble.mount(Markdown(content if content else "_(empty message)_", classes="assistant-content"))
+                    container.mount(Static(content if content else "(empty message)", classes="assistant-content"))
                 elif role == "tool":
                     # Keep tool messages from creating blank rows in history rendering.
                     continue
@@ -1298,9 +1285,7 @@ class ChatDisplay(VerticalScroll):
                     container = Vertical(classes="message-turn")
                     self.mount(container)
                     container.mount(Static(role or "message", classes="assistant-label"))
-                    bubble = Vertical(classes="message-bubble-assistant")
-                    container.mount(bubble)
-                    bubble.mount(Static(content or "[dim](empty)[/dim]", markup=True, classes="assistant-content"))
+                    container.mount(Static(content or "[dim](empty)[/dim]", markup=True, classes="assistant-content"))
         else:
             self.mount(Static("[dim]ThreadBear v1.0.0[/dim]\n[dim]Type /help for commands, /quit to exit[/dim]\n[dim]Features: branching, tools, docs, folders, endpoints[/dim]", markup=True))
         self.scroll_end()
@@ -1342,15 +1327,11 @@ class ChatDisplay(VerticalScroll):
         container = Vertical(classes="message-turn")
         if role == "user":
             container.mount(Static("You", classes="user-label"))
-            bubble = Vertical(classes="message-bubble-user")
-            container.mount(bubble)
-            bubble.mount(Static(content, classes="user-content"))
+            container.mount(Static(content or "", classes="user-content"))
         elif role == "assistant":
             label = self._get_model_label()
             container.mount(Static(label, classes="assistant-label"))
-            bubble = Vertical(classes="message-bubble-assistant")
-            container.mount(bubble)
-            bubble.mount(Markdown(content if content else "_(empty message)_", classes="assistant-content"))
+            container.mount(Static(content if content else "(empty message)", classes="assistant-content"))
         self.mount(container)
         self.scroll_end()
 
@@ -1363,9 +1344,7 @@ class ChatDisplay(VerticalScroll):
         label = self._get_model_label()
         container = Vertical(classes="message-turn")
         container.mount(Static(label, classes="assistant-label"))
-        bubble = Vertical(classes="message-bubble-assistant")
-        container.mount(bubble)
-        bubble.mount(Markdown(content if content else "_(empty message)_", classes="assistant-content"))
+        container.mount(Static(content if content else "(empty message)", classes="assistant-content"))
         self.mount(container)
         self.scroll_end()
 
