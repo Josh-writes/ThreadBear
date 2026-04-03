@@ -3506,26 +3506,33 @@
                 <div id="endpointForm" style="display: none; margin-top: 12px; padding: 12px; border: 1px solid var(--border-color); border-radius: 8px; background: var(--bg-secondary);">
                     <input type="hidden" id="endpointEditId" value="">
                     <div class="setting-group" style="margin-bottom: 8px;">
-                        <label class="setting-label">Display Name</label>
-                        <input type="text" class="setting-input" id="endpointName" placeholder="e.g. NVIDIA NIM">
-                    </div>
-                    <div class="setting-group" style="margin-bottom: 8px;">
-                        <label class="setting-label">Base URL</label>
-                        <input type="text" class="setting-input" id="endpointBaseUrl" placeholder="e.g. https://integrate.api.nvidia.com/v1">
+                        <label class="setting-label">Provider Name</label>
+                        <input type="text" class="setting-input" id="endpointName" placeholder="e.g. Cerebras, Together AI, DeepSeek">
+                        <small id="endpointNameHint" style="color: var(--text-muted); display: block; margin-top: 2px;"></small>
                     </div>
                     <div class="setting-group" style="margin-bottom: 8px;">
                         <label class="setting-label">API Key Env Variable</label>
-                        <input type="text" class="setting-input" id="endpointApiKeyEnv" placeholder="e.g. NVIDIA_API_KEY">
-                        <small style="color: var(--text-muted); display: block; margin-top: 2px;">Preferred: set the key as an environment variable</small>
+                        <input type="text" class="setting-input" id="endpointApiKeyEnv" placeholder="e.g. CEREBRAS_API_KEY">
+                        <small style="color: var(--text-muted); display: block; margin-top: 2px;">Environment variable name — auto-filled from provider name</small>
                     </div>
-                    <div class="setting-group" style="margin-bottom: 8px;">
-                        <label class="setting-label">API Key (direct)</label>
-                        <input type="password" class="setting-input" id="endpointApiKey" placeholder="sk-... (stored in config.json)">
-                        <small style="color: var(--text-muted); display: block; margin-top: 2px;">Fallback if env var not set</small>
+                    <!-- Advanced (collapsed by default) -->
+                    <div style="margin-bottom: 8px;">
+                        <button type="button" id="endpointAdvancedToggle" style="background: none; border: none; color: var(--text-muted); font-size: 12px; cursor: pointer; padding: 0;">▶ Advanced</button>
                     </div>
-                    <div class="setting-group" style="margin-bottom: 8px;">
-                        <label class="setting-label">Default Context Window</label>
-                        <input type="number" class="setting-input" id="endpointContextWindow" value="32768" min="1024" step="1024">
+                    <div id="endpointAdvanced" style="display: none;">
+                        <div class="setting-group" style="margin-bottom: 8px;">
+                            <label class="setting-label">Base URL</label>
+                            <input type="text" class="setting-input" id="endpointBaseUrl" placeholder="e.g. https://api.cerebras.ai/v1">
+                            <small style="color: var(--text-muted); display: block; margin-top: 2px;">Auto-filled for known providers. Required for others.</small>
+                        </div>
+                        <div class="setting-group" style="margin-bottom: 8px;">
+                            <label class="setting-label">API Key (direct)</label>
+                            <input type="password" class="setting-input" id="endpointApiKey" placeholder="sk-... (stored in config.json, env var preferred)">
+                        </div>
+                        <div class="setting-group" style="margin-bottom: 8px;">
+                            <label class="setting-label">Context Window</label>
+                            <input type="number" class="setting-input" id="endpointContextWindow" value="32768" min="1024" step="1024">
+                        </div>
                     </div>
                     <div style="display: flex; gap: 6px; align-items: center; flex-wrap: wrap;">
                         <button class="control-btn" id="endpointSaveBtn" style="padding: 6px 16px;">Save</button>
@@ -3844,6 +3851,10 @@
             <span>📁</span>
             <span>Add Subfolder</span>
         </div>
+        <div class="context-menu-item" id="makeWorkspaceMenuItem">
+            <span>💼</span>
+            <span>Make Workspace</span>
+        </div>
         <div class="context-menu-separator"></div>
         <div class="context-menu-item" id="openPromptBranchMenuItem">
             <span>🎯</span>
@@ -3853,6 +3864,19 @@
             <span>📝</span>
             <span>Context Settings</span>
         </div>
+        <div class="context-menu-separator" id="workspaceSeparator" style="display:none;"></div>
+        <div class="context-menu-item" id="setActiveMenuItem" style="display:none;">
+            <span>▶️</span>
+            <span>Set Active</span>
+        </div>
+        <div class="context-menu-item" id="setReviewMenuItem" style="display:none;">
+            <span>👁️</span>
+            <span>Set Review</span>
+        </div>
+        <div class="context-menu-item" id="setArchivedMenuItem" style="display:none;">
+            <span>📦</span>
+            <span>Archive</span>
+        </div>
         <div class="context-menu-separator"></div>
         <div class="context-menu-item danger" id="deleteFolderMenuItem">
             <span>🗑️</span>
@@ -3861,32 +3885,6 @@
     </div>
 
 
-
-    <!-- Branch context menu -->
-    <div class="context-menu" id="branchContextMenu">
-        <div class="context-menu-item" id="newWorkOrderMenuItem">
-            <span>📋</span>
-            <span>New Work Order</span>
-        </div>
-        <div class="context-menu-separator"></div>
-        <div class="context-menu-item" id="setActiveMenuItem">
-            <span>▶️</span>
-            <span>Set Active</span>
-        </div>
-        <div class="context-menu-item" id="setReviewMenuItem">
-            <span>👁️</span>
-            <span>Set Review</span>
-        </div>
-        <div class="context-menu-item" id="setArchivedMenuItem">
-            <span>📦</span>
-            <span>Archive</span>
-        </div>
-        <div class="context-menu-separator"></div>
-        <div class="context-menu-item danger" id="deleteBranchMenuItem">
-            <span>🗑️</span>
-            <span>Delete</span>
-        </div>
-    </div>
 
     <!-- Toolbox context menu -->
     <div class="context-menu" id="toolboxContextMenu">

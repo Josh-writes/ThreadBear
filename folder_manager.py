@@ -90,6 +90,11 @@ class FolderManager:
             "saved_prompts": [],
             "active_prompt_id": None,
             "memory_notes": [],
+            # Workspace fields (Phase 2) — None means plain folder
+            "workspace_type": None,   # None | "workspace"
+            "status": None,           # None | "active" | "review" | "merged" | "archived"
+            "goal": None,
+            "policy": None,
         }
         self.data["folders"].append(folder)
 
@@ -520,3 +525,65 @@ class FolderManager:
         folder["memory_notes"] = []
         self._save()
         return True
+
+    # ---- Workspace (Phase 2) ----
+
+    # Valid status transitions: current -> [allowed next states]
+    VALID_TRANSITIONS = {
+        'active': ['review', 'archived'],
+        'review': ['active', 'merged', 'archived'],
+        'merged': ['archived'],
+        'archived': ['active'],
+    }
+
+    def make_workspace(self, folder_id: str, goal: str = '',
+                       policy: Optional[Dict] = None) -> Optional[Dict[str, Any]]:
+        """Convert a plain folder into a workspace with lifecycle."""
+        folder = self._find_folder(folder_id)
+        if not folder:
+            return None
+        folder["workspace_type"] = "workspace"
+        folder["status"] = "active"
+        folder["goal"] = goal
+        folder["policy"] = policy
+        self._save()
+        return folder
+
+    def update_workspace(self, folder_id: str, **kwargs) -> Optional[Dict[str, Any]]:
+        """Update workspace-specific fields: goal, policy."""
+        folder = self._find_folder(folder_id)
+        if not folder:
+            return None
+        for key in ("goal", "policy"):
+            if key in kwargs:
+                folder[key] = kwargs[key]
+        self._save()
+        return folder
+
+    def transition_status(self, folder_id: str,
+                          new_status: str) -> Dict[str, Any]:
+        """Enforce lifecycle: active -> review -> merged -> archived."""
+        folder = self._find_folder(folder_id)
+        if not folder:
+            raise ValueError(f"Folder {folder_id} not found")
+        if not folder.get("workspace_type"):
+            raise ValueError("Folder is not a workspace")
+
+        current = folder.get("status", "active")
+        allowed = self.VALID_TRANSITIONS.get(current, [])
+        if new_status not in allowed:
+            raise ValueError(
+                f"Cannot transition from '{current}' to '{new_status}'. "
+                f"Allowed: {allowed}"
+            )
+        folder["status"] = new_status
+        self._save()
+        return folder
+
+    def get_valid_transitions(self, folder_id: str) -> List[str]:
+        """Get allowed status transitions for a workspace folder."""
+        folder = self._find_folder(folder_id)
+        if not folder or not folder.get("workspace_type"):
+            return []
+        current = folder.get("status", "active")
+        return list(self.VALID_TRANSITIONS.get(current, []))

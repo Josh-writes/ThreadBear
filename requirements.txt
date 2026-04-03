@@ -1,6 +1,6 @@
-# Flask framework
-Flask==2.3.3
-Flask-CORS==4.0.0
+# CLI framework
+rich>=13.7
+textual>=0.80.0
 
 # HTTP requests
 requests==2.31.0
@@ -10,9 +10,9 @@ PyPDF2==3.0.1
 pypdf==4.0.1
 python-docx==1.1.0
 
-# For handling various file types in context_documents
-Werkzeug==3.0.3
-
 # Web search tool
 ddgs>=9.0.0
 beautifulsoup4>=4.12.0
+
+# Environment variables
+python-dotenv

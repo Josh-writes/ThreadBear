@@ -62,9 +62,6 @@
     expandedFolders: new Set(),
     activeFolder: null,  // Currently selected folder for overview view
 
-    // branches (Phase 2 DAG)
-    branches: [],
-    expandedBranches: new Set(),
 
     // prompts
     prompts: [],
@@ -248,10 +245,13 @@
     endpointForm: $('endpointForm'),
     endpointEditId: $('endpointEditId'),
     endpointName: $('endpointName'),
+    endpointNameHint: $('endpointNameHint'),
     endpointBaseUrl: $('endpointBaseUrl'),
     endpointApiKeyEnv: $('endpointApiKeyEnv'),
     endpointApiKey: $('endpointApiKey'),
     endpointContextWindow: $('endpointContextWindow'),
+    endpointAdvancedToggle: $('endpointAdvancedToggle'),
+    endpointAdvanced: $('endpointAdvanced'),
     endpointSaveBtn: $('endpointSaveBtn'),
     endpointCancelBtn: $('endpointCancelBtn'),
     endpointTestBtn: $('endpointTestBtn'),
@@ -288,12 +288,11 @@
     menuDeleteFolder: $('deleteFolderMenuItem'),
     moveToFolderMenu: $('moveToFolderMenu'),
 
-    branchContextMenu: $('branchContextMenu'),
-    menuNewWorkOrder: $('newWorkOrderMenuItem'),
+    menuMakeWorkspace: $('makeWorkspaceMenuItem'),
+    menuWorkspaceSep: $('workspaceSeparator'),
     menuSetActive: $('setActiveMenuItem'),
     menuSetReview: $('setReviewMenuItem'),
     menuSetArchived: $('setArchivedMenuItem'),
-    menuDeleteBranch: $('deleteBranchMenuItem'),
 
     msgContextMenu: $('messageContextMenu'),
     menuBranchFull: $('branchFullMenuItem'),
@@ -1329,6 +1328,7 @@
 
   function renderFolderNode(folder, container, depth) {
     const isExpanded = state.expandedFolders.has(folder.id);
+    const isWorkspace = !!folder.workspace_type;
 
     // Count contents
     const promptFn = folder.prompt_branch_filename;
@@ -1346,14 +1346,21 @@
     div.appendChild(chevron);
 
     const icon = el('span', 'folder-icon');
-    icon.textContent = isExpanded ? '\uD83D\uDCC2' : '\uD83D\uDCC1'; // open/closed folder
+    icon.textContent = isWorkspace ? '\uD83D\uDCBC' : (isExpanded ? '\uD83D\uDCC2' : '\uD83D\uDCC1'); // briefcase for workspace, open/closed folder
     div.appendChild(icon);
 
     const nameSpan = el('span', 'folder-name');
     nameSpan.textContent = folder.name;
     div.appendChild(nameSpan);
 
-    if (totalCount > 0) {
+    // Workspace status badge
+    if (isWorkspace && folder.status) {
+      const badge = el('span', 'branch-status branch-status-' + folder.status);
+      badge.textContent = folder.status;
+      div.appendChild(badge);
+    }
+
+    if (totalCount > 0 && !isWorkspace) {
       const countSpan = el('span', 'folder-count');
       countSpan.textContent = totalCount;
       div.appendChild(countSpan);
@@ -1369,9 +1376,29 @@
     div.addEventListener('contextmenu', (e) => {
       e.preventDefault();
       e.stopPropagation();
-      state.ctxMenuTarget = { type: 'folder', folderId: folder.id, isRoot: depth === 0 };
+      state.ctxMenuTarget = { type: 'folder', folderId: folder.id, isRoot: depth === 0, isWorkspace };
       // Hide "Add Subfolder" for subfolders (max depth = 2)
       E.menuAddSubfolder.style.display = depth === 0 ? '' : 'none';
+
+      // Workspace menu items
+      if (E.menuMakeWorkspace) E.menuMakeWorkspace.style.display = isWorkspace ? 'none' : '';
+      if (E.menuSetActive) E.menuSetActive.style.display = 'none';
+      if (E.menuSetReview) E.menuSetReview.style.display = 'none';
+      if (E.menuSetArchived) E.menuSetArchived.style.display = 'none';
+      if (E.menuWorkspaceSep) E.menuWorkspaceSep.style.display = isWorkspace ? '' : 'none';
+      if (isWorkspace) {
+        const validNext = {
+          'active': ['review', 'archived'],
+          'review': ['active', 'merged', 'archived'],
+          'merged': ['archived'],
+          'archived': ['active']
+        };
+        const allowed = validNext[folder.status] || [];
+        if (E.menuSetActive) E.menuSetActive.style.display = allowed.includes('active') ? '' : 'none';
+        if (E.menuSetReview) E.menuSetReview.style.display = allowed.includes('review') ? '' : 'none';
+        if (E.menuSetArchived) E.menuSetArchived.style.display = allowed.includes('archived') ? '' : 'none';
+      }
+
       openMenuAt(E.folderContextMenu, e.pageX, e.pageY);
     });
 
@@ -1452,202 +1479,31 @@
     });
   }
 
-  // ====== Branch DAG (Phase 2) ======
+  // ====== Workspace helpers (Phase 2) ======
 
-  async function loadBranches() {
+  async function makeWorkspace(folderId, goal) {
     try {
-      const data = await getJSON('/api/branches?type=domain');
-      const domains = data.branches || [];
-      // For each domain, load its children tree
-      for (const domain of domains) {
-        const treeData = await getJSON(`/api/branches/${domain.id}/tree`);
-        domain.children = (treeData.tree || [])[0]?.children || [];
-      }
-      state.branches = domains;
+      await postJSON(`/api/folders/${folderId}/workspace`, { goal: goal || '' });
+      await loadFolders();
+      renderHistory();
     } catch (e) {
-      console.warn('Failed to load branches:', e);
-      state.branches = [];
+      console.error('Failed to make workspace:', e);
     }
   }
 
-  async function createDomainBranch(name, description) {
+  async function transitionFolderStatus(folderId, newStatus) {
     try {
-      const res = await postJSON('/api/branches', { type: 'domain', name, description });
-      await loadBranches();
+      await postJSON(`/api/folders/${folderId}/status`, { status: newStatus });
+      await loadFolders();
       renderHistory();
-      return res.branch;
-    } catch (e) {
-      console.error('Failed to create domain:', e);
-    }
-  }
-
-  async function createWorkOrder(parentId, name, goal) {
-    try {
-      const res = await postJSON('/api/branches', { type: 'work_order', parent_id: parentId, name, goal });
-      await loadBranches();
-      renderHistory();
-      return res.branch;
-    } catch (e) {
-      console.error('Failed to create work order:', e);
-    }
-  }
-
-  async function transitionBranchStatus(branchId, newStatus) {
-    try {
-      const res = await postJSON(`/api/branches/${branchId}/status`, { status: newStatus });
-      await loadBranches();
-      renderHistory();
-      return res.branch;
     } catch (e) {
       console.error('Failed to transition status:', e);
       alert(e.message || 'Status transition failed');
     }
   }
 
-  async function deleteBranch(branchId, hard) {
-    try {
-      await fetch(`/api/branches/${branchId}`, {
-        method: 'DELETE',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ hard_delete: !!hard })
-      });
-      await loadBranches();
-      renderHistory();
-    } catch (e) {
-      console.error('Failed to delete branch:', e);
-    }
-  }
-
-  function branchStatusColor(status) {
-    switch (status) {
-      case 'active': return '#34a853';
-      case 'review': return '#f9ab00';
-      case 'merged': return '#4285f4';
-      case 'archived': return '#9e9e9e';
-      default: return '#9e9e9e';
-    }
-  }
-
-  function renderBranchNode(branch, container, depth) {
-    const isExpanded = state.expandedBranches.has(branch.id);
-    const children = branch.children || [];
-    const hasChildren = children.length > 0;
-
-    const div = el('div', 'branch-item');
-    div.setAttribute('data-branch-id', branch.id);
-    div.style.paddingLeft = (12 + depth * 16) + 'px';
-
-    // Chevron (only if has children)
-    const chevron = el('span', 'folder-chevron' + (isExpanded ? ' expanded' : ''));
-    chevron.textContent = hasChildren ? '\u25B6' : '';
-    chevron.style.width = '14px';
-    chevron.style.visibility = hasChildren ? 'visible' : 'hidden';
-    div.appendChild(chevron);
-
-    // Type icon
-    const icon = el('span', 'branch-icon');
-    icon.textContent = branch.type === 'domain' ? '\uD83C\uDF10' : '\uD83D\uDCCB';
-    div.appendChild(icon);
-
-    // Name
-    const nameSpan = el('span', 'folder-name');
-    nameSpan.textContent = branch.name || branch.title || 'Untitled';
-    div.appendChild(nameSpan);
-
-    // Status badge
-    const badge = el('span', 'branch-status branch-status-' + (branch.status || 'active'));
-    badge.textContent = branch.status || 'active';
-    badge.style.background = branchStatusColor(branch.status) + '22';
-    badge.style.color = branchStatusColor(branch.status);
-    div.appendChild(badge);
-
-    // Click to expand/collapse
-    div.addEventListener('click', (e) => {
-      e.stopPropagation();
-      if (hasChildren) {
-        if (state.expandedBranches.has(branch.id)) {
-          state.expandedBranches.delete(branch.id);
-        } else {
-          state.expandedBranches.add(branch.id);
-        }
-        renderHistory();
-      }
-    });
-
-    // Right-click for branch context menu
-    div.addEventListener('contextmenu', (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      showBranchContextMenu(branch, e.pageX, e.pageY);
-    });
-
-    container.appendChild(div);
-
-    // Render children if expanded
-    if (isExpanded && hasChildren) {
-      children.forEach(child => {
-        renderBranchNode(child, container, depth + 1);
-      });
-    }
-  }
-
-  function showBranchContextMenu(branch, x, y) {
-    state.ctxMenuTarget = { type: 'branch', branchId: branch.id, branchType: branch.type, branchStatus: branch.status };
-    const menu = E.branchContextMenu;
-    if (!menu) return;
-
-    // Show/hide items based on branch type and status
-    const isD = branch.type === 'domain';
-    E.menuNewWorkOrder.style.display = isD ? '' : 'none';
-
-    // Status transitions
-    const validNext = {
-      'active': ['review', 'archived'],
-      'review': ['active', 'merged', 'archived'],
-      'merged': ['archived'],
-      'archived': ['active']
-    };
-    const allowed = validNext[branch.status] || [];
-    E.menuSetActive.style.display = allowed.includes('active') ? '' : 'none';
-    E.menuSetReview.style.display = allowed.includes('review') ? '' : 'none';
-    E.menuSetArchived.style.display = allowed.includes('archived') ? '' : 'none';
-
-    openMenuAt(menu, x, y);
-  }
-
   function renderHistory() {
     clearNode(E.chatHistory);
-
-    // Render branches section FIRST (Phase 2 DAG)
-    if (state.branches.length > 0) {
-      const branchHeader = el('div', 'folder-section-label');
-      branchHeader.style.display = 'flex';
-      branchHeader.style.alignItems = 'center';
-      branchHeader.style.justifyContent = 'space-between';
-
-      const labelSpan = el('span');
-      labelSpan.textContent = 'Branches';
-      branchHeader.appendChild(labelSpan);
-
-      const addBtn = el('button', 'branch-add-btn');
-      addBtn.textContent = '+';
-      addBtn.title = 'New Domain Branch';
-      addBtn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        const name = prompt('Domain name:');
-        if (name && name.trim()) {
-          const desc = prompt('Description (optional):') || '';
-          createDomainBranch(name.trim(), desc.trim());
-        }
-      });
-      branchHeader.appendChild(addBtn);
-
-      E.chatHistory.appendChild(branchHeader);
-
-      state.branches.forEach(domain => {
-        renderBranchNode(domain, E.chatHistory, 0);
-      });
-    }
 
     // Build set of chats that are in folders
     const chatsInFolders = new Set(Object.keys(state.chatFolderMap));
@@ -1658,7 +1514,7 @@
       if (chat.parent_chat_id) childChats.add(chat.filename);
     });
 
-    // Render folders section
+    // Render folders section FIRST
     if (state.folders.length > 0) {
       state.folders.forEach(folder => {
         renderFolderNode(folder, E.chatHistory, 0);
@@ -3891,9 +3747,14 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
   }
 
   // ====== Custom Endpoints Management ======
+
+  // Populated from /api/endpoints response (same source as backend)
+  let knownProviders = {};
+
   async function loadCustomEndpoints() {
     try {
       const res = await getJSON('/api/endpoints');
+      knownProviders = res.known_providers || {};
       renderCustomEndpoints(res.endpoints || {});
     } catch (e) {
       console.warn('Failed to load custom endpoints:', e);
@@ -3921,13 +3782,46 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
       E.customEndpointsList.appendChild(row);
     });
 
-    // Bind edit/delete buttons
     E.customEndpointsList.querySelectorAll('.ep-edit-btn').forEach(btn => {
       btn.addEventListener('click', () => editEndpoint(btn.dataset.eid, endpoints[btn.dataset.eid]));
     });
     E.customEndpointsList.querySelectorAll('.ep-delete-btn').forEach(btn => {
       btn.addEventListener('click', () => deleteEndpoint(btn.dataset.eid));
     });
+  }
+
+  // Derive the provider slug the same way the backend does
+  function nameToSlug(name) {
+    return name.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '');
+  }
+
+  // Auto-fill base URL, env var, and context window from provider name
+  function onEndpointNameInput() {
+    const name = E.endpointName.value.trim();
+    const slug = nameToSlug(name);
+    const known = knownProviders[slug];
+
+    if (known) {
+      if (!E.endpointBaseUrl.value) E.endpointBaseUrl.value = known.base_url;
+      if (!E.endpointContextWindow.value || E.endpointContextWindow.value === '32768') {
+        E.endpointContextWindow.value = known.context_window;
+      }
+      if (E.endpointNameHint) {
+        E.endpointNameHint.textContent = `Known provider — base URL auto-filled`;
+        E.endpointNameHint.style.color = '#27ae60';
+      }
+    } else {
+      if (E.endpointNameHint) {
+        E.endpointNameHint.textContent = slug ? 'Unknown provider — enter Base URL in Advanced' : '';
+        E.endpointNameHint.style.color = 'var(--text-muted)';
+      }
+    }
+
+    // Auto-fill env var if still empty
+    if (name && !E.endpointApiKeyEnv.value) {
+      const envName = name.toUpperCase().replace(/[^A-Z0-9]+/g, '_').replace(/^_|_$/g, '') + '_API_KEY';
+      E.endpointApiKeyEnv.value = envName;
+    }
   }
 
   function showEndpointForm(data) {
@@ -3938,6 +3832,9 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
     E.endpointApiKeyEnv.value = data.api_key_env || '';
     E.endpointApiKey.value = data.api_key || '';
     E.endpointContextWindow.value = data.context_window || 32768;
+    if (E.endpointNameHint) E.endpointNameHint.textContent = '';
+    if (E.endpointAdvanced) E.endpointAdvanced.style.display = 'none';
+    if (E.endpointAdvancedToggle) E.endpointAdvancedToggle.textContent = '▶ Advanced';
     E.endpointFormStatus.textContent = '';
     E.endpointForm.style.display = 'block';
   }
@@ -3948,6 +3845,9 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
 
   function editEndpoint(eid, ep) {
     showEndpointForm({ id: eid, ...ep });
+    // When editing an existing endpoint, show advanced so user can see all fields
+    if (E.endpointAdvanced) E.endpointAdvanced.style.display = 'block';
+    if (E.endpointAdvancedToggle) E.endpointAdvancedToggle.textContent = '▼ Advanced';
   }
 
   async function deleteEndpoint(eid) {
@@ -3963,18 +3863,19 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
 
   async function saveEndpoint() {
     const eid = E.endpointEditId.value;
+    const name = E.endpointName.value.trim();
+    if (!name) {
+      E.endpointFormStatus.textContent = 'Provider name is required';
+      E.endpointFormStatus.style.color = '#e74c3c';
+      return;
+    }
     const payload = {
-      name: E.endpointName.value.trim(),
+      name,
       base_url: E.endpointBaseUrl.value.trim(),
       api_key_env: E.endpointApiKeyEnv.value.trim(),
       api_key: E.endpointApiKey.value.trim(),
       context_window: parseInt(E.endpointContextWindow.value) || 32768,
     };
-    if (!payload.name || !payload.base_url) {
-      E.endpointFormStatus.textContent = 'Name and Base URL required';
-      E.endpointFormStatus.style.color = '#e74c3c';
-      return;
-    }
     try {
       let res;
       if (eid) {
@@ -4001,7 +3902,6 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
     E.endpointFormStatus.textContent = 'Testing...';
     E.endpointFormStatus.style.color = 'var(--text-muted)';
 
-    // If not saved yet, save first then test
     if (!eid) {
       E.endpointFormStatus.textContent = 'Save the endpoint first before testing.';
       E.endpointFormStatus.style.color = '#e74c3c';
@@ -4026,6 +3926,16 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
   // Bind endpoint UI events
   if (E.addEndpointBtn) {
     E.addEndpointBtn.addEventListener('click', () => showEndpointForm({}));
+  }
+  if (E.endpointName) {
+    E.endpointName.addEventListener('input', onEndpointNameInput);
+  }
+  if (E.endpointAdvancedToggle) {
+    E.endpointAdvancedToggle.addEventListener('click', () => {
+      const open = E.endpointAdvanced.style.display !== 'none';
+      E.endpointAdvanced.style.display = open ? 'none' : 'block';
+      E.endpointAdvancedToggle.textContent = open ? '▶ Advanced' : '▼ Advanced';
+    });
   }
   if (E.endpointCancelBtn) {
     E.endpointCancelBtn.addEventListener('click', hideEndpointForm);
@@ -5296,8 +5206,8 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
   async function init() {
     console.time('TB:init');
     // Close menus when scrolling/resizing
-    window.addEventListener('scroll', () => { E.chatContextMenu.style.display = 'none'; E.msgContextMenu.style.display = 'none'; E.inputContextMenu.style.display = 'none'; E.folderContextMenu.style.display = 'none'; E.moveToFolderMenu.style.display = 'none'; if (E.branchContextMenu) E.branchContextMenu.style.display = 'none'; });
-    window.addEventListener('resize', () => { E.chatContextMenu.style.display = 'none'; E.msgContextMenu.style.display = 'none'; E.inputContextMenu.style.display = 'none'; E.folderContextMenu.style.display = 'none'; E.moveToFolderMenu.style.display = 'none'; if (E.branchContextMenu) E.branchContextMenu.style.display = 'none'; });
+    window.addEventListener('scroll', () => { E.chatContextMenu.style.display = 'none'; E.msgContextMenu.style.display = 'none'; E.inputContextMenu.style.display = 'none'; E.folderContextMenu.style.display = 'none'; E.moveToFolderMenu.style.display = 'none'; });
+    window.addEventListener('resize', () => { E.chatContextMenu.style.display = 'none'; E.msgContextMenu.style.display = 'none'; E.inputContextMenu.style.display = 'none'; E.folderContextMenu.style.display = 'none'; E.moveToFolderMenu.style.display = 'none'; });
 
     // Bind UI immediately so app feels responsive
     bindMenus();
@@ -5317,7 +5227,7 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
     console.time('TB:parallelLoad');
 
     // Load all critical data in parallel
-    const [configResult, promptsResult, historyResult, docsResult, messagesResult, foldersResult, _toolsResult, _endpointsResult, _branchesResult] = await Promise.allSettled([
+    const [configResult, promptsResult, historyResult, docsResult, messagesResult, foldersResult, _toolsResult, _endpointsResult] = await Promise.allSettled([
       loadConfigAndModels(),
       loadPrompts(),
       loadHistory(),
@@ -5325,8 +5235,7 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
       loadMessages(),
       loadFolders(),
       loadToolsConfig(),
-      loadCustomEndpoints(),
-      loadBranches()
+      loadCustomEndpoints()
     ]);
 
     console.timeEnd('TB:parallelLoad');
@@ -5394,44 +5303,31 @@ function streamAssistant(messageId, bubbleEl, index, isSummary = false) {
       }
     });
 
-    // Branch context menu handlers
-    if (E.menuNewWorkOrder) {
-      E.menuNewWorkOrder.addEventListener('click', () => {
-        E.branchContextMenu.style.display = 'none';
-        if (state.ctxMenuTarget.type !== 'branch') return;
-        const name = prompt('Work order name:');
-        if (name && name.trim()) {
-          const goal = prompt('Goal:') || '';
-          createWorkOrder(state.ctxMenuTarget.branchId, name.trim(), goal.trim());
-        }
+    // Workspace context menu handlers (on folder context menu)
+    if (E.menuMakeWorkspace) {
+      E.menuMakeWorkspace.addEventListener('click', () => {
+        E.folderContextMenu.style.display = 'none';
+        if (state.ctxMenuTarget.type !== 'folder') return;
+        const goal = prompt('Workspace goal (optional):') || '';
+        makeWorkspace(state.ctxMenuTarget.folderId, goal.trim());
       });
     }
     if (E.menuSetActive) {
       E.menuSetActive.addEventListener('click', () => {
-        E.branchContextMenu.style.display = 'none';
-        if (state.ctxMenuTarget.type === 'branch') transitionBranchStatus(state.ctxMenuTarget.branchId, 'active');
+        E.folderContextMenu.style.display = 'none';
+        if (state.ctxMenuTarget.type === 'folder') transitionFolderStatus(state.ctxMenuTarget.folderId, 'active');
       });
     }
     if (E.menuSetReview) {
       E.menuSetReview.addEventListener('click', () => {
-        E.branchContextMenu.style.display = 'none';
-        if (state.ctxMenuTarget.type === 'branch') transitionBranchStatus(state.ctxMenuTarget.branchId, 'review');
+        E.folderContextMenu.style.display = 'none';
+        if (state.ctxMenuTarget.type === 'folder') transitionFolderStatus(state.ctxMenuTarget.folderId, 'review');
       });
     }
     if (E.menuSetArchived) {
       E.menuSetArchived.addEventListener('click', () => {
-        E.branchContextMenu.style.display = 'none';
-        if (state.ctxMenuTarget.type === 'branch') transitionBranchStatus(state.ctxMenuTarget.branchId, 'archived');
-      });
-    }
-    if (E.menuDeleteBranch) {
-      E.menuDeleteBranch.addEventListener('click', () => {
-        E.branchContextMenu.style.display = 'none';
-        if (state.ctxMenuTarget.type === 'branch') {
-          if (confirm('Delete this branch? This cannot be undone.')) {
-            deleteBranch(state.ctxMenuTarget.branchId, true);
-          }
-        }
+        E.folderContextMenu.style.display = 'none';
+        if (state.ctxMenuTarget.type === 'folder') transitionFolderStatus(state.ctxMenuTarget.folderId, 'archived');
       });
     }
 

@@ -15,6 +15,7 @@ DEFAULT_CONTEXT_WINDOWS: Dict[str, int] = {
     "mistral": 32768,
     "openrouter": 8192,
     "llamacpp": 8192,
+    "cerebras": 131072,
 }
 
 DEFAULT_CONFIG: Dict[str, Any] = {
@@ -219,6 +220,7 @@ class ConfigManager:
             "google": "GOOGLE_API_KEY",
             "mistral": "MISTRAL_API_KEY",
             "openrouter": "OPENROUTER_API_KEY",
+            "cerebras": "CEREBRAS_API_KEY",
         }
         env = env_map.get(provider)
         if env:
