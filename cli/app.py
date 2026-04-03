@@ -2,6 +2,7 @@ import os
 import sys
 import re
 import json
+import shlex
 import uuid
 import threading
 import time
@@ -1513,8 +1514,19 @@ class MainScreen(Screen):
             self._send_message(text)
 
     def _handle_command(self, text: str):
-        parts = text[1:].split(None, 1)
-        cmd = parts[0].lower()
+        try:
+            tokens = shlex.split(text[1:].strip())
+        except ValueError as parse_err:
+            self.query_one("#chat-display", ChatDisplay).mount(
+                Static(f"\n[bold red]Invalid command syntax: {parse_err}[/bold red]", markup=True)
+            )
+            return
+
+        if not tokens:
+            return
+
+        cmd = tokens[0].lower()
+        args = tokens[1:]
         chat_display = self.query_one("#chat-display", ChatDisplay)
 
         if cmd in ("quit", "exit"):
@@ -1592,7 +1604,7 @@ class MainScreen(Screen):
             chat_display.mount(Static(f"\nCurrent model: {model} (provider: {provider})", markup=True))
 
         elif cmd == "rename":
-            new_title = (parts[1] if len(parts) > 1 else "").strip()
+            new_title = " ".join(args).strip()
             if not new_title:
                 chat_display.mount(Static("\n[bold red]Usage: /rename <new_title>[/bold red]", markup=True))
             else:
@@ -1605,7 +1617,7 @@ class MainScreen(Screen):
                 chat_display.mount(Static(f"\n[dim]Chat renamed to: {new_title}[/dim]", markup=True))
 
         elif cmd == "delete":
-            arg = (parts[1] if len(parts) > 1 else "").strip()
+            arg = (args[0] if args else "").strip()
             msgs = self.app.chat_manager.current_chat.get("chat_history", [])
             if arg.lower() == "last":
                 idx = len(msgs) - 1
@@ -1625,7 +1637,7 @@ class MainScreen(Screen):
                 chat_display.mount(Static(f"\n[bold red]Invalid index: {idx}[/bold red]", markup=True))
 
         elif cmd == "branch":
-            name = parts[1].strip() if len(parts) > 1 else ""
+            name = " ".join(args).strip()
             msgs = self.app.chat_manager.current_chat.get("chat_history", [])
             branch_idx = -1
             for i in range(len(msgs) - 1, -1, -1):
@@ -1739,7 +1751,7 @@ class MainScreen(Screen):
             ))
 
         elif cmd == "docs":
-            subcmd = parts[1].strip() if len(parts) > 1 else ""
+            subcmd = args[0].strip() if args else ""
             if subcmd == "list":
                 docs = context_documents.list_documents()
                 if not docs:
@@ -1751,8 +1763,8 @@ class MainScreen(Screen):
                         name = d.get("name", d.get("filename", "?"))
                         lines.append(f"  {sel} {name}")
                     chat_display.mount(Static("\n".join(lines), markup=True))
-            elif subcmd == "upload" and len(parts) > 2:
-                file_path = parts[2].strip()
+            elif subcmd == "upload" and len(args) > 1:
+                file_path = args[1].strip()
                 if os.path.isfile(file_path):
                     with open(file_path, "rb") as f:
                         content = f.read()
@@ -1764,29 +1776,29 @@ class MainScreen(Screen):
                         chat_display.mount(Static(f"\n[bold red]Failed to upload: {fname}[/bold red]", markup=True))
                 else:
                     chat_display.mount(Static(f"\n[bold red]File not found: {file_path}[/bold red]", markup=True))
-            elif subcmd == "delete" and len(parts) > 2:
-                doc_name = parts[2].strip()
+            elif subcmd == "delete" and len(args) > 1:
+                doc_name = args[1].strip()
                 ok = delete_document(doc_name)
                 if ok:
                     chat_display.mount(Static(f"\n[dim]Document deleted: {doc_name}[/dim]", markup=True))
                 else:
                     chat_display.mount(Static(f"\n[bold red]Failed to delete: {doc_name}[/bold red]", markup=True))
-            elif subcmd == "select" and len(parts) > 2:
-                doc_name = parts[2].strip()
+            elif subcmd == "select" and len(args) > 1:
+                doc_name = args[1].strip()
                 ok = context_documents.update_document_selection(doc_name, True)
                 if ok:
                     chat_display.mount(Static(f"\n[dim]Document selected: {doc_name}[/dim]", markup=True))
                 else:
                     chat_display.mount(Static(f"\n[bold red]Failed to select: {doc_name}[/bold red]", markup=True))
-            elif subcmd == "deselect" and len(parts) > 2:
-                doc_name = parts[2].strip()
+            elif subcmd == "deselect" and len(args) > 1:
+                doc_name = args[1].strip()
                 ok = context_documents.update_document_selection(doc_name, False)
                 if ok:
                     chat_display.mount(Static(f"\n[dim]Document deselected: {doc_name}[/dim]", markup=True))
                 else:
                     chat_display.mount(Static(f"\n[bold red]Failed to deselect: {doc_name}[/bold red]", markup=True))
-            elif subcmd == "url" and len(parts) > 2:
-                url = parts[2].strip()
+            elif subcmd == "url" and len(args) > 1:
+                url = args[1].strip()
                 if not url.startswith(('http://', 'https://')):
                     chat_display.mount(Static("\n[bold red]URL must start with http:// or https://[/bold red]", markup=True))
                 else:
@@ -1821,7 +1833,7 @@ class MainScreen(Screen):
                 ))
 
         elif cmd == "folders":
-            subcmd = parts[1].strip() if len(parts) > 1 else ""
+            subcmd = args[0].strip() if args else ""
             if subcmd == "list" or not subcmd:
                 tree = self.app.folder_manager.get_folder_tree()
                 if not tree:
@@ -1834,8 +1846,8 @@ class MainScreen(Screen):
                             lines.append(f"    \U0001f4c2 {c['name']} (id: {c['id']})")
                     chat_display.mount(Static("\n".join(lines), markup=True))
             elif subcmd == "create":
-                name = parts[2].strip() if len(parts) > 2 else "New Folder"
-                parent_id = parts[3].strip() if len(parts) > 3 else None
+                name = args[1].strip() if len(args) > 1 else "New Folder"
+                parent_id = args[2].strip() if len(args) > 2 else None
                 folder = self.app.folder_manager.create_folder(name, parent_id)
                 chat_display.mount(Static(f"\n[dim]Created folder: {folder['name']} (id: {folder['id']})[/dim]", markup=True))
                 try:
@@ -1843,8 +1855,8 @@ class MainScreen(Screen):
                     sidebar._build_folder_tree()
                 except Exception:
                     pass
-            elif subcmd == "contents" and len(parts) > 2:
-                folder_id = parts[2].strip()
+            elif subcmd == "contents" and len(args) > 1:
+                folder_id = args[1].strip()
                 contents = self.app.folder_manager.get_folder_contents(folder_id)
                 chats = contents.get("chats", [])
                 if not chats:
@@ -1862,9 +1874,9 @@ class MainScreen(Screen):
                             except Exception:
                                 lines.append(f"  \u25cb {fn}")
                     chat_display.mount(Static("\n".join(lines), markup=True))
-            elif subcmd == "assign" and len(parts) > 3:
-                folder_id = parts[2].strip()
-                chat_file = parts[3].strip()
+            elif subcmd == "assign" and len(args) > 2:
+                folder_id = args[1].strip()
+                chat_file = args[2].strip()
                 if not chat_file.endswith('.json'):
                     chat_file += '.json'
                 ok = self.app.folder_manager.assign_chat_to_folder(chat_file, folder_id)
@@ -1883,19 +1895,19 @@ class MainScreen(Screen):
                 ))
 
         elif cmd == "tools":
-            subcmd = parts[1].strip() if len(parts) > 1 else ""
-            if subcmd == "enable" and len(parts) > 2:
-                provider = parts[2].strip()
+            subcmd = args[0].strip() if args else ""
+            if subcmd == "enable" and len(args) > 1:
+                provider = args[1].strip()
                 self.app.config.set(f'{provider}_tools_enabled', True)
                 self.app.config.save_config()
                 chat_display.mount(Static(f"\n[dim]Tools enabled for {provider}[/dim]", markup=True))
-            elif subcmd == "disable" and len(parts) > 2:
-                provider = parts[2].strip()
+            elif subcmd == "disable" and len(args) > 1:
+                provider = args[1].strip()
                 self.app.config.set(f'{provider}_tools_enabled', False)
                 self.app.config.save_config()
                 chat_display.mount(Static(f"\n[dim]Tools disabled for {provider}[/dim]", markup=True))
-            elif subcmd == "os" and len(parts) > 2:
-                tool_os = parts[2].strip().lower()
+            elif subcmd == "os" and len(args) > 1:
+                tool_os = args[1].strip().lower()
                 if tool_os in ('windows', 'linux', 'macos'):
                     self.app.config.set('tool_os', tool_os)
                     self.app.config.save_config()
@@ -1924,7 +1936,7 @@ class MainScreen(Screen):
                 ))
 
         elif cmd == "toolbox":
-            subcmd = parts[1].strip() if len(parts) > 1 else ""
+            subcmd = args[0].strip() if args else ""
             toolbox_dir = os.path.join(self.app.project_root, 'toolbox')
             default_toolbox = os.path.join(self.app.project_root, 'default_toolbox')
 
@@ -1946,8 +1958,8 @@ class MainScreen(Screen):
                         tag = "[custom]" if source == "custom" else "[default]"
                         lines.append(f"  {tag} {name}")
                     chat_display.mount(Static("\n".join(lines), markup=True))
-            elif subcmd == "view" and len(parts) > 2:
-                fname = parts[2].strip()
+            elif subcmd == "view" and len(args) > 1:
+                fname = args[1].strip()
                 custom = os.path.join(toolbox_dir, fname)
                 default_p = os.path.join(default_toolbox, fname)
                 fpath = custom if os.path.isfile(custom) else (default_p if os.path.isfile(default_p) else None)
@@ -1966,7 +1978,7 @@ class MainScreen(Screen):
                 ))
 
         elif cmd == "toolbelt":
-            subcmd = parts[1].strip() if len(parts) > 1 else ""
+            subcmd = args[0].strip() if args else ""
             chat_file = self.app.chat_manager.current_chat_file
             if not chat_file:
                 chat_display.mount(Static("\n[bold red]No chat loaded[/bold red]", markup=True))
@@ -1983,8 +1995,8 @@ class MainScreen(Screen):
                     for script in tb:
                         lines.append(f"  \u25cb {script}")
                     chat_display.mount(Static("\n".join(lines), markup=True))
-            elif subcmd == "add" and len(parts) > 2:
-                script = parts[2].strip()
+            elif subcmd == "add" and len(args) > 1:
+                script = args[1].strip()
                 tb = self.app.chat_manager.current_chat.setdefault("toolbelt", {})
                 if isinstance(tb, list):
                     tb = {s: {} for s in tb}
@@ -1992,8 +2004,8 @@ class MainScreen(Screen):
                 tb[script] = {}
                 self.app.chat_manager.save_current_chat(force_save=True)
                 chat_display.mount(Static(f"\n[dim]Added {script} to toolbelt[/dim]", markup=True))
-            elif subcmd == "remove" and len(parts) > 2:
-                script = parts[2].strip()
+            elif subcmd == "remove" and len(args) > 1:
+                script = args[1].strip()
                 tb = self.app.chat_manager.current_chat.get("toolbelt", {})
                 if isinstance(tb, list):
                     tb = {s: {} for s in tb}
@@ -2014,7 +2026,7 @@ class MainScreen(Screen):
                 ))
 
         elif cmd == "endpoints":
-            subcmd = parts[1].strip() if len(parts) > 1 else ""
+            subcmd = args[0].strip() if args else ""
             if subcmd == "list":
                 endpoints = self.app.config.get("custom_endpoints", {})
                 if not endpoints:
@@ -2024,15 +2036,15 @@ class MainScreen(Screen):
                     for eid, ecfg in endpoints.items():
                         lines.append(f"  {eid}: {ecfg.get('base_url', '?')} ({ecfg.get('name', eid)})")
                     chat_display.mount(Static("\n".join(lines), markup=True))
-            elif subcmd == "add" and len(parts) > 2:
-                args = parts[2].split()
-                if len(args) >= 2:
-                    eid = re.sub(r'[^a-z0-9]+', '_', args[0].lower()).strip('_')
-                    base_url = args[1]
+            elif subcmd == "add" and len(args) > 2:
+                endpoint_name = args[1]
+                base_url = args[2]
+                if endpoint_name and base_url:
+                    eid = re.sub(r'[^a-z0-9]+', '_', endpoint_name.lower()).strip('_')
                     self.app.config.save_endpoint(eid, {
-                        "name": args[0],
+                        "name": endpoint_name,
                         "base_url": base_url.rstrip("/"),
-                        "api_key_env": re.sub(r'[^A-Z0-9]+', '_', args[0].upper()).strip('_') + "_API_KEY",
+                        "api_key_env": re.sub(r'[^A-Z0-9]+', '_', endpoint_name.upper()).strip('_') + "_API_KEY",
                         "api_key": "",
                         "default_model": "",
                         "context_window": 32768,
@@ -2040,8 +2052,8 @@ class MainScreen(Screen):
                     chat_display.mount(Static(f"\n[dim]Added endpoint: {eid}[/dim]", markup=True))
                 else:
                     chat_display.mount(Static("\n[bold red]Usage: /endpoints add <name> <base_url>[/bold red]", markup=True))
-            elif subcmd == "delete" and len(parts) > 2:
-                eid = parts[2].strip()
+            elif subcmd == "delete" and len(args) > 1:
+                eid = args[1].strip()
                 if self.app.config.delete_endpoint(eid):
                     chat_display.mount(Static(f"\n[dim]Deleted endpoint: {eid}[/dim]", markup=True))
                 else:
@@ -2056,7 +2068,7 @@ class MainScreen(Screen):
                 ))
 
         elif cmd == "prompts":
-            subcmd = parts[1].strip() if len(parts) > 1 else ""
+            subcmd = args[0].strip() if args else ""
             prompts_dir = self.app.project_root / "prompts"
 
             if subcmd == "list" or not subcmd:

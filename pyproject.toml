@@ -22,4 +22,27 @@ dependencies = [
 threadbear = "cli:run"
 
 [tool.setuptools.packages.find]
-include = ["cli*"]
+include = [
+    "cli*",
+    "agent*",
+    "tools*",
+    "readers*",
+]
+
+[tool.setuptools]
+py-modules = [
+    "api_clients",
+    "artifact_manager",
+    "branch_db",
+    "branch_manager",
+    "chat_manager",
+    "config_manager",
+    "content_security",
+    "context_documents",
+    "cost_tracker",
+    "document_db",
+    "error_classifier",
+    "folder_manager",
+    "message_compaction",
+    "prompt_templates",
+]
