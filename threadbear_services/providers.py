@@ -35,3 +35,15 @@ def inject_endpoint_config(provider: str, merged_cfg: Dict[str, Any], config_man
         merged_cfg["_endpoint_base_url"] = ep["base_url"]
         merged_cfg["_endpoint_api_key"] = config_manager.get_api_key(provider)
         merged_cfg["_endpoint_provider"] = provider
+
+
+def get_known_providers_with_api_keys(config_manager) -> Dict[str, Dict[str, Any]]:
+    """
+    Return only known OpenAI-compatible providers that currently have a configured API key.
+    """
+    enabled: Dict[str, Dict[str, Any]] = {}
+    for provider, cfg in KNOWN_OPENAI_COMPAT_PROVIDERS.items():
+        key = (config_manager.get_api_key(provider) or "").strip()
+        if key:
+            enabled[provider] = cfg
+    return enabled
