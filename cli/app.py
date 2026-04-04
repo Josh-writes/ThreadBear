@@ -17,7 +17,7 @@ os.chdir(_project_root)
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.screen import Screen
-from textual.widgets import Static, Input, Select, Tree
+from textual.widgets import Static, Input, Select, Tree, Markdown, TextArea
 from textual.containers import VerticalScroll, Horizontal, Container, Vertical
 from textual import on, work
 from textual.events import Click
@@ -237,6 +237,54 @@ Screen {
 """
 
 
+class MultilineInputScreen(Screen):
+    """Modal screen for composing multiline messages."""
+
+    BINDINGS = [
+        Binding("ctrl+s", "submit", "Send"),
+        Binding("escape", "cancel", "Cancel"),
+    ]
+
+    DEFAULT_CSS = """
+    MultilineInputScreen {
+        align: center middle;
+    }
+    #multiline-dialog {
+        width: 80%;
+        height: 60%;
+        background: #16213e;
+        border: solid #5f87ff;
+        padding: 1 2;
+    }
+    #multiline-hint {
+        color: #888888;
+        height: 1;
+        margin-bottom: 1;
+    }
+    #multiline-area {
+        height: 1fr;
+        background: #0b0b0f;
+        border: solid #444444;
+        color: #e0e0e0;
+    }
+    """
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="multiline-dialog"):
+            yield Static("Ctrl+S to send  •  Esc to cancel", id="multiline-hint")
+            yield TextArea(id="multiline-area")
+
+    def on_mount(self):
+        self.query_one("#multiline-area", TextArea).focus()
+
+    def action_submit(self):
+        text = self.query_one("#multiline-area", TextArea).text.strip()
+        self.dismiss(text if text else None)
+
+    def action_cancel(self):
+        self.dismiss(None)
+
+
 class ThreadBearApp(App):
     CSS = CSS
     BINDINGS = [
@@ -244,6 +292,7 @@ class ThreadBearApp(App):
         Binding("ctrl+r", "toggle_right", "Toggle Settings"),
         Binding("ctrl+d", "quit", "Quit"),
         Binding("escape", "focus_input", "Focus Input"),
+        Binding("ctrl+e", "multiline_input", "Multiline Input"),
     ]
 
     def __init__(self):
@@ -307,6 +356,24 @@ class ThreadBearApp(App):
             input_widget.focus()
         except Exception:
             pass
+
+    def _update_header_display(self):
+        """Update the header bar. Safe to call from the main thread only."""
+        try:
+            header = self.screen.query_one("#header", HeaderBar)
+            header.update_header()
+        except Exception:
+            pass
+
+    def action_multiline_input(self):
+        def on_result(text):
+            if text:
+                try:
+                    screen = self.screen
+                    screen._send_message(text)
+                except Exception:
+                    pass
+        self.push_screen(MultilineInputScreen(), on_result)
 
     @property
     def available_providers(self):
@@ -486,9 +553,9 @@ class ThreadBearApp(App):
                                     api_messages, provider, model
                                 )
                                 api_messages = compacted
-                                print(f"[Compaction] Applied: {summary[:50]}")
+                                self.log(f"Compaction applied: {summary[:50]}")
                         except Exception as compact_err:
-                            print(f"Pre-LLM compaction failed (non-blocking): {compact_err}")
+                            self.log(f"Pre-LLM compaction failed: {compact_err}")
 
                         for chunk in stream_func(api_messages, merged_cfg, tools=tool_schemas):
                             if self._cancel_event.is_set():
@@ -590,7 +657,7 @@ class ThreadBearApp(App):
                             full_response += chunk
                             self.call_from_thread(self._append_streaming, chunk)
                 except Exception as synth_err:
-                    print(f"Synthesis call failed: {synth_err}")
+                    self.log(f"Synthesis call failed: {synth_err}")
                     if not full_response:
                         full_response = "\n\n".join(working_texts) if working_texts else "(Tool results above)"
         except LLMApiError as api_err:
@@ -624,7 +691,7 @@ class ThreadBearApp(App):
                     msgs[-1]["provider"] = provider
                 self.chat_manager.save_current_chat()
 
-            self.call_from_thread(self._maybe_generate_title, provider)
+            self._maybe_generate_title(provider)
             self.call_from_thread(self._render_final_response, full_response)
 
             if stream_usage:
@@ -745,58 +812,18 @@ class ThreadBearApp(App):
                 if generated:
                     generated = generated[:60]
                     self._rename_chat_file(generated)
+                    self.call_from_thread(self._update_header_display)
         except Exception as title_err:
-            print(f"Auto-title generation failed: {title_err}")
+            self.log(f"Auto-title generation failed: {title_err}")
 
     def _rename_chat_file(self, new_title: str):
-        try:
-            filename = self.chat_manager.current_chat_file
-            if not filename:
-                return
-
-            safe = re.sub(r"[^\w\s-]", "", new_title)
-            safe = re.sub(r"[-\s]+", "_", safe).strip("_")
-            base = os.path.splitext(filename)[0]
-            m = re.search(r"_(\d{8}_\d{6})$", base)
-            ts = m.group(1) if m else datetime.now().strftime("%Y%m%d_%H%M%S")
-            new_fn = f"{safe}_{ts}.json"
-
-            old_path = os.path.join(self.chat_manager.chats_directory, filename)
-            new_path = os.path.join(self.chat_manager.chats_directory, new_fn)
-
-            if os.path.exists(old_path):
-                with open(old_path, "r", encoding="utf-8") as f:
-                    chat_data = json.load(f)
-
-                if isinstance(chat_data, dict):
-                    chat_data["title"] = new_title
-                    if "chat_id" not in chat_data:
-                        chat_data["chat_id"] = str(uuid.uuid4())
-                    if "root_chat_id" not in chat_data:
-                        chat_data["root_chat_id"] = chat_data["chat_id"]
-                    if "parent_chat_id" not in chat_data:
-                        chat_data["parent_chat_id"] = ""
-
-                with open(new_path, "w", encoding="utf-8") as f:
-                    json.dump(chat_data, f, indent=2, ensure_ascii=False)
-                os.remove(old_path)
-
-                self.chat_manager.current_chat_file = new_fn
-                if isinstance(self.chat_manager.current_chat, dict):
-                    self.chat_manager.current_chat["title"] = new_title
-
-                folder_id = self.folder_manager.get_chat_folder(filename)
-                if folder_id:
-                    self.folder_manager.remove_chat_from_folder(filename)
-                    self.folder_manager.assign_chat_to_folder(new_fn, folder_id)
-
-                try:
-                    header = self.screen.query_one("#header", HeaderBar)
-                    header.update_header()
-                except Exception:
-                    pass
-        except Exception as e:
-            print(f"Failed to rename chat: {e}")
+        old_filename = self.chat_manager.current_chat_file
+        new_fn = self.chat_manager.rename_current_chat(new_title)
+        if new_fn and old_filename:
+            folder_id = self.folder_manager.get_chat_folder(old_filename)
+            if folder_id:
+                self.folder_manager.remove_chat_from_folder(old_filename)
+                self.folder_manager.assign_chat_to_folder(new_fn, folder_id)
 
 class HeaderBar(Horizontal):
     DEFAULT_CSS = """
@@ -970,6 +997,7 @@ class HeaderBar(Horizontal):
         except Exception:
             pass
 
+    @work(thread=True)
     def refresh_models_from_api(self, provider):
         models = self._fetch_models_from_api(provider)
         if models:
@@ -978,7 +1006,7 @@ class HeaderBar(Horizontal):
             if current not in models:
                 self.app.config.set(f"{provider}_model", models[0])
             self.app.config.save_config()
-            self.call_from_thread(self._on_models_fetched, provider)
+            self.app.call_from_thread(self._on_models_fetched, provider)
 
     def _on_models_fetched(self, provider):
         self._refresh_model_select(provider)
@@ -1003,7 +1031,7 @@ class HeaderBar(Horizontal):
             elif provider == "openrouter":
                 return self._fetch_openrouter_models()
         except Exception as e:
-            print(f"Failed to fetch models for {provider}: {e}")
+            self.log(f"Failed to fetch models for {provider}: {e}")
         return []
 
     def _fetch_groq_models(self):
@@ -1242,7 +1270,7 @@ class ChatDisplay(VerticalScroll):
                     container = Vertical(classes="message-turn")
                     self.mount(container)
                     container.mount(Static(label, classes="assistant-label"))
-                    container.mount(Static(content if content else "(empty message)", classes="assistant-content"))
+                    container.mount(Markdown(content if content else "(empty message)"))
                 elif role == "tool":
                     # Keep tool messages from creating blank rows in history rendering.
                     continue
@@ -1297,7 +1325,7 @@ class ChatDisplay(VerticalScroll):
         elif role == "assistant":
             label = self._get_model_label()
             container.mount(Static(label, classes="assistant-label"))
-            container.mount(Static(content if content else "(empty message)", classes="assistant-content"))
+            container.mount(Markdown(content if content else "(empty message)"))
         self.mount(container)
         self.scroll_end()
 
@@ -1310,7 +1338,7 @@ class ChatDisplay(VerticalScroll):
         label = self._get_model_label()
         container = Vertical(classes="message-turn")
         container.mount(Static(label, classes="assistant-label"))
-        container.mount(Static(content if content else "(empty message)", classes="assistant-content"))
+        container.mount(Markdown(content if content else "(empty message)"))
         self.mount(container)
         self.scroll_end()
 
@@ -1566,6 +1594,7 @@ class MainScreen(Screen):
             chat_display.mount(Static(
                 "\n[bold]Commands:[/bold]\n"
                 "  /new              - Start a new chat\n"
+                "  /load [n|name]    - Load chat by number or partial name\n"
                 "  /quit             - Exit ThreadBear\n"
                 "  /help             - Show this help\n"
                 "  /clear            - Clear chat display\n"
@@ -1620,6 +1649,82 @@ class MainScreen(Screen):
                 sidebar._build_chat_list()
             except Exception:
                 pass
+
+        elif cmd == "load":
+            chats_dir = self.app.chat_manager.chats_directory
+            try:
+                files = sorted(
+                    [f for f in os.listdir(chats_dir) if f.endswith(".json")],
+                    key=lambda f: os.path.getmtime(os.path.join(chats_dir, f)),
+                    reverse=True,
+                )
+            except Exception:
+                files = []
+
+            arg = " ".join(args).strip()
+
+            if not arg:
+                # Show numbered list
+                if not files:
+                    chat_display.mount(Static("\n[dim]No chats found[/dim]", markup=True))
+                else:
+                    lines = ["\n[bold]Chats (most recent first):[/bold]"]
+                    for i, fn in enumerate(files[:30], 1):
+                        path = os.path.join(chats_dir, fn)
+                        try:
+                            with open(path, "r", encoding="utf-8") as f:
+                                data = json.load(f)
+                            title = data.get("title", fn.replace(".json", "").replace("_", " "))
+                        except Exception:
+                            title = fn.replace(".json", "").replace("_", " ")
+                        lines.append(f"  [dim]{i:2}.[/dim] {title}")
+                    lines.append("\n[dim]Use /load <number> or /load <partial name>[/dim]")
+                    chat_display.mount(Static("\n".join(lines), markup=True))
+            elif arg.isdigit():
+                idx = int(arg) - 1
+                if 0 <= idx < len(files):
+                    filename = files[idx]
+                    if self.app.chat_manager.load_chat(filename):
+                        chat_display._refresh_chat()
+                        self.app._update_header_display()
+                        try:
+                            sidebar = self.query_one("#left-sidebar", Sidebar)
+                            sidebar._build_chat_list()
+                        except Exception:
+                            pass
+                    else:
+                        chat_display.mount(Static(f"\n[bold red]Failed to load chat[/bold red]", markup=True))
+                else:
+                    chat_display.mount(Static(f"\n[bold red]No chat at index {arg}[/bold red]", markup=True))
+            else:
+                # Fuzzy match by title or filename
+                arg_lower = arg.lower()
+                match = None
+                for fn in files:
+                    path = os.path.join(chats_dir, fn)
+                    try:
+                        with open(path, "r", encoding="utf-8") as f:
+                            data = json.load(f)
+                        title = data.get("title", "")
+                    except Exception:
+                        title = ""
+                    if arg_lower in title.lower() or arg_lower in fn.lower():
+                        match = fn
+                        break
+                if match:
+                    if self.app.chat_manager.load_chat(match):
+                        chat_display._refresh_chat()
+                        self.app._update_header_display()
+                        try:
+                            sidebar = self.query_one("#left-sidebar", Sidebar)
+                            sidebar._build_chat_list()
+                        except Exception:
+                            pass
+                    else:
+                        chat_display.mount(Static(f"\n[bold red]Failed to load chat[/bold red]", markup=True))
+                else:
+                    chat_display.mount(Static(f"\n[bold red]No chat matching: {arg}[/bold red]", markup=True))
+
         elif cmd == "provider":
             providers = self.app.available_providers
             current = self.app.config.get("provider", "unknown")
@@ -1639,6 +1744,7 @@ class MainScreen(Screen):
                 chat_display.mount(Static("\n[bold red]Usage: /rename <new_title>[/bold red]", markup=True))
             else:
                 self.app._rename_chat_file(new_title)
+                self.app._update_header_display()
                 try:
                     sidebar = self.query_one("#left-sidebar", Sidebar)
                     sidebar._build_chat_list()

@@ -414,6 +414,49 @@ class ChatManager:
         self.save_current_chat(force_save=True)
         return True
 
+    def rename_current_chat(self, new_title: str) -> Optional[str]:
+        """Rename the current chat file to match new_title. Returns new filename or None on failure."""
+        filename = self.current_chat_file
+        if not filename:
+            return None
+        try:
+            safe = re.sub(r"[^\w\s-]", "", new_title)
+            safe = re.sub(r"[-\s]+", "_", safe).strip("_")
+            base = os.path.splitext(filename)[0]
+            m = re.search(r"_(\d{8}_\d{6})$", base)
+            ts = m.group(1) if m else datetime.now().strftime("%Y%m%d_%H%M%S")
+            new_fn = f"{safe}_{ts}.json"
+
+            old_path = os.path.join(self.chats_directory, filename)
+            new_path = os.path.join(self.chats_directory, new_fn)
+
+            if not os.path.exists(old_path):
+                return None
+
+            with open(old_path, "r", encoding="utf-8") as f:
+                chat_data = json.load(f)
+
+            if isinstance(chat_data, dict):
+                chat_data["title"] = new_title
+                if "chat_id" not in chat_data:
+                    chat_data["chat_id"] = str(uuid.uuid4())
+                if "root_chat_id" not in chat_data:
+                    chat_data["root_chat_id"] = chat_data["chat_id"]
+                if "parent_chat_id" not in chat_data:
+                    chat_data["parent_chat_id"] = ""
+
+            with open(new_path, "w", encoding="utf-8") as f:
+                json.dump(chat_data, f, indent=2, ensure_ascii=False)
+            os.remove(old_path)
+
+            self.current_chat_file = new_fn
+            if isinstance(self.current_chat, dict):
+                self.current_chat["title"] = new_title
+
+            return new_fn
+        except Exception:
+            return None
+
     def clear_current_chat(self, auto_save: bool = True) -> None:
         self.current_chat = {
             "chat_history": [],
